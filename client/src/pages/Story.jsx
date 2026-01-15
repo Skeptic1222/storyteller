@@ -1371,9 +1371,13 @@ function Story() {
 
         {/* Launch HUD overlay (pre-playback stage validation / regeneration). */}
         {(() => {
-          const showLaunchOverlay = !storyEnded && !isPlaying && (
-            launchHasError || (!playbackRequested && (isGenerating || launchActive || isReadyToPlay))
-          );
+          // P2: Simplified overlay visibility to single source of truth
+          // Show overlay ONLY while:
+          // 1. Story isn't ended, AND
+          // 2. Launch is active (includes generation/setup phases)
+          // 3. Audio hasn't started playing (sceneAudioStarted indicates playback begun)
+          // This prevents overlay flashing when user clicks "Begin Chapter 1"
+          const showLaunchOverlay = !storyEnded && launchActive && !sceneAudioStarted;
 
           if (!showLaunchOverlay) return null;
 
