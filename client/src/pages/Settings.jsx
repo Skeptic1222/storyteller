@@ -1,15 +1,18 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { useTheme } from '../context/ThemeContext';
 import { apiCall } from '../config';
+import Layout, { PageContainer, PageHeader } from '../components/Layout';
 import {
-  Settings as SettingsIcon, User, Bell, Volume2, Moon,
-  ArrowLeft, Save, Check, Loader2
+  Settings as SettingsIcon, User, Bell, Volume2, Palette,
+  Save, Check, Loader2, Columns
 } from 'lucide-react';
 
 function Settings() {
   const navigate = useNavigate();
-  const { user, isAuthenticated, getAuthHeader } = useAuth();
+  const { user, isAuthenticated } = useAuth();
+  const { textLayout, setTextLayout } = useTheme();
   const [loading, setLoading] = useState(false);
   const [saved, setSaved] = useState(false);
   const [settings, setSettings] = useState({
@@ -96,45 +99,38 @@ function Settings() {
   };
 
   return (
-    <div className="min-h-screen p-4 md:p-8">
-      <div className="max-w-2xl mx-auto">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-8">
-          <div className="flex items-center gap-4">
+    <Layout>
+      <PageContainer maxWidth="2xl" className="pt-20 pb-8">
+        {/* Header with Save Button */}
+        <PageHeader
+          title="Settings"
+          subtitle="Manage your preferences"
+          backPath="/"
+          actions={
             <button
-              onClick={() => navigate('/')}
-              className="p-2 hover:bg-night-800 rounded-lg text-night-400 hover:text-white transition-colors"
+              onClick={handleSave}
+              disabled={loading || saved}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors
+                        ${saved
+                          ? 'bg-emerald-500/20 text-emerald-400'
+                          : 'bg-narrimo-coral hover:bg-[#ff8579] text-narrimo-midnight'}`}
             >
-              <ArrowLeft className="w-5 h-5" />
+              {loading ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : saved ? (
+                <Check className="w-4 h-4" />
+              ) : (
+                <Save className="w-4 h-4" />
+              )}
+              {saved ? 'Saved' : 'Save'}
             </button>
-            <div>
-              <h1 className="text-2xl font-bold text-white">Settings</h1>
-              <p className="text-night-400">Manage your preferences</p>
-            </div>
-          </div>
-          <button
-            onClick={handleSave}
-            disabled={loading || saved}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors
-                      ${saved
-                        ? 'bg-emerald-500/20 text-emerald-400'
-                        : 'bg-golden-400 hover:bg-golden-300 text-night-900'}`}
-          >
-            {loading ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : saved ? (
-              <Check className="w-4 h-4" />
-            ) : (
-              <Save className="w-4 h-4" />
-            )}
-            {saved ? 'Saved' : 'Save'}
-          </button>
-        </div>
+          }
+        />
 
         {/* Profile Section */}
-        <section className="bg-night-800/50 rounded-xl p-6 border border-night-700 mb-6">
+        <section className="bg-slate-800/50 rounded-xl p-6 border border-slate-700 mb-6">
           <div className="flex items-center gap-3 mb-6">
-            <User className="w-5 h-5 text-golden-400" />
+            <User className="w-5 h-5 text-narrimo-coral" />
             <h2 className="text-lg font-semibold text-white">Profile</h2>
           </div>
 
@@ -143,36 +139,36 @@ function Settings() {
               <img
                 src={user.avatarUrl}
                 alt={user.displayName}
-                className="w-16 h-16 rounded-full border-2 border-night-700"
+                className="w-16 h-16 rounded-full border-2 border-slate-700"
               />
             ) : (
-              <div className="w-16 h-16 rounded-full bg-night-700 flex items-center justify-center">
-                <User className="w-8 h-8 text-night-400" />
+              <div className="w-16 h-16 rounded-full bg-slate-700 flex items-center justify-center">
+                <User className="w-8 h-8 text-slate-400" />
               </div>
             )}
             <div>
               <p className="text-white font-medium">{user?.displayName}</p>
-              <p className="text-sm text-night-400">{user?.email}</p>
-              <p className="text-xs text-night-500 mt-1">Signed in with Google</p>
+              <p className="text-sm text-slate-400">{user?.email}</p>
+              <p className="text-xs text-slate-500 mt-1">Signed in with Google</p>
             </div>
           </div>
 
           <div>
-            <label className="block text-sm text-night-400 mb-2">Display Name</label>
+            <label className="block text-sm text-slate-400 mb-2">Display Name</label>
             <input
               type="text"
               value={settings.displayName}
               onChange={(e) => handleChange('displayName', e.target.value)}
-              className="w-full px-4 py-2 bg-night-900 border border-night-700 rounded-lg text-white
-                       focus:outline-none focus:border-golden-400"
+              className="w-full px-4 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white
+                       focus:outline-none focus:border-narrimo-coral"
             />
           </div>
         </section>
 
         {/* Audio Section */}
-        <section className="bg-night-800/50 rounded-xl p-6 border border-night-700 mb-6">
+        <section className="bg-slate-800/50 rounded-xl p-6 border border-slate-700 mb-6">
           <div className="flex items-center gap-3 mb-6">
-            <Volume2 className="w-5 h-5 text-golden-400" />
+            <Volume2 className="w-5 h-5 text-narrimo-coral" />
             <h2 className="text-lg font-semibold text-white">Audio</h2>
           </div>
 
@@ -187,16 +183,16 @@ function Settings() {
         </section>
 
         {/* Story Defaults Section */}
-        <section className="bg-night-800/50 rounded-xl p-6 border border-night-700 mb-6">
+        <section className="bg-slate-800/50 rounded-xl p-6 border border-slate-700 mb-6">
           <div className="flex items-center gap-3 mb-6">
-            <SettingsIcon className="w-5 h-5 text-golden-400" />
+            <SettingsIcon className="w-5 h-5 text-narrimo-coral" />
             <h2 className="text-lg font-semibold text-white">Story Defaults</h2>
           </div>
 
           <div className="space-y-4">
             <ToggleSetting
               label="Calm Mode by Default"
-              description="Start new stories in calm mode with gentler content"
+              description="Start new stories in a softer intensity profile"
               value={settings.calmModeDefault}
               onChange={(v) => handleChange('calmModeDefault', v)}
             />
@@ -207,20 +203,75 @@ function Settings() {
               value={settings.cyoaDefault}
               onChange={(v) => handleChange('cyoaDefault', v)}
             />
+
+            {/* Text Layout Preference */}
+            <div>
+              <div className="flex items-center gap-2 mb-2">
+                <Columns className="w-4 h-4 text-narrimo-coral" />
+                <label className="text-white font-medium">Default Text Layout</label>
+              </div>
+              <p className="text-sm text-slate-400 mb-3">
+                Choose how story text is displayed during playback
+              </p>
+              <div className="space-y-2">
+                <label className="flex items-center gap-3 p-3 bg-slate-900 border border-slate-700 rounded-lg cursor-pointer hover:border-narrimo-coral/50 transition-colors">
+                  <input
+                    type="radio"
+                    name="textLayout"
+                    value="vertical"
+                    checked={textLayout === 'vertical'}
+                    onChange={(e) => setTextLayout(e.target.value)}
+                    className="accent-narrimo-coral"
+                  />
+                  <div>
+                    <p className="text-white font-medium">Vertical Flow</p>
+                    <p className="text-xs text-slate-400">Traditional top-to-bottom reading</p>
+                  </div>
+                </label>
+                <label className="flex items-center gap-3 p-3 bg-slate-900 border border-slate-700 rounded-lg cursor-pointer hover:border-narrimo-coral/50 transition-colors">
+                  <input
+                    type="radio"
+                    name="textLayout"
+                    value="horizontal"
+                    checked={textLayout === 'horizontal'}
+                    onChange={(e) => setTextLayout(e.target.value)}
+                    className="accent-narrimo-coral"
+                  />
+                  <div>
+                    <p className="text-white font-medium">Two Columns</p>
+                    <p className="text-xs text-slate-400">Side-by-side newspaper style</p>
+                  </div>
+                </label>
+                <label className="flex items-center gap-3 p-3 bg-slate-900 border border-slate-700 rounded-lg cursor-pointer hover:border-narrimo-coral/50 transition-colors">
+                  <input
+                    type="radio"
+                    name="textLayout"
+                    value="modal"
+                    checked={textLayout === 'modal'}
+                    onChange={(e) => setTextLayout(e.target.value)}
+                    className="accent-narrimo-coral"
+                  />
+                  <div>
+                    <p className="text-white font-medium">Modal (One Paragraph)</p>
+                    <p className="text-xs text-slate-400">Focus on one paragraph at a time with navigation</p>
+                  </div>
+                </label>
+              </div>
+            </div>
           </div>
         </section>
 
         {/* Appearance Section */}
-        <section className="bg-night-800/50 rounded-xl p-6 border border-night-700 mb-6">
+        <section className="bg-slate-800/50 rounded-xl p-6 border border-slate-700 mb-6">
           <div className="flex items-center gap-3 mb-6">
-            <Moon className="w-5 h-5 text-golden-400" />
+            <Palette className="w-5 h-5 text-narrimo-coral" />
             <h2 className="text-lg font-semibold text-white">Appearance</h2>
           </div>
 
           <div className="space-y-4">
             <ToggleSetting
               label="Dark Mode"
-              description="Always use dark theme (recommended for bedtime stories)"
+              description="Use the dark theme by default"
               value={settings.darkModeEnabled}
               onChange={(v) => handleChange('darkModeEnabled', v)}
             />
@@ -228,9 +279,9 @@ function Settings() {
         </section>
 
         {/* Notifications Section */}
-        <section className="bg-night-800/50 rounded-xl p-6 border border-night-700">
+        <section className="bg-slate-800/50 rounded-xl p-6 border border-slate-700">
           <div className="flex items-center gap-3 mb-6">
-            <Bell className="w-5 h-5 text-golden-400" />
+            <Bell className="w-5 h-5 text-narrimo-coral" />
             <h2 className="text-lg font-semibold text-white">Notifications</h2>
           </div>
 
@@ -247,7 +298,7 @@ function Settings() {
         {/* Danger Zone */}
         <section className="mt-8 p-6 border border-red-500/30 rounded-xl">
           <h3 className="text-red-400 font-semibold mb-4">Danger Zone</h3>
-          <p className="text-night-400 text-sm mb-4">
+          <p className="text-slate-400 text-sm mb-4">
             Deleting your account will permanently remove all your stories, preferences, and subscription data.
           </p>
           <button
@@ -257,8 +308,8 @@ function Settings() {
             Delete Account
           </button>
         </section>
-      </div>
-    </div>
+      </PageContainer>
+    </Layout>
   );
 }
 
@@ -267,12 +318,12 @@ function ToggleSetting({ label, description, value, onChange }) {
     <div className="flex items-center justify-between">
       <div>
         <p className="text-white font-medium">{label}</p>
-        <p className="text-sm text-night-400">{description}</p>
+        <p className="text-sm text-slate-400">{description}</p>
       </div>
       <button
         onClick={() => onChange(!value)}
         className={`relative w-12 h-6 rounded-full transition-colors
-                  ${value ? 'bg-golden-400' : 'bg-night-700'}`}
+                  ${value ? 'bg-narrimo-coral' : 'bg-slate-700'}`}
       >
         <div
           className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform

@@ -1,59 +1,62 @@
 /**
  * Library Page - E-Reader style story library
  * Browse, manage, and resume stories like a Kindle
+ *
+ * Uses ThemeContext for unified theme management across pages
  */
 
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { API_BASE } from '../config';
+import {
+  ArrowLeft,
+  BookOpen,
+  Library as LibraryIcon,
+  ScrollText,
+  CheckCircle,
+  PauseCircle,
+  PlayCircle,
+  Circle,
+  GitBranch,
+  Star,
+  Bookmark,
+  Trash2,
+  Download
+} from 'lucide-react';
+import { apiCall } from '../config';
 import UserProfile from '../components/UserProfile';
+import { useReadingTheme } from '../context/ThemeContext';
 
-// Theme definitions
-const THEMES = {
-  dark: {
-    bg: '#0a0a0f',
-    card: '#1a1a2e',
-    text: '#e0e0e0',
-    textMuted: '#888',
-    accent: '#6366f1',
-    border: '#2a2a3e'
-  },
-  sepia: {
-    bg: '#f4ecd8',
-    card: '#ebe3d0',
-    text: '#5c4b37',
-    textMuted: '#8b7355',
-    accent: '#8b5e3c',
-    border: '#d4c9b0'
-  },
-  light: {
-    bg: '#ffffff',
-    card: '#f5f5f5',
-    text: '#1a1a1a',
-    textMuted: '#666',
-    accent: '#4f46e5',
-    border: '#e0e0e0'
-  }
+// Content categories
+const CATEGORIES = {
+  all: { label: 'All', icon: LibraryIcon, color: '#6A8A82' },
+  story: { label: 'Stories', icon: BookOpen, color: '#FF6F61' },
+  story_bible: { label: 'Story Bible', icon: ScrollText, color: '#C0C0C0' }
 };
 
 export default function Library() {
   const navigate = useNavigate();
+  const { theme: colors, setTheme, themes } = useReadingTheme();
   const [stories, setStories] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('all');
-  const [theme, setTheme] = useState('dark');
+  const [category, setCategory] = useState('all'); // New: content category
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState('recent');
 
-  const colors = THEMES[theme];
-
   useEffect(() => {
     fetchLibrary();
-  }, [filter]);
+  }, [filter, category]);
 
   const fetchLibrary = async () => {
     try {
-      const res = await fetch(`${API_BASE}/library?filter=${filter}`);
+      const res = await apiCall(`/library?filter=${filter}&category=${category}`);
+      if (!res.ok) {
+        if (res.status === 401) {
+          navigate('/welcome');
+          return;
+        }
+        throw new Error('Failed to load library');
+      }
       const data = await res.json();
       setStories(data.stories || []);
     } catch (error) {
@@ -63,21 +66,40 @@ export default function Library() {
     }
   };
 
+  // Get category for a story based on its mode/type
+  const getStoryCategory = (story) => {
+    if (story.mode === 'dnd' || story.mode === 'campaign') return 'dnd';
+    if (story.mode === 'story_bible' || story.story_bible_id) return 'story_bible';
+    return 'story';
+  };
+
+  // Get icon for story based on category
+  const getStoryIcon = (story) => {
+    const cat = getStoryCategory(story);
+    if (story.cover_image_url) return null;
+    return CATEGORIES[cat]?.icon || BookOpen;
+  };
+
   const toggleFavorite = async (storyId, e) => {
     e.stopPropagation();
     try {
-      await fetch(`${API_BASE}/library/${storyId}/favorite`, { method: 'POST' });
+      await apiCall(`/library/${storyId}/favorite`, { method: 'POST' });
       fetchLibrary();
     } catch (error) {
       console.error('Failed to toggle favorite:', error);
     }
   };
 
+  const handleExport = (storyId, e) => {
+    e.stopPropagation();
+    navigate(`/reader/${storyId}`, { state: { openExport: true } });
+  };
+
   const deleteStory = async (storyId, e) => {
     e.stopPropagation();
     if (confirm('Delete this story from your library?')) {
       try {
-        await fetch(`${API_BASE}/library/${storyId}`, { method: 'DELETE' });
+        await apiCall(`/library/${storyId}`, { method: 'DELETE' });
         fetchLibrary();
       } catch (error) {
         console.error('Failed to delete story:', error);
@@ -109,11 +131,11 @@ export default function Library() {
 
   const getStatusIcon = (status) => {
     switch (status) {
-      case 'finished': return '✓';
-      case 'paused': return '⏸';
-      case 'narrating': return '▶';
-      case 'waiting_choice': return '?';
-      default: return '○';
+      case 'finished': return CheckCircle;
+      case 'paused': return PauseCircle;
+      case 'narrating': return PlayCircle;
+      case 'waiting_choice': return GitBranch;
+      default: return Circle;
     }
   };
 
@@ -130,8 +152,16 @@ export default function Library() {
   // Filter and sort stories
   const filteredStories = stories
     .filter(story => {
-      if (!searchQuery) return true;
-      return story.title?.toLowerCase().includes(searchQuery.toLowerCase());
+      // Category filter
+      if (category !== 'all') {
+        const storyCategory = getStoryCategory(story);
+        if (storyCategory !== category) return false;
+      }
+      // Search filter
+      if (searchQuery) {
+        return story.title?.toLowerCase().includes(searchQuery.toLowerCase());
+      }
+      return true;
     })
     .sort((a, b) => {
       if (sortBy === 'recent') {
@@ -145,6 +175,16 @@ export default function Library() {
       }
       return 0;
     });
+
+  // Navigate to appropriate page based on story type
+  const handleStoryClick = (story) => {
+    const storyCategory = getStoryCategory(story);
+    if (storyCategory === 'dnd') {
+      navigate(`/campaign/${story.id}`);
+    } else {
+      navigate(`/reader/${story.id}`);
+    }
+  };
 
   return (
     <div style={{
@@ -170,12 +210,14 @@ export default function Library() {
               background: 'none',
               border: 'none',
               color: colors.text,
-              fontSize: '24px',
               cursor: 'pointer',
-              padding: '5px'
+              padding: '5px',
+              display: 'flex',
+              alignItems: 'center'
             }}
+            aria-label="Back to home"
           >
-            ←
+            <ArrowLeft size={20} />
           </button>
           <h1 style={{ margin: 0, fontSize: '28px', fontWeight: 'normal' }}>
             My Library
@@ -183,9 +225,9 @@ export default function Library() {
         </div>
 
         <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-          {/* Theme toggle */}
+          {/* Theme toggle - uses ThemeContext for persistence across pages */}
           <select
-            value={theme}
+            value={colors.id}
             onChange={(e) => setTheme(e.target.value)}
             style={{
               background: colors.card,
@@ -196,9 +238,9 @@ export default function Library() {
               fontSize: '14px'
             }}
           >
-            <option value="dark">Dark</option>
-            <option value="sepia">Sepia</option>
-            <option value="light">Light</option>
+            {themes.map(t => (
+              <option key={t.id} value={t.id}>{t.name}</option>
+            ))}
           </select>
 
           <button
@@ -221,6 +263,41 @@ export default function Library() {
         </div>
       </header>
 
+      {/* Category Tabs - Story, Story Bible */}
+      <div style={{
+        display: 'flex',
+        gap: '10px',
+        marginBottom: '20px',
+        flexWrap: 'wrap'
+      }}>
+        {Object.entries(CATEGORIES).map(([key, cat]) => {
+          const Icon = cat.icon;
+          return (
+            <button
+              key={key}
+              onClick={() => setCategory(key)}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                background: category === key ? `${cat.color}22` : colors.card,
+                color: category === key ? cat.color : colors.textMuted,
+                border: `2px solid ${category === key ? cat.color : 'transparent'}`,
+                borderRadius: '12px',
+                padding: '10px 18px',
+                fontSize: '14px',
+                fontWeight: category === key ? '600' : '400',
+                cursor: 'pointer',
+                transition: 'all 0.2s'
+              }}
+            >
+              <Icon size={18} />
+              {cat.label}
+            </button>
+          );
+        })}
+      </div>
+
       {/* Filters and Search */}
       <div style={{
         display: 'flex',
@@ -229,7 +306,7 @@ export default function Library() {
         flexWrap: 'wrap',
         alignItems: 'center'
       }}>
-        {/* Filter tabs */}
+        {/* Status filter tabs */}
         <div style={{
           display: 'flex',
           gap: '5px',
@@ -305,7 +382,9 @@ export default function Library() {
           padding: '60px',
           color: colors.textMuted
         }}>
-          <div style={{ fontSize: '48px', marginBottom: '20px' }}>📚</div>
+          <div style={{ marginBottom: '20px', display: 'flex', justifyContent: 'center' }}>
+            <LibraryIcon size={48} color={colors.textMuted} />
+          </div>
           <p>No stories yet</p>
           <button
             onClick={() => navigate('/')}
@@ -329,10 +408,14 @@ export default function Library() {
           gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
           gap: '20px'
         }}>
-          {filteredStories.map(story => (
+          {filteredStories.map(story => {
+            const storyCategory = getStoryCategory(story);
+            const categoryColor = CATEGORIES[storyCategory]?.color || colors.accent;
+
+            return (
             <div
               key={story.id}
-              onClick={() => navigate(`/reader/${story.id}`)}
+              onClick={() => handleStoryClick(story)}
               style={{
                 background: colors.card,
                 borderRadius: '12px',
@@ -351,20 +434,34 @@ export default function Library() {
                 e.currentTarget.style.boxShadow = 'none';
               }}
             >
-              {/* Status badge */}
+              {/* Category + Status badges */}
               <div style={{
                 position: 'absolute',
                 top: '15px',
                 right: '15px',
                 display: 'flex',
-                gap: '8px'
+                gap: '8px',
+                alignItems: 'center'
               }}>
+                {/* Category badge */}
                 <span style={{
-                  color: getStatusColor(story.current_status),
-                  fontSize: '14px'
+                  background: `${categoryColor}22`,
+                  color: categoryColor,
+                  fontSize: '10px',
+                  padding: '2px 8px',
+                  borderRadius: '10px',
+                  fontWeight: '600'
                 }}>
-                  {getStatusIcon(story.current_status)}
+                  {CATEGORIES[storyCategory]?.label}
                 </span>
+                {(() => {
+                  const StatusIcon = getStatusIcon(story.current_status);
+                  return (
+                    <span style={{ color: getStatusColor(story.current_status), display: 'flex' }}>
+                      <StatusIcon size={16} />
+                    </span>
+                  );
+                })()}
               </div>
 
               {/* Cover placeholder */}
@@ -372,7 +469,7 @@ export default function Library() {
                 height: '120px',
                 background: story.cover_image_url
                   ? `url(${story.cover_image_url}) center/cover`
-                  : `linear-gradient(135deg, ${colors.accent}33, ${colors.accent}11)`,
+                  : `linear-gradient(135deg, ${categoryColor}33, ${categoryColor}11)`,
                 borderRadius: '8px',
                 marginBottom: '15px',
                 display: 'flex',
@@ -380,7 +477,10 @@ export default function Library() {
                 justifyContent: 'center',
                 fontSize: '40px'
               }}>
-                {!story.cover_image_url && (story.cyoa_enabled ? '🎭' : '📖')}
+                {!story.cover_image_url && (() => {
+                  const Icon = getStoryIcon(story);
+                  return Icon ? <Icon size={32} color={categoryColor} /> : null;
+                })()}
               </div>
 
               {/* Title */}
@@ -402,7 +502,7 @@ export default function Library() {
                 color: colors.textMuted,
                 marginBottom: '12px'
               }}>
-                {story.total_scenes || 0} scenes • {formatDate(story.last_activity_at || story.started_at)}
+                {story.total_scenes || 0} scenes | {formatDate(story.last_activity_at || story.started_at)}
               </div>
 
               {/* Preview text */}
@@ -453,13 +553,15 @@ export default function Library() {
                     style={{
                       background: 'none',
                       border: 'none',
-                      color: story.is_favorite ? '#f59e0b' : colors.textMuted,
-                      fontSize: '18px',
+                      color: story.is_favorite ? '#FF6F61' : colors.textMuted,
                       cursor: 'pointer',
-                      padding: '4px'
+                      padding: '4px',
+                      display: 'flex',
+                      alignItems: 'center'
                     }}
+                    aria-label={story.is_favorite ? 'Remove from favorites' : 'Add to favorites'}
                   >
-                    {story.is_favorite ? '★' : '☆'}
+                    <Star size={18} fill={story.is_favorite ? '#FF6F61' : 'none'} />
                   </button>
 
                   {/* Bookmark count */}
@@ -471,8 +573,29 @@ export default function Library() {
                       alignItems: 'center',
                       gap: '4px'
                     }}>
-                      🔖 {story.bookmark_count}
+                      <Bookmark size={14} />
+                      {story.bookmark_count}
                     </span>
+                  )}
+
+                  {/* Export button - only show if story has a recording */}
+                  {(story.recording_id || story.current_recording_id) && (
+                    <button
+                      onClick={(e) => handleExport(story.id, e)}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        color: colors.accent,
+                        cursor: 'pointer',
+                        padding: '4px',
+                        display: 'flex',
+                        alignItems: 'center'
+                      }}
+                      title="Download story as MP3"
+                      aria-label="Download story as MP3"
+                    >
+                      <Download size={16} />
+                    </button>
                   )}
 
                   {/* Delete button */}
@@ -482,13 +605,15 @@ export default function Library() {
                       background: 'none',
                       border: 'none',
                       color: colors.textMuted,
-                      fontSize: '14px',
                       cursor: 'pointer',
                       padding: '4px',
-                      opacity: 0.6
+                      opacity: 0.7,
+                      display: 'flex',
+                      alignItems: 'center'
                     }}
+                    aria-label="Delete story"
                   >
-                    ×
+                    <Trash2 size={16} />
                   </button>
                 </div>
               </div>
@@ -505,8 +630,8 @@ export default function Library() {
                     <span
                       key={i}
                       style={{
-                        background: `${colors.accent}22`,
-                        color: colors.accent,
+                        background: `${categoryColor}22`,
+                        color: categoryColor,
                         fontSize: '11px',
                         padding: '3px 8px',
                         borderRadius: '12px'
@@ -518,7 +643,8 @@ export default function Library() {
                 </div>
               )}
             </div>
-          ))}
+          );
+          })}
         </div>
       )}
 

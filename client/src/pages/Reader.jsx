@@ -1,45 +1,30 @@
 /**
  * Reader Page - E-Reader style story viewer
  * Read/listen to stories with bookmarks, progress tracking, and audio sync
+ *
+ * Uses ThemeContext for unified theme management across pages
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import { API_BASE } from '../config';
-import { stripCharacterTags } from '../utils/textUtils';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
+import {
+  ArrowLeft,
+  Bookmark,
+  BookmarkPlus,
+  ChevronUp,
+  Download,
+  List,
+  Maximize2,
+  Minimize2,
+  Settings
+} from 'lucide-react';
+import { API_BASE, apiCall } from '../config';
+import { getStoredToken } from '../utils/authToken';
+import { stripAllTags } from '../utils/textUtils';
+import { useKaraokeHighlight } from '../hooks/useKaraokeHighlight';
+import { useReadingTheme, useTypography } from '../context/ThemeContext';
 
-// Theme definitions
-const THEMES = {
-  dark: {
-    bg: '#0a0a0f',
-    text: '#d4d4d4',
-    textMuted: '#666',
-    accent: '#6366f1',
-    highlight: '#6366f133'
-  },
-  sepia: {
-    bg: '#f4ecd8',
-    text: '#5c4b37',
-    textMuted: '#8b7355',
-    accent: '#8b5e3c',
-    highlight: '#8b5e3c33'
-  },
-  light: {
-    bg: '#ffffff',
-    text: '#1a1a1a',
-    textMuted: '#666',
-    accent: '#4f46e5',
-    highlight: '#4f46e533'
-  },
-  midnight: {
-    bg: '#0f172a',
-    text: '#cbd5e1',
-    textMuted: '#64748b',
-    accent: '#818cf8',
-    highlight: '#818cf833'
-  }
-};
-
+// Extended font families (some not in ThemeContext)
 const FONT_FAMILIES = {
   georgia: 'Georgia, serif',
   palatino: 'Palatino Linotype, Book Antiqua, serif',
@@ -49,9 +34,23 @@ const FONT_FAMILIES = {
   opendyslexic: 'OpenDyslexic, sans-serif'
 };
 
+const READER_SETTINGS_STORAGE_KEY = 'narrimo_reader_settings';
+const LEGACY_READER_SETTINGS_STORAGE_KEY = 'storyteller_reader_settings';
+
 export default function Reader() {
   const { storyId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+
+  // Theme from context - persists across pages
+  const { theme: colors, setTheme, themes } = useReadingTheme();
+  const {
+    fontSize,
+    lineHeight,
+    setFontSize,
+    setLineHeight
+  } = useTypography();
+  const themeId = colors?.id || 'dark';
 
   // Story data
   const [story, setStory] = useState(null);
@@ -67,23 +66,161 @@ export default function Reader() {
   const [showSettings, setShowSettings] = useState(false);
   const [showBookmarks, setShowBookmarks] = useState(false);
   const [showToc, setShowToc] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exportInfo, setExportInfo] = useState(null);
+  const [exporting, setExporting] = useState(false);
 
-  // Settings
-  const [theme, setTheme] = useState('dark');
-  const [fontSize, setFontSize] = useState(20);
+  // Reader-specific settings (not in context yet)
   const [fontFamily, setFontFamily] = useState('georgia');
-  const [lineHeight, setLineHeight] = useState(1.8);
   const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
   const [autoPlayNext, setAutoPlayNext] = useState(true);
   const [syncHighlight, setSyncHighlight] = useState(true);
+  const [audioCurrentTime, setAudioCurrentTime] = useState(0);
+  const [audioLoading, setAudioLoading] = useState(false);
+  const [audioBuffering, setAudioBuffering] = useState(false);
+  const [showScrollTop, setShowScrollTop] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // Line-level karaoke highlighting
+  const [currentLineStart, setCurrentLineStart] = useState(-1);
+  const [currentLineEnd, setCurrentLineEnd] = useState(-1);
 
   // Refs
   const audioRef = useRef(null);
   const controlsTimeoutRef = useRef(null);
   const readingStartRef = useRef(null);
-
-  const colors = THEMES[theme];
+  const wordRefs = useRef(new Map());
   const currentScene = scenes[currentSceneIndex];
+
+  const getAuthHeaders = useCallback(() => {
+    const token = getStoredToken();
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  }, []);
+
+  const downloadWithAuth = useCallback(async (url, fallbackName) => {
+    const response = await fetch(url, { headers: getAuthHeaders() });
+    if (!response.ok) {
+      throw new Error('Download failed');
+    }
+
+    const blob = await response.blob();
+    const disposition = response.headers.get('content-disposition') || '';
+    const match = disposition.match(/filename=\"?([^\";]+)\"?/i);
+    const filename = match?.[1] || fallbackName;
+
+    const blobUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = blobUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+  }, [getAuthHeaders]);
+
+  // Karaoke highlighting hook
+  const currentWordIndex = useKaraokeHighlight({
+    wordTimings: syncHighlight ? currentScene?.word_timings : null,
+    currentTime: audioCurrentTime,
+    isPlaying: isPlaying,
+    isPaused: !isPlaying && audioCurrentTime > 0,
+    showText: true,
+    isSceneAudio: true
+  });
+
+  // Line detection for karaoke - highlight entire line containing current word
+  useEffect(() => {
+    if (currentWordIndex < 0 || !wordRefs.current.size) {
+      setCurrentLineStart(-1);
+      setCurrentLineEnd(-1);
+      return;
+    }
+
+    const currentWordEl = wordRefs.current.get(currentWordIndex);
+    if (!currentWordEl) return;
+
+    const currentRect = currentWordEl.getBoundingClientRect();
+    const threshold = 15; // pixels - words on same line should be within this Y distance
+
+    let lineStart = currentWordIndex;
+    let lineEnd = currentWordIndex;
+
+    // Find line start (scan backwards)
+    for (let i = currentWordIndex - 1; i >= 0; i--) {
+      const el = wordRefs.current.get(i);
+      if (!el) break;
+      const rect = el.getBoundingClientRect();
+      if (Math.abs(rect.top - currentRect.top) > threshold) break;
+      lineStart = i;
+    }
+
+    // Find line end (scan forwards)
+    const totalWords = currentScene?.word_timings?.words?.length || 0;
+    for (let i = currentWordIndex + 1; i < totalWords; i++) {
+      const el = wordRefs.current.get(i);
+      if (!el) break;
+      const rect = el.getBoundingClientRect();
+      if (Math.abs(rect.top - currentRect.top) > threshold) break;
+      lineEnd = i;
+    }
+
+    setCurrentLineStart(lineStart);
+    setCurrentLineEnd(lineEnd);
+  }, [currentWordIndex, currentScene?.word_timings?.words?.length]);
+
+  // Load reader settings from localStorage on mount
+  useEffect(() => {
+    try {
+      const savedSettings = localStorage.getItem(READER_SETTINGS_STORAGE_KEY);
+      if (savedSettings) {
+        const settings = JSON.parse(savedSettings);
+        if (settings.theme) setTheme(settings.theme);
+        if (settings.fontSize) setFontSize(settings.fontSize);
+        if (settings.fontFamily) setFontFamily(settings.fontFamily);
+        if (settings.lineHeight) setLineHeight(settings.lineHeight);
+        if (settings.playbackSpeed) setPlaybackSpeed(settings.playbackSpeed);
+        if (typeof settings.autoPlayNext === 'boolean') setAutoPlayNext(settings.autoPlayNext);
+        if (typeof settings.syncHighlight === 'boolean') setSyncHighlight(settings.syncHighlight);
+        return;
+      }
+
+      const legacySettings = localStorage.getItem(LEGACY_READER_SETTINGS_STORAGE_KEY);
+      if (legacySettings) {
+        const settings = JSON.parse(legacySettings);
+        localStorage.setItem(READER_SETTINGS_STORAGE_KEY, legacySettings);
+        localStorage.removeItem(LEGACY_READER_SETTINGS_STORAGE_KEY);
+
+        if (settings.theme) setTheme(settings.theme);
+        if (settings.fontSize) setFontSize(settings.fontSize);
+        if (settings.fontFamily) setFontFamily(settings.fontFamily);
+        if (settings.lineHeight) setLineHeight(settings.lineHeight);
+        if (settings.playbackSpeed) setPlaybackSpeed(settings.playbackSpeed);
+        if (typeof settings.autoPlayNext === 'boolean') setAutoPlayNext(settings.autoPlayNext);
+        if (typeof settings.syncHighlight === 'boolean') setSyncHighlight(settings.syncHighlight);
+      }
+    } catch (e) {
+      console.warn('Failed to load reader settings:', e);
+    }
+  }, []);
+
+  // Save reader settings to localStorage when they change
+  useEffect(() => {
+    try {
+      localStorage.setItem(READER_SETTINGS_STORAGE_KEY, JSON.stringify({
+        theme: themeId, fontSize, fontFamily, lineHeight, playbackSpeed, autoPlayNext, syncHighlight
+      }));
+      localStorage.removeItem(LEGACY_READER_SETTINGS_STORAGE_KEY);
+    } catch (e) {
+      console.warn('Failed to save reader settings:', e);
+    }
+  }, [themeId, fontSize, fontFamily, lineHeight, playbackSpeed, autoPlayNext, syncHighlight]);
+
+  // Clear word refs when scene changes
+  useEffect(() => {
+    wordRefs.current.clear();
+    setCurrentLineStart(-1);
+    setCurrentLineEnd(-1);
+  }, [currentSceneIndex]);
 
   // Fetch story data
   useEffect(() => {
@@ -98,7 +235,7 @@ export default function Reader() {
 
   const fetchStory = async () => {
     try {
-      const res = await fetch(`${API_BASE}/library/${storyId}`);
+      const res = await apiCall(`/library/${storyId}`);
       const data = await res.json();
 
       setStory(data.story);
@@ -117,15 +254,23 @@ export default function Reader() {
     }
   };
 
+  // Auto-open export modal if navigated from Library
+  useEffect(() => {
+    if (!loading && story && location.state?.openExport) {
+      openExportModal();
+      // Clear the state to prevent reopening on re-renders
+      navigate(location.pathname, { replace: true, state: {} });
+    }
+  }, [loading, story, location.state]);
+
   const saveProgress = async () => {
     if (!currentScene) return;
 
     const readingTime = Math.floor((Date.now() - (readingStartRef.current || Date.now())) / 1000);
 
     try {
-      await fetch(`${API_BASE}/library/${storyId}/progress`, {
+      await apiCall(`/library/${storyId}/progress`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           scene_id: currentScene.id,
           scene_index: currentSceneIndex,
@@ -192,9 +337,8 @@ export default function Reader() {
   // Bookmark management
   const addBookmark = async () => {
     try {
-      const res = await fetch(`${API_BASE}/library/${storyId}/bookmark`, {
+      const res = await apiCall(`/library/${storyId}/bookmark`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           scene_id: currentScene.id,
           name: `Scene ${currentSceneIndex + 1}`,
@@ -210,7 +354,7 @@ export default function Reader() {
 
   const deleteBookmark = async (bookmarkId) => {
     try {
-      await fetch(`${API_BASE}/library/${storyId}/bookmark/${bookmarkId}`, {
+      await apiCall(`/library/${storyId}/bookmark/${bookmarkId}`, {
         method: 'DELETE'
       });
       setBookmarks(bookmarks.filter(b => b.id !== bookmarkId));
@@ -266,9 +410,111 @@ export default function Reader() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [togglePlayPause, nextScene, prevScene]);
 
-  // Export story
+  // Scroll-to-top button visibility
+  useEffect(() => {
+    const handleScroll = () => {
+      setShowScrollTop(window.scrollY > 300);
+    };
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, []);
+
+  const scrollToTop = () => {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  // Fullscreen toggle
+  const toggleFullscreen = useCallback(() => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(err => {
+        console.warn('Fullscreen not supported:', err);
+      });
+    } else {
+      document.exitFullscreen();
+    }
+  }, []);
+
+  // Sync fullscreen state with browser's fullscreen change events
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, []);
+
+  // Export story (legacy)
   const exportStory = async (format) => {
-    window.open(`${API_BASE}/library/${storyId}/export?format=${format}`, '_blank');
+    try {
+      const fallbackName = `${story?.title || 'story'}.${format}`;
+      await downloadWithAuth(`${API_BASE}/library/${storyId}/export?format=${format}`, fallbackName);
+    } catch (error) {
+      console.error('Export error:', error);
+      alert('Export failed. Please try again.');
+    }
+  };
+
+  // Open export modal and fetch export info
+  const openExportModal = async () => {
+    setShowExportModal(true);
+    setExportInfo(null);
+
+    // Get the current recording ID from story data
+    const recordingId = story?.current_recording_id || story?.recording_id;
+    if (!recordingId) {
+      setExportInfo({ error: 'No recording available for this story' });
+      return;
+    }
+
+    try {
+      const response = await apiCall(`/recordings/${recordingId}/export-info`);
+      if (response.ok) {
+        const info = await response.json();
+        setExportInfo(info);
+      } else {
+        setExportInfo({ error: 'Failed to load export info' });
+      }
+    } catch (error) {
+      console.error('Export info error:', error);
+      setExportInfo({ error: 'Failed to load export info' });
+    }
+  };
+
+  // Handle download export
+  const handleExport = async (options = {}) => {
+    const { includeSfx = false, format = 'mp3' } = options;
+    const recordingId = story?.current_recording_id || story?.recording_id;
+
+    if (!recordingId) {
+      alert('No recording available for export');
+      return;
+    }
+
+    setExporting(true);
+
+    try {
+      const queryParams = new URLSearchParams();
+      if (format !== 'mp3') {
+        queryParams.set('format', format);
+      } else if (includeSfx) {
+        queryParams.set('includeSfx', 'true');
+      }
+
+      const url = `${API_BASE}/recordings/${recordingId}/export${queryParams.toString() ? '?' + queryParams.toString() : ''}`;
+      const baseTitle = story?.title || 'story';
+      const suffix = includeSfx ? '_with_sfx' : '';
+      const extension = format === 'mp3' ? 'mp3' : format;
+      const fallbackName = `${baseTitle}${suffix}.${extension}`;
+
+      await downloadWithAuth(url, fallbackName);
+      setShowExportModal(false);
+      setExporting(false);
+
+    } catch (error) {
+      console.error('Export error:', error);
+      alert('Export failed. Please try again.');
+      setExporting(false);
+    }
   };
 
   if (loading) {
@@ -325,19 +571,36 @@ export default function Reader() {
       }}
       onClick={handleInteraction}
     >
+      {/* CSS Keyframes for loading animations */}
+      <style>{`
+        @keyframes spin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.5; }
+        }
+      `}</style>
+
       {/* Hidden audio element */}
       {currentScene?.audio_url && (
         <audio
           ref={audioRef}
           src={currentScene.audio_url}
           onEnded={handleAudioEnded}
-          onPlay={() => setIsPlaying(true)}
+          onPlay={() => { setIsPlaying(true); setAudioBuffering(false); }}
           onPause={() => setIsPlaying(false)}
+          onTimeUpdate={(e) => setAudioCurrentTime(e.target.currentTime)}
+          onLoadStart={() => setAudioLoading(true)}
+          onCanPlay={() => setAudioLoading(false)}
+          onWaiting={() => setAudioBuffering(true)}
+          onPlaying={() => setAudioBuffering(false)}
           playbackRate={playbackSpeed}
         />
       )}
 
-      {/* Top bar */}
+      {/* Top bar - auto-hides in fullscreen, visible on hover/tap */}
       <div style={{
         position: 'fixed',
         top: 0,
@@ -347,76 +610,104 @@ export default function Reader() {
         display: 'flex',
         justifyContent: 'space-between',
         alignItems: 'center',
-        background: `linear-gradient(${colors.bg}, transparent)`,
+        background: isFullscreen
+          ? `${colors.bg}ee`  // More opaque in fullscreen for better visibility
+          : `linear-gradient(${colors.bg}, transparent)`,
         opacity: showControls ? 1 : 0,
-        transition: 'opacity 0.3s',
-        zIndex: 100
+        transform: isFullscreen && !showControls ? 'translateY(-100%)' : 'translateY(0)',
+        transition: 'opacity 0.3s, transform 0.3s',
+        zIndex: 100,
+        borderRadius: isFullscreen ? '0 0 8px 8px' : 0
       }}>
-        <button
-          onClick={() => { saveProgress(); navigate('/library'); }}
-          style={{
-            background: 'none',
-            border: 'none',
-            color: colors.text,
-            fontSize: '20px',
-            cursor: 'pointer'
-          }}
-        >
-          ← Library
-        </button>
+                  <button
+            onClick={() => { saveProgress(); navigate('/library'); }}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: colors.text,
+              fontSize: '14px',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px'
+            }}
+          >
+            <ArrowLeft size={18} />
+            <span>Library</span>
+          </button>
 
-        <div style={{ display: 'flex', gap: '15px' }}>
-          <button
+        <div style={{ display: 'flex', gap: '12px' }}>
+                    <button
             onClick={() => setShowToc(true)}
             style={{
               background: 'none',
               border: 'none',
               color: colors.text,
-              fontSize: '18px',
               cursor: 'pointer'
             }}
             title="Table of Contents"
           >
-            ☰
+            <List size={18} />
           </button>
-          <button
+                    <button
             onClick={() => setShowBookmarks(true)}
             style={{
               background: 'none',
               border: 'none',
               color: colors.text,
-              fontSize: '18px',
               cursor: 'pointer'
             }}
             title="Bookmarks"
           >
-            🔖
+            <Bookmark size={18} />
           </button>
-          <button
+                    <button
             onClick={addBookmark}
             style={{
               background: 'none',
               border: 'none',
               color: colors.text,
-              fontSize: '18px',
               cursor: 'pointer'
             }}
             title="Add Bookmark"
           >
-            +🔖
+            <BookmarkPlus size={18} />
           </button>
-          <button
+                    <button
             onClick={() => setShowSettings(true)}
             style={{
               background: 'none',
               border: 'none',
               color: colors.text,
-              fontSize: '18px',
               cursor: 'pointer'
             }}
             title="Settings"
           >
-            ⚙️
+            <Settings size={18} />
+          </button>
+                    <button
+            onClick={openExportModal}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: colors.text,
+              cursor: 'pointer'
+            }}
+            title="Download Story"
+          >
+            <Download size={18} />
+          </button>
+                    <button
+            onClick={toggleFullscreen}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: colors.text,
+              cursor: 'pointer'
+            }}
+            title={isFullscreen ? "Exit Fullscreen" : "Fullscreen"}
+          >
+            {isFullscreen ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
           </button>
         </div>
       </div>
@@ -441,10 +732,11 @@ export default function Reader() {
 
       {/* Main reading area */}
       <div style={{
-        maxWidth: '800px',
+        maxWidth: isFullscreen ? '900px' : '800px',
         margin: '0 auto',
-        padding: '80px 30px 150px',
-        minHeight: '100vh'
+        padding: isFullscreen ? '40px 40px 120px' : '80px 30px 150px',
+        minHeight: '100vh',
+        transition: 'padding 0.3s, max-width 0.3s'
       }}>
         {/* Scene title */}
         <div style={{
@@ -468,11 +760,52 @@ export default function Reader() {
           lineHeight: lineHeight,
           textAlign: 'justify'
         }}>
-          {stripCharacterTags(currentScene?.polished_text || '')?.split('\n').map((paragraph, i) => (
-            <p key={i} style={{ marginBottom: '1.5em' }}>
-              {paragraph}
-            </p>
-          ))}
+          {/* Render with word-by-word karaoke highlighting if word_timings available */}
+          {syncHighlight && currentScene?.word_timings?.words ? (
+            <div style={{ marginBottom: '1.5em' }}>
+              {currentScene.word_timings.words.map((word, i) => {
+                const isCurrentWord = i === currentWordIndex;
+                const isOnCurrentLine = i >= currentLineStart && i <= currentLineEnd && currentLineStart >= 0;
+
+                return (
+                  <span
+                    key={i}
+                    ref={(el) => {
+                      if (el) wordRefs.current.set(i, el);
+                      else wordRefs.current.delete(i);
+                    }}
+                    style={{
+                      backgroundColor: isCurrentWord
+                        ? colors.accent
+                        : isOnCurrentLine
+                          ? colors.highlight
+                          : 'transparent',
+                      color: isCurrentWord ? '#fff' : colors.text,
+                      padding: isCurrentWord
+                        ? `${Math.round(fontSize * 0.1)}px ${Math.round(fontSize * 0.2)}px`
+                        : isOnCurrentLine
+                          ? `${Math.round(fontSize * 0.05)}px 0`
+                          : '0',
+                      borderRadius: `${Math.round(fontSize * 0.15)}px`,
+                      transition: 'background-color 0.15s, color 0.15s',
+                      display: 'inline'
+                    }}
+                  >
+                    {word.text}
+                    {/* Add space after word */}
+                    {i < currentScene.word_timings.words.length - 1 ? ' ' : ''}
+                  </span>
+                );
+              })}
+            </div>
+          ) : (
+            /* Fallback to paragraph-based rendering when no word timings */
+            stripAllTags(currentScene?.polished_text || '')?.split('\n').map((paragraph, i) => (
+              <p key={i} style={{ marginBottom: '1.5em' }}>
+                {paragraph}
+              </p>
+            ))
+          )}
         </div>
 
         {/* CYOA Choices */}
@@ -529,7 +862,7 @@ export default function Reader() {
             <p style={{ color: colors.textMuted, marginBottom: '30px' }}>
               Thank you for reading "{story.title}"
             </p>
-            <div style={{ display: 'flex', gap: '15px', justifyContent: 'center', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', flexWrap: 'wrap' }}>
               <button
                 onClick={() => goToScene(0)}
                 style={{
@@ -610,25 +943,45 @@ export default function Reader() {
             ◀
           </button>
 
-          {/* Play/Pause */}
+          {/* Play/Pause with Loading/Buffering indicator */}
           {currentScene?.audio_url && (
             <button
               onClick={togglePlayPause}
+              disabled={audioLoading}
               style={{
-                background: colors.accent,
+                background: audioLoading || audioBuffering ? colors.textMuted : colors.accent,
                 border: 'none',
                 color: 'white',
                 width: '60px',
                 height: '60px',
                 borderRadius: '50%',
                 fontSize: '24px',
-                cursor: 'pointer',
+                cursor: audioLoading ? 'wait' : 'pointer',
                 display: 'flex',
                 alignItems: 'center',
-                justifyContent: 'center'
+                justifyContent: 'center',
+                position: 'relative',
+                opacity: audioBuffering ? 0.8 : 1,
+                transition: 'all 0.2s ease'
               }}
             >
-              {isPlaying ? '⏸' : '▶'}
+              {audioLoading ? (
+                <span style={{
+                  width: '24px',
+                  height: '24px',
+                  border: '3px solid rgba(255,255,255,0.3)',
+                  borderTop: '3px solid white',
+                  borderRadius: '50%',
+                  animation: 'spin 1s linear infinite'
+                }} />
+              ) : audioBuffering ? (
+                <span style={{
+                  fontSize: '20px',
+                  animation: 'pulse 1s ease-in-out infinite'
+                }}>⏳</span>
+              ) : (
+                isPlaying ? '⏸' : '▶'
+              )}
             </button>
           )}
 
@@ -685,27 +1038,26 @@ export default function Reader() {
           >
             <h3 style={{ margin: '0 0 20px', color: colors.text }}>Reading Settings</h3>
 
-            {/* Theme */}
+            {/* Theme - uses ThemeContext for persistence across pages */}
             <div style={{ marginBottom: '20px' }}>
               <label style={{ fontSize: '14px', color: colors.textMuted }}>Theme</label>
               <div style={{ display: 'flex', gap: '10px', marginTop: '8px' }}>
-                {Object.keys(THEMES).map(t => (
+                {themes.map(t => (
                   <button
-                    key={t}
-                    onClick={() => setTheme(t)}
+                    key={t.id}
+                    onClick={() => setTheme(t.id)}
                     style={{
                       flex: 1,
                       padding: '10px',
-                      background: THEMES[t].bg,
-                      color: THEMES[t].text,
-                      border: theme === t ? `2px solid ${colors.accent}` : '2px solid transparent',
+                      background: t.bg,
+                      color: t.text,
+                      border: colors.id === t.id ? `2px solid ${colors.accent}` : '2px solid transparent',
                       borderRadius: '8px',
                       cursor: 'pointer',
-                      fontSize: '12px',
-                      textTransform: 'capitalize'
+                      fontSize: '12px'
                     }}
                   >
-                    {t}
+                    {t.name}
                   </button>
                 ))}
               </div>
@@ -1014,7 +1366,7 @@ export default function Reader() {
                   overflow: 'hidden',
                   textOverflow: 'ellipsis'
                 }}>
-                  {scene.summary || stripCharacterTags(scene.polished_text || '')?.substring(0, 40) + '...'}
+                  {scene.summary || stripAllTags(scene.polished_text || '')?.substring(0, 40) + '...'}
                 </span>
                 {scene.mood && (
                   <span style={{
@@ -1045,6 +1397,231 @@ export default function Reader() {
             </button>
           </div>
         </div>
+      )}
+
+      {/* Export Modal */}
+      {showExportModal && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(0,0,0,0.7)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 200
+        }} onClick={() => setShowExportModal(false)}>
+          <div
+            style={{
+              background: colors.bg,
+              padding: '30px',
+              borderRadius: '16px',
+              maxWidth: '450px',
+              width: '90%',
+              border: `1px solid ${colors.textMuted}33`
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 style={{ margin: '0 0 20px', color: colors.text }}>Download Story</h3>
+
+            {!exportInfo && (
+              <div style={{ textAlign: 'center', padding: '20px', color: colors.textMuted }}>
+                Loading export options...
+              </div>
+            )}
+
+            {exportInfo?.error && (
+              <div style={{ textAlign: 'center', padding: '20px', color: '#ef4444' }}>
+                {exportInfo.error}
+              </div>
+            )}
+
+            {exportInfo && !exportInfo.error && (
+              <div>
+                <div style={{
+                  padding: '15px',
+                  background: colors.highlight,
+                  borderRadius: '8px',
+                  marginBottom: '20px',
+                  fontSize: '14px',
+                  color: colors.textMuted
+                }}>
+                  <div><strong style={{ color: colors.text }}>{exportInfo.title || 'Story'}</strong></div>
+                  <div style={{ marginTop: '5px' }}>
+                    {exportInfo.segmentCount} scenes
+                    {exportInfo.duration ? ` • ${Math.round(exportInfo.duration / 60)} min` : ''}
+                  </div>
+                </div>
+
+                <div style={{ marginBottom: '20px' }}>
+                  <h4 style={{ margin: '0 0 10px', color: colors.text, fontSize: '14px' }}>Audio Download</h4>
+
+                  <button
+                    onClick={() => handleExport({ includeSfx: false })}
+                    disabled={exporting}
+                    style={{
+                      width: '100%',
+                      padding: '12px',
+                      background: colors.accent,
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '8px',
+                      cursor: exporting ? 'not-allowed' : 'pointer',
+                      opacity: exporting ? 0.7 : 1,
+                      marginBottom: '10px',
+                      fontWeight: '500'
+                    }}
+                  >
+                    {exporting ? 'Preparing Download...' : 'Download MP3 (Narration Only)'}
+                  </button>
+
+                  {exportInfo.hasSfx && (
+                    <button
+                      onClick={() => handleExport({ includeSfx: true })}
+                      disabled={exporting}
+                      style={{
+                        width: '100%',
+                        padding: '12px',
+                        background: 'transparent',
+                        color: colors.accent,
+                        border: `2px solid ${colors.accent}`,
+                        borderRadius: '8px',
+                        cursor: exporting ? 'not-allowed' : 'pointer',
+                        opacity: exporting ? 0.7 : 1
+                      }}
+                    >
+                      {exporting ? 'Preparing...' : 'Download MP3 with Sound Effects'}
+                    </button>
+                  )}
+                </div>
+
+                {exportInfo.subtitleFormats?.length > 0 && (
+                  <div>
+                    <h4 style={{ margin: '0 0 10px', color: colors.text, fontSize: '14px' }}>Subtitles</h4>
+                    <div style={{ display: 'flex', gap: '10px' }}>
+                      <button
+                        onClick={() => handleExport({ format: 'srt' })}
+                        style={{
+                          flex: 1,
+                          padding: '10px',
+                          background: colors.highlight,
+                          color: colors.text,
+                          border: 'none',
+                          borderRadius: '8px',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        Download .SRT
+                      </button>
+                      <button
+                        onClick={() => handleExport({ format: 'vtt' })}
+                        style={{
+                          flex: 1,
+                          padding: '10px',
+                          background: colors.highlight,
+                          color: colors.text,
+                          border: 'none',
+                          borderRadius: '8px',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        Download .VTT
+                      </button>
+                    </div>
+                    <p style={{
+                      marginTop: '8px',
+                      fontSize: '12px',
+                      color: colors.textMuted
+                    }}>
+                      Use with external media players
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <button
+              onClick={() => setShowExportModal(false)}
+              style={{
+                width: '100%',
+                marginTop: '20px',
+                padding: '12px',
+                background: 'transparent',
+                color: colors.textMuted,
+                border: `1px solid ${colors.textMuted}33`,
+                borderRadius: '8px',
+                cursor: 'pointer'
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Scroll to Top Button */}
+      {showScrollTop && (
+                  <button
+            style={{
+              position: 'fixed',
+              bottom: '30px',
+              right: '30px',
+              width: '50px',
+              height: '50px',
+              borderRadius: '50%',
+              background: colors.accent,
+              color: 'white',
+              border: 'none',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+              zIndex: 90,
+              opacity: showControls ? 1 : 0.6,
+              transition: 'opacity 0.3s, transform 0.2s',
+              transform: 'translateY(0)'
+            }}
+            onMouseEnter={(e) => e.target.style.transform = 'translateY(-3px)'}
+            onMouseLeave={(e) => e.target.style.transform = 'translateY(0)'}
+            title="Scroll to top"
+            aria-label="Scroll to top"
+          >
+            <ChevronUp size={22} />
+          </button>
+      )}
+
+      {/* Floating fullscreen exit hint - visible in fullscreen mode */}
+      {isFullscreen && (
+                  <button
+            onClick={toggleFullscreen}
+            style={{
+              position: 'fixed',
+              top: '10px',
+              right: '10px',
+              width: '40px',
+              height: '40px',
+              borderRadius: '8px',
+              background: colors.bg + 'cc',
+              color: colors.textMuted,
+              border: `1px solid ${colors.textMuted}44`,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 102,
+              opacity: showControls ? 0 : 0.5,
+              transition: 'opacity 0.3s'
+            }}
+            onMouseEnter={(e) => e.target.style.opacity = 1}
+            onMouseLeave={(e) => e.target.style.opacity = showControls ? 0 : 0.5}
+            title="Exit Fullscreen (Esc)"
+            aria-label="Exit fullscreen"
+          >
+            <Minimize2 size={18} />
+          </button>
       )}
     </div>
   );

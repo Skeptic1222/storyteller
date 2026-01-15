@@ -34,6 +34,8 @@ coverage/
 # Temp files
 *.tmp
 *.temp
+*.backup
+*.bak
 
 # Test screenshots (development artifacts)
 test-screenshot*.png
@@ -75,3 +77,5 @@ debug-*.cjs
 # Database directory (local SQLite if used)
 database/*.db
 database/*.sqlite
+
+.claude-session
