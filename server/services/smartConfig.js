@@ -11,12 +11,16 @@
  * - Sets appropriate content intensity levels
  * - Recommends narrator voice and style
  * - Determines story format (linear, CYOA, etc.)
+ *
+ * P2: Upgraded to use LLM-based analysis via configAnalyzer for better context understanding
+ * Replaces 10+ fragile keyword detection systems with single structured LLM analysis pass
  */
 
 import logger from '../utils/logger.js';
 import { completion, parseJsonResponse } from './openai.js';
 import { getUtilityModel } from './modelSelection.js';
 import { AUTHOR_STYLES } from './authorStyles.js';
+import { analyzePremiseLLM, convertLLMAnalysisToKeywordFormat, generateReasoningFromLLM } from './configAnalyzer.js';
 
 function formatAuthorCatalogLine(id, author) {
   const genres = Array.isArray(author?.genres) ? author.genres.join(', ') : '';
@@ -665,28 +669,40 @@ class SmartConfigEngine {
     this.logger.info('[SmartConfig] Interpreting premise:', premiseText.substring(0, 100));
 
     try {
-      // Step 1: Rule-based keyword extraction (fast)
-      const keywordAnalysis = this.analyzeKeywords(text);
+      // P2: Primary analysis is now LLM-based via configAnalyzer
+      // This replaces the 10+ fragile keyword detection systems with structured LLM analysis
+      let llmAnalysis = null;
 
-      // Step 2: AI-powered deep analysis (for complex premises)
-      let aiAnalysis = null;
-      // Run AI analysis when the prompt is complex OR when keyword analysis finds no signal.
-      // This catches short, entity-driven prompts (e.g., "Conan story") without brittle regex mapping.
-      if (premiseText.length > 50 || (keywordAnalysis.detectedKeywords || []).length === 0) {
-        aiAnalysis = await this.aiAnalyzePremise(premiseText);
+      // Always run LLM analysis for better context understanding
+      // Fallback to keyword-only if LLM analysis fails
+      this.logger.info('[SmartConfig] Running LLM-based analysis (replaces keyword detection)');
+      llmAnalysis = await analyzePremiseLLM(premiseText);
+
+      if (!llmAnalysis) {
+        this.logger.warn('[SmartConfig] LLM analysis failed, falling back to keyword-based analysis');
       }
 
-      // Step 3: Merge analyses and generate config
-      const suggestedConfig = this.generateConfig(keywordAnalysis, aiAnalysis, currentConfig);
+      // Convert LLM analysis to keywordAnalysis format for compatibility with existing config generation
+      const keywordAnalysis = llmAnalysis
+        ? convertLLMAnalysisToKeywordFormat(llmAnalysis)
+        : this.analyzeKeywords(text);
+
+      // Step 3: Generate config from analysis
+      const suggestedConfig = this.generateConfig(keywordAnalysis, null, currentConfig);
+
+      // Use LLM reasoning if available, otherwise use keyword reasoning
+      const reasoning = llmAnalysis
+        ? generateReasoningFromLLM(llmAnalysis)
+        : this.generateReasoning(keywordAnalysis, null);
 
       return {
         success: true,
         analysis: {
-          keywords: keywordAnalysis,
-          ai: aiAnalysis
+          llm: llmAnalysis,
+          fallbackKeywords: llmAnalysis ? null : keywordAnalysis  // Include keywords only if LLM failed
         },
         suggestedConfig,
-        reasoning: this.generateReasoning(keywordAnalysis, aiAnalysis)
+        reasoning
       };
     } catch (error) {
       this.logger.error('[SmartConfig] Error interpreting premise:', error);
@@ -694,7 +710,7 @@ class SmartConfigEngine {
       const keywordAnalysis = this.analyzeKeywords(text);
       return {
         success: true,
-        analysis: { keywords: keywordAnalysis },
+        analysis: { fallbackKeywords: keywordAnalysis },
         suggestedConfig: this.generateConfig(keywordAnalysis, null, currentConfig),
         reasoning: this.generateReasoning(keywordAnalysis, null)
       };
@@ -943,7 +959,7 @@ REQUIRED FIELDS (all must be present):
    - Default: "short_story"
    - ONLY use "cyoa" if user EXPLICITLY says: "choose your own adventure", "interactive", "make choices", "CYOA"
 
-4. audience: One of "children", "ya", "general", "mature"
+4. audience: One of "children", "young_adult", "adult", "all_ages", "general", "mature"
 
    CRITICAL - ADULT/EXPLICIT CONTENT DETECTION:
    - If premise contains ANY sexual content (sex, erotic, explicit, adult scenes, intimacy, etc.) → audience MUST be "mature"
