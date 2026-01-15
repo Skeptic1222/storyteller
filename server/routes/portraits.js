@@ -12,8 +12,13 @@ import {
 } from '../services/portraitGenerator.js';
 import { pool } from '../database/pool.js';
 import { logger } from '../utils/logger.js';
+import { wrapRoutes, NotFoundError, ValidationError } from '../middleware/errorHandler.js';
+import { rateLimiters } from '../middleware/rateLimiter.js';
+import { authenticateToken, requireAuth } from '../middleware/auth.js';
 
 const router = express.Router();
+wrapRoutes(router); // Auto-wrap async handlers for error catching
+router.use(authenticateToken, requireAuth);
 
 /**
  * GET /api/portraits/styles
@@ -36,7 +41,7 @@ router.get('/styles', (req, res) => {
  * POST /api/portraits/generate
  * Generate a portrait from character data (not saved to DB)
  */
-router.post('/generate', async (req, res) => {
+router.post('/generate', rateLimiters.imageGeneration, async (req, res) => {
   try {
     const { character, style = 'fantasy', size = '1024x1024', quality = 'standard' } = req.body;
 
@@ -60,7 +65,7 @@ router.post('/generate', async (req, res) => {
  * POST /api/portraits/character/:characterId
  * Generate and save portrait for an existing character
  */
-router.post('/character/:characterId', async (req, res) => {
+router.post('/character/:characterId', rateLimiters.imageGeneration, async (req, res) => {
   try {
     const { characterId } = req.params;
     const { sessionId, style = 'fantasy' } = req.body;
@@ -85,7 +90,7 @@ router.post('/character/:characterId', async (req, res) => {
  * POST /api/portraits/session/:sessionId/cover
  * Generate cover image for a story session
  */
-router.post('/session/:sessionId/cover', async (req, res) => {
+router.post('/session/:sessionId/cover', rateLimiters.imageGeneration, async (req, res) => {
   try {
     const { sessionId } = req.params;
     const { style = 'painterly', quality = 'hd' } = req.body;
@@ -137,7 +142,7 @@ router.post('/session/:sessionId/cover', async (req, res) => {
  * POST /api/portraits/scene
  * Generate illustration for a scene
  */
-router.post('/scene', async (req, res) => {
+router.post('/scene', rateLimiters.imageGeneration, async (req, res) => {
   try {
     const { sceneText, sceneId, style = 'storybook' } = req.body;
 
@@ -205,7 +210,7 @@ router.get('/session/:sessionId/characters', async (req, res) => {
  * POST /api/portraits/batch
  * Generate portraits for multiple characters
  */
-router.post('/batch', async (req, res) => {
+router.post('/batch', rateLimiters.strict, async (req, res) => {
   try {
     const { sessionId, characterIds, style = 'fantasy' } = req.body;
 

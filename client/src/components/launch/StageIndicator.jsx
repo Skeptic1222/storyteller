@@ -31,7 +31,7 @@ const StageIndicator = memo(function StageIndicator({
       case STATUS.IN_PROGRESS:
         return <Loader2 className="w-4 h-4 text-golden-400 animate-spin" />;
       default:
-        return <div className="w-4 h-4 rounded-full border-2 border-night-600" />;
+        return <div className="w-4 h-4 rounded-full border-2 border-slate-600" />;
     }
   };
 
@@ -47,7 +47,7 @@ const StageIndicator = memo(function StageIndicator({
       case STATUS.IN_PROGRESS:
         return 'border-golden-400/50 bg-golden-400/10 animate-pulse';
       default:
-        return 'border-night-700 bg-night-800/50';
+        return 'border-slate-700 bg-slate-800/50';
     }
   };
 
@@ -58,13 +58,13 @@ const StageIndicator = memo(function StageIndicator({
     `}>
       <div className={`
         w-8 h-8 rounded-lg flex items-center justify-center
-        ${status === STATUS.IN_PROGRESS ? config.bgColor : 'bg-night-700/50'}
+        ${status === STATUS.IN_PROGRESS ? config.bgColor : 'bg-slate-700/50'}
       `}>
         <Icon className={`w-4 h-4 ${
           status === STATUS.IN_PROGRESS ? config.activeColor :
           status === STATUS.SUCCESS ? 'text-green-400' :
           status === STATUS.ERROR ? 'text-red-400' :
-          'text-night-500'
+          'text-slate-500'
         }`} />
       </div>
 
@@ -73,14 +73,14 @@ const StageIndicator = memo(function StageIndicator({
           <span className={`text-sm font-medium ${
             status === STATUS.SUCCESS ? 'text-green-400' :
             status === STATUS.ERROR ? 'text-red-400' :
-            status === STATUS.IN_PROGRESS ? 'text-night-100' :
-            'text-night-400'
+            status === STATUS.IN_PROGRESS ? 'text-slate-100' :
+            'text-slate-400'
           }`}>
             {config.name}
           </span>
         </div>
         {details?.message && status === STATUS.IN_PROGRESS && (
-          <p className="text-xs text-night-500 truncate mt-0.5">
+          <p className="text-xs text-slate-500 truncate mt-0.5">
             {details.message}
           </p>
         )}
@@ -101,10 +101,10 @@ const StageIndicator = memo(function StageIndicator({
         {status === STATUS.ERROR && canRetry && onRetry && !isRetrying && (
           <button
             onClick={() => onRetry(stage)}
-            className="p-1.5 rounded-lg bg-night-700 hover:bg-night-600 transition-colors"
+            className="p-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 transition-colors"
             title="Retry this step"
           >
-            <RotateCcw className="w-3.5 h-3.5 text-night-300" />
+            <RotateCcw className="w-3.5 h-3.5 text-slate-300" />
           </button>
         )}
         {getStatusIcon()}

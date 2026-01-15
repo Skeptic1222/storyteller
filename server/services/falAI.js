@@ -389,6 +389,92 @@ function selectProvider(context) {
   return 'dall-e';
 }
 
+/**
+ * Generate a portrait image using Fal AI's flux model (no reference needed)
+ *
+ * @param {Object} params
+ * @param {string} params.prompt - Portrait description
+ * @param {string} params.size - Image size (default: '1024x1024')
+ * @param {boolean} params.saveLocally - Save locally (default: true)
+ * @returns {Promise<Object>} Image result with imageUrl
+ */
+async function generatePortrait(params) {
+  const {
+    prompt,
+    size = '1024x1024',
+    saveLocally = true,
+    style = 'fantasy'
+  } = params;
+
+  if (!prompt || typeof prompt !== 'string' || prompt.trim().length === 0) {
+    throw new Error('Valid prompt required for Fal AI portrait');
+  }
+
+  if (!isAvailable()) {
+    throw new Error('Fal AI is not available - check FAL_KEY environment variable');
+  }
+
+  // Use flux-pro for high quality portraits
+  const model = process.env.FAL_PORTRAIT_MODEL || 'fal-ai/flux-pro/v1.1';
+  const imageSize = SIZE_MAPPING[size] || 'square_hd';
+
+  // Enhance prompt for portrait quality
+  const enhancedPrompt = `${prompt}, ${style} art style, detailed character portrait, masterful composition, professional lighting`;
+
+  logger.info(`[FalAI] Generating portrait with ${model}`);
+  logger.debug(`[FalAI] Prompt: ${enhancedPrompt.substring(0, 100)}...`);
+
+  const startTime = Date.now();
+
+  try {
+    const result = await fal.subscribe(model, {
+      input: {
+        prompt: enhancedPrompt,
+        image_size: imageSize,
+        num_images: 1,
+        enable_safety_checker: true,
+        safety_tolerance: '2', // Moderate tolerance
+        output_format: 'png'
+      }
+    });
+
+    const duration = Date.now() - startTime;
+    logger.info(`[FalAI] Portrait generated in ${duration}ms`);
+
+    // Track usage
+    await trackFalAIUsage(model, 'portrait', duration);
+
+    if (!result.data?.images?.[0]?.url) {
+      throw new Error('No image returned from Fal AI');
+    }
+
+    const imageUrl = result.data.images[0].url;
+
+    // Save locally if requested
+    if (saveLocally) {
+      const localUrl = await downloadAndSaveImage(imageUrl, 'portrait');
+      return {
+        success: true,
+        imageUrl: localUrl,
+        remoteUrl: imageUrl,
+        model,
+        duration
+      };
+    }
+
+    return {
+      success: true,
+      imageUrl,
+      model,
+      duration
+    };
+
+  } catch (error) {
+    logger.error('[FalAI] Portrait generation failed:', error.message);
+    throw error;
+  }
+}
+
 export {
   generateWithCharacterReference,
   generateSceneWithCharacters,
@@ -397,7 +483,8 @@ export {
   isAvailable,
   selectProvider,
   validateImageUrl,
-  downloadAndSaveImage
+  downloadAndSaveImage,
+  generatePortrait
 };
 
 export default {
@@ -406,5 +493,6 @@ export default {
   storeCharacterReference,
   getCharactersWithReferences,
   isAvailable,
-  selectProvider
+  selectProvider,
+  generatePortrait
 };

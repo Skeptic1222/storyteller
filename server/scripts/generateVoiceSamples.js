@@ -7,6 +7,7 @@
 
 import { ElevenLabsService } from '../services/elevenlabs.js';
 import { VOICE_PREVIEWS, NARRATOR_STYLES } from '../services/conversationEngine.js';
+import { normalizeStyleValue } from '../utils/styleUtils.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -76,18 +77,13 @@ async function generateSamples() {
       try {
         console.log(`  - ${style}: generating...`);
 
-        // Normalize style value from 0-100 to 0.0-1.0 if needed
-        const styleValue = styleSettings.style !== undefined
-          ? (styleSettings.style > 1 ? styleSettings.style / 100 : styleSettings.style)
-          : 0;
-
         const audioBuffer = await elevenlabs.textToSpeech(
           sampleText,
           voice.id,
           {
             stability: styleSettings.stability || 0.5,
             similarity_boost: styleSettings.similarity_boost || 0.75,
-            style: styleValue,
+            style: normalizeStyleValue(styleSettings.style, 0), // uses styleUtils.js
             model_id: 'eleven_multilingual_v2'
           }
         );

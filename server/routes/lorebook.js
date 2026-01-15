@@ -6,8 +6,10 @@
 import { Router } from 'express';
 import { LorebookService } from '../services/lorebook.js';
 import { logger } from '../utils/logger.js';
+import { wrapRoutes, NotFoundError, ValidationError } from '../middleware/errorHandler.js';
 
 const router = Router();
+wrapRoutes(router); // Auto-wrap async handlers for error catching
 
 /**
  * GET /api/lorebook/:sessionId

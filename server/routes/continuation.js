@@ -11,14 +11,43 @@ import {
   getStorySeries
 } from '../services/storyContinuation.js';
 import { logger } from '../utils/logger.js';
+import { wrapRoutes } from '../middleware/errorHandler.js';
+import { authenticateToken, requireAuth } from '../middleware/auth.js';
+import { pool } from '../database/pool.js';
 
 const router = express.Router();
+wrapRoutes(router); // Auto-wrap async handlers for error catching
+router.use(authenticateToken, requireAuth);
+
+async function requireSessionOwner(req, res, next) {
+  try {
+    const { sessionId } = req.params;
+    const result = await pool.query(
+      'SELECT user_id FROM story_sessions WHERE id = $1',
+      [sessionId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Story session not found' });
+    }
+
+    const ownerId = result.rows[0].user_id;
+    if (ownerId !== req.user.id && !req.user.is_admin) {
+      return res.status(403).json({ error: 'Not authorized to access this story' });
+    }
+
+    return next();
+  } catch (error) {
+    logger.error('Error verifying session owner:', error);
+    return res.status(500).json({ error: 'Failed to verify session access' });
+  }
+}
 
 /**
  * GET /api/continuation/:sessionId/ideas
  * Generate continuation ideas for a completed story
  */
-router.get('/:sessionId/ideas', async (req, res) => {
+router.get('/:sessionId/ideas', requireSessionOwner, async (req, res) => {
   try {
     const { sessionId } = req.params;
 
@@ -38,18 +67,17 @@ router.get('/:sessionId/ideas', async (req, res) => {
  * POST /api/continuation/:sessionId/create
  * Create a new continuation story
  */
-router.post('/:sessionId/create', async (req, res) => {
+router.post('/:sessionId/create', requireSessionOwner, async (req, res) => {
   try {
     const { sessionId } = req.params;
     const {
-      userId,
       continuationIdea,
       preserveCharacters = true,
       preserveLore = true
     } = req.body;
 
     const result = await createContinuation(sessionId, {
-      userId,
+      userId: req.user.id,
       continuationIdea,
       preserveCharacters,
       preserveLore
@@ -69,7 +97,7 @@ router.post('/:sessionId/create', async (req, res) => {
  * GET /api/continuation/:sessionId
  * Get all continuations for a story
  */
-router.get('/:sessionId', async (req, res) => {
+router.get('/:sessionId', requireSessionOwner, async (req, res) => {
   try {
     const { sessionId } = req.params;
 
@@ -89,7 +117,7 @@ router.get('/:sessionId', async (req, res) => {
  * GET /api/continuation/:sessionId/context
  * Get continuation context (for orchestrator use)
  */
-router.get('/:sessionId/context', async (req, res) => {
+router.get('/:sessionId/context', requireSessionOwner, async (req, res) => {
   try {
     const { sessionId } = req.params;
 
@@ -110,7 +138,7 @@ router.get('/:sessionId/context', async (req, res) => {
  * GET /api/continuation/:sessionId/series
  * Get the full story series
  */
-router.get('/:sessionId/series', async (req, res) => {
+router.get('/:sessionId/series', requireSessionOwner, async (req, res) => {
   try {
     const { sessionId } = req.params;
 

@@ -107,7 +107,7 @@ const ChoiceTree = memo(function ChoiceTree({
       <div key={node.id} className="relative">
         {/* Connection line from parent */}
         {depth > 0 && (
-          <div className="absolute left-3 -top-3 w-px h-3 bg-night-600" />
+          <div className="absolute left-3 -top-3 w-px h-3 bg-slate-600" />
         )}
 
         {/* Node */}
@@ -115,8 +115,8 @@ const ChoiceTree = memo(function ChoiceTree({
           className={`
             flex items-center gap-2 py-2 px-3 rounded-lg cursor-pointer transition-all
             ${node.isCurrent ? 'bg-golden-400/20 border border-golden-400' : ''}
-            ${isSelected && !node.isCurrent ? 'bg-night-700 border border-night-500' : ''}
-            ${!node.isCurrent && !isSelected ? 'hover:bg-night-800' : ''}
+            ${isSelected && !node.isCurrent ? 'bg-slate-700 border border-slate-500' : ''}
+            ${!node.isCurrent && !isSelected ? 'hover:bg-slate-800' : ''}
           `}
           style={{ marginLeft: `${depth * 24}px` }}
           onClick={() => handleNodeClick(node)}
@@ -125,12 +125,12 @@ const ChoiceTree = memo(function ChoiceTree({
           {hasChildren ? (
             <button
               onClick={(e) => { e.stopPropagation(); toggleNode(depth); }}
-              className="p-0.5 hover:bg-night-600 rounded"
+              className="p-0.5 hover:bg-slate-600 rounded"
             >
               {isExpanded ? (
-                <ChevronDown className="w-4 h-4 text-night-400" />
+                <ChevronDown className="w-4 h-4 text-slate-400" />
               ) : (
-                <ChevronRight className="w-4 h-4 text-night-400" />
+                <ChevronRight className="w-4 h-4 text-slate-400" />
               )}
             </button>
           ) : (
@@ -145,11 +145,11 @@ const ChoiceTree = memo(function ChoiceTree({
           ) : node.hasCheckpoint ? (
             <CheckCircle className="w-4 h-4 text-amber-400" />
           ) : (
-            <Circle className="w-4 h-4 text-night-500" />
+            <Circle className="w-4 h-4 text-slate-500" />
           )}
 
           {/* Node label */}
-          <span className={`text-sm flex-1 ${node.isCurrent ? 'text-golden-400 font-medium' : 'text-night-200'}`}>
+          <span className={`text-sm flex-1 ${node.isCurrent ? 'text-golden-400 font-medium' : 'text-slate-200'}`}>
             {node.label}
           </span>
 
@@ -178,7 +178,7 @@ const ChoiceTree = memo(function ChoiceTree({
             {/* Vertical line connecting children */}
             {node.children.length > 1 && (
               <div
-                className="absolute left-6 top-0 w-px bg-night-600"
+                className="absolute left-6 top-0 w-px bg-slate-600"
                 style={{
                   height: `calc(100% - 20px)`,
                   marginLeft: `${depth * 24}px`
@@ -195,14 +195,14 @@ const ChoiceTree = memo(function ChoiceTree({
   };
 
   return (
-    <div className="bg-night-800/90 rounded-xl p-4 max-h-80 overflow-y-auto">
+    <div className="bg-slate-800/90 rounded-xl p-4 max-h-80 overflow-y-auto">
       {/* Header */}
-      <div className="flex items-center justify-between mb-4 pb-2 border-b border-night-700">
+      <div className="flex items-center justify-between mb-4 pb-2 border-b border-slate-700">
         <h3 className="text-amber-400 font-medium text-sm flex items-center gap-2">
           <MapPin className="w-4 h-4" />
           Your Journey
         </h3>
-        <span className="text-night-500 text-xs">
+        <span className="text-slate-500 text-xs">
           {choiceHistory.length} choices made
         </span>
       </div>
@@ -213,7 +213,7 @@ const ChoiceTree = memo(function ChoiceTree({
       </div>
 
       {/* Legend */}
-      <div className="mt-4 pt-2 border-t border-night-700 flex items-center gap-4 text-[10px] text-night-500">
+      <div className="mt-4 pt-2 border-t border-slate-700 flex items-center gap-4 text-[10px] text-slate-500">
         <div className="flex items-center gap-1">
           <Circle className="w-3 h-3 text-golden-400 fill-golden-400" />
           <span>Current</span>

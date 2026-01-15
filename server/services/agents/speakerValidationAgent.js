@@ -84,10 +84,21 @@ export async function validateAndReconcileSpeakers(
     };
   }
 
-  // Build a map of existing character names (lowercase for matching)
+  // Build maps for name matching (supports both full names and first names)
   const existingCharacterNames = new Set(
     existingCharacters.map(c => c.name.toLowerCase())
   );
+
+  // Also build first-name map for partial matching (e.g., "Mara" matches "Mara Ellery")
+  const firstNameToFullName = new Map();
+  for (const char of existingCharacters) {
+    const fullName = char.name.toLowerCase();
+    const firstName = fullName.split(' ')[0];
+    // Only add first name mapping if it's not already a full name
+    if (!existingCharacterNames.has(firstName)) {
+      firstNameToFullName.set(firstName, char.name);
+    }
+  }
 
   // Collect all unique speakers from dialogue_map
   const allSpeakers = [...new Set(
@@ -97,14 +108,22 @@ export async function validateAndReconcileSpeakers(
   )];
 
   logger.info(`[SpeakerValidation] Unique speakers in dialogue: ${allSpeakers.join(', ')}`);
+  logger.info(`[SpeakerValidation] Character names: ${[...existingCharacterNames].join(', ')}`);
+  logger.info(`[SpeakerValidation] First name mappings: ${[...firstNameToFullName.entries()].map(([f, full]) => `${f}->${full}`).join(', ') || 'none'}`);
 
-  // Categorize speakers
+  // Categorize speakers - check both full name and first name matches
   const knownSpeakers = [];
   const unknownSpeakers = [];
 
   for (const speaker of allSpeakers) {
-    if (existingCharacterNames.has(speaker.toLowerCase())) {
+    const speakerLower = speaker.toLowerCase();
+    if (existingCharacterNames.has(speakerLower)) {
+      // Exact full name match
       knownSpeakers.push(speaker);
+    } else if (firstNameToFullName.has(speakerLower)) {
+      // First name match - speaker is using first name only
+      knownSpeakers.push(speaker);
+      logger.info(`[SpeakerValidation] First-name match: "${speaker}" -> "${firstNameToFullName.get(speakerLower)}"`);
     } else {
       unknownSpeakers.push(speaker);
     }
@@ -118,9 +137,19 @@ export async function validateAndReconcileSpeakers(
   const stillUnknown = [];
 
   for (const speaker of unknownSpeakers) {
-    const newChar = newCharacters?.find(
-      c => c.name.toLowerCase() === speaker.toLowerCase()
+    const speakerLower = speaker.toLowerCase();
+
+    // Try exact match first, then first-name match
+    let newChar = newCharacters?.find(
+      c => c.name.toLowerCase() === speakerLower
     );
+
+    // If no exact match, try first-name match
+    if (!newChar) {
+      newChar = newCharacters?.find(
+        c => c.name.toLowerCase().split(' ')[0] === speakerLower
+      );
+    }
 
     if (newChar) {
       charactersToCreate.push(newChar);
@@ -130,13 +159,19 @@ export async function validateAndReconcileSpeakers(
     }
   }
 
-  // FAIL LOUD: If we have speakers not in ANY list, this is a critical error
+  // AUTO-CREATE: If we have speakers not in ANY list, auto-create them as minor characters
+  // This is more lenient than FAIL_LOUD because Venice/uncensored models sometimes introduce
+  // characters without properly declaring them in new_characters array
   if (stillUnknown.length > 0) {
-    const errorMsg = `SPEAKER VALIDATION FAILED: The following speakers are not in the character list ` +
-      `and were not declared as new characters: [${stillUnknown.join(', ')}]. ` +
-      `This indicates a bug in generateSceneWithDialogue() - every speaker must be accounted for.`;
-    logger.error(`[SpeakerValidation] ${errorMsg}`);
-    throw new Error(errorMsg);
+    logger.warn(`[SpeakerValidation] AUTO-CREATING ${stillUnknown.length} undeclared speakers: [${stillUnknown.join(', ')}]`);
+    for (const speaker of stillUnknown) {
+      charactersToCreate.push({
+        name: speaker,
+        gender: 'unknown',
+        role: 'minor',
+        description: `Minor character introduced in scene: ${speaker}`
+      });
+    }
   }
 
   // Create new minor characters in the database
@@ -240,10 +275,16 @@ export async function validateAndReconcileSpeakers(
 
   const allVoiceMap = {};
   for (const row of allVoicesResult.rows) {
-    allVoiceMap[row.name.toLowerCase()] = row.elevenlabs_voice_id;
+    const fullName = row.name.toLowerCase();
+    allVoiceMap[fullName] = row.elevenlabs_voice_id;
+    // Also add first-name mapping for speakers who use first names only
+    const firstName = fullName.split(' ')[0];
+    if (firstName && firstName !== fullName) {
+      allVoiceMap[firstName] = row.elevenlabs_voice_id;
+    }
   }
 
-  // Check that every speaker has a voice
+  // Check that every speaker has a voice (supports both full names and first names)
   const speakersWithoutVoices = allSpeakers.filter(
     s => !allVoiceMap[s.toLowerCase()]
   );

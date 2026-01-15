@@ -14,18 +14,21 @@ import {
   getComments
 } from '../services/storySharing.js';
 import { logger } from '../utils/logger.js';
+import { wrapRoutes } from '../middleware/errorHandler.js';
+import { authenticateToken, requireAuth } from '../middleware/auth.js';
+import { pool } from '../database/pool.js';
 
 const router = express.Router();
+wrapRoutes(router); // Auto-wrap async handlers for error catching
 
 /**
  * POST /api/sharing/create
  * Create a new share link for a story
  */
-router.post('/create', async (req, res) => {
+router.post('/create', authenticateToken, requireAuth, async (req, res) => {
   try {
     const {
       sessionId,
-      userId,
       expiresInDays,
       allowComments,
       isPublic,
@@ -36,8 +39,20 @@ router.post('/create', async (req, res) => {
       return res.status(400).json({ error: 'Session ID required' });
     }
 
+    const sessionCheck = await pool.query(
+      'SELECT user_id FROM story_sessions WHERE id = $1',
+      [sessionId]
+    );
+    if (sessionCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Story session not found' });
+    }
+    const ownerId = sessionCheck.rows[0].user_id;
+    if (ownerId !== req.user.id && !req.user.is_admin) {
+      return res.status(403).json({ error: 'Not authorized to share this story' });
+    }
+
     const result = await createShareLink(sessionId, {
-      userId,
+      userId: req.user.id,
       expiresInDays,
       allowComments,
       isPublic,
@@ -102,10 +117,10 @@ router.post('/story/:shareCode/access', async (req, res) => {
  * GET /api/sharing/session/:sessionId
  * Get all share links for a session
  */
-router.get('/session/:sessionId', async (req, res) => {
+router.get('/session/:sessionId', authenticateToken, requireAuth, async (req, res) => {
   try {
     const { sessionId } = req.params;
-    const { userId } = req.query;
+    const userId = req.user.id;
 
     const shares = await getSessionShares(sessionId, userId);
 
@@ -123,12 +138,11 @@ router.get('/session/:sessionId', async (req, res) => {
  * DELETE /api/sharing/:shareId
  * Delete a share link
  */
-router.delete('/:shareId', async (req, res) => {
+router.delete('/:shareId', authenticateToken, requireAuth, async (req, res) => {
   try {
     const { shareId } = req.params;
-    const { userId } = req.body;
 
-    await deleteShareLink(shareId, userId);
+    await deleteShareLink(shareId, req.user.id);
 
     res.json({ success: true });
   } catch (error) {
@@ -141,16 +155,12 @@ router.delete('/:shareId', async (req, res) => {
  * PUT /api/sharing/:shareId
  * Update share settings
  */
-router.put('/:shareId', async (req, res) => {
+router.put('/:shareId', authenticateToken, requireAuth, async (req, res) => {
   try {
     const { shareId } = req.params;
-    const { userId, ...settings } = req.body;
+    const { ...settings } = req.body;
 
-    if (!userId) {
-      return res.status(400).json({ error: 'User ID required' });
-    }
-
-    const result = await updateShareSettings(shareId, userId, settings);
+    const result = await updateShareSettings(shareId, req.user.id, settings);
 
     res.json({
       success: true,
@@ -196,7 +206,7 @@ router.get('/discover', async (req, res) => {
  * POST /api/sharing/story/:shareCode/comment
  * Add a comment to a shared story
  */
-router.post('/story/:shareCode/comment', async (req, res) => {
+router.post('/story/:shareCode/comment', authenticateToken, requireAuth, async (req, res) => {
   try {
     const { shareCode } = req.params;
     const { comment, authorName } = req.body;

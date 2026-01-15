@@ -2,7 +2,7 @@
  * Client-to-Server Logger
  *
  * Sends client-side logs to the server for unified debugging.
- * All logs appear in the server's storyteller.log file with [Client] prefix.
+ * Logs appear in the server log files with a [Client] prefix.
  */
 
 let socketRef = null;

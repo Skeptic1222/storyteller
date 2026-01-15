@@ -20,6 +20,7 @@
 import { pool } from '../database/pool.js';
 import { logger } from '../utils/logger.js';
 import { ElevenLabsService } from './elevenlabs.js';
+import { stripTags } from './agents/tagParser.js';
 import { SFXCoordinatorAgent } from './agents/sfxCoordinator.js';
 import { ValidationAgent } from './agents/validationAgent.js';
 import { SafetyAgent } from './agents/safetyAgent.js';
@@ -50,6 +51,14 @@ const STATUS = {
   IN_PROGRESS: 'in_progress',
   SUCCESS: 'success',
   ERROR: 'error'
+};
+
+// Launch progress ranges (overall 70-100% after story generation completes)
+const LAUNCH_PROGRESS_RANGES = {
+  [STAGES.VOICES]: { start: 70, end: 82 },
+  [STAGES.SFX]: { start: 82, end: 92 },
+  [STAGES.COVER]: { start: 92, end: 97 },
+  [STAGES.QA]: { start: 97, end: 100 }
 };
 
 /**
@@ -156,12 +165,22 @@ export class LaunchSequenceManager {
   /**
    * Emit overall progress update
    */
-  emitProgress(message, percent) {
+  emitProgress(message, percent, stage = null) {
     this.io.to(this.sessionId).emit('launch-progress', {
       message,
       percent,
-      statuses: { ...this.stageStatuses }
+      statuses: { ...this.stageStatuses },
+      stage
     });
+  }
+
+  emitStageProgress(stage, progress, message) {
+    const range = LAUNCH_PROGRESS_RANGES[stage];
+    if (!range) return;
+
+    const clamped = Math.max(0, Math.min(1, progress));
+    const percent = range.start + (range.end - range.start) * clamped;
+    this.emitProgress(message, Math.round(percent), stage);
   }
 
   /**
@@ -214,6 +233,7 @@ export class LaunchSequenceManager {
       // Initialize agent tracking for this session
       agentTracker.initAgentTracking(this.sessionId, this.io);
       usageTracker.setUsageTrackingIO(this.sessionId, this.io);
+      this.emitStageProgress(STAGES.VOICES, 0, 'Starting launch sequence...');
 
       // Stage 1: Voice Assignment
       if (this.cancelled) return null;
@@ -293,6 +313,7 @@ export class LaunchSequenceManager {
     // Start voice agent tracking
     agentTracker.startAgent(this.sessionId, 'voice', 'Analyzing voice requirements...');
     agentTracker.updateAgentProgress(this.sessionId, 'voice', 10, 'Loading voice assignments...');
+    this.emitStageProgress(stage, 0.1, 'Loading voice assignments...');
 
     // === DETAILED PROGRESS: Voice Assignment Start ===
     this.emitDetailedProgress('voice', 'Initializing Voice Casting Agent...', {
@@ -510,6 +531,7 @@ export class LaunchSequenceManager {
       // This is CRITICAL to prevent mis-gendering errors
       if (effectiveMultiVoice && characters.length > 0) {
         agentTracker.updateAgentProgress(this.sessionId, 'voice', 25, `Running bulletproof gender validation for ${characters.length} characters...`);
+        this.emitStageProgress(stage, 0.25, 'Validating character voices...');
 
         this.emitDetailedProgress('gender', '=== BULLETPROOF GENDER VALIDATION STARTING ===', {
           action: 'gender_validation_start',
@@ -647,6 +669,7 @@ export class LaunchSequenceManager {
       const voiceNameCache = new Map();
 
       agentTracker.updateAgentProgress(this.sessionId, 'voice', 30, 'Resolving voice names...');
+      this.emitStageProgress(stage, 0.3, 'Resolving voice names...');
 
       // Helper to get voice name with caching
       const getVoiceNameCached = async (voiceId) => {
@@ -668,6 +691,7 @@ export class LaunchSequenceManager {
       }
 
       agentTracker.updateAgentProgress(this.sessionId, 'voice', 50, `Processing ${characters.length} character voices...`);
+      this.emitStageProgress(stage, 0.5, 'Assigning character voices...');
 
       // Add ALL characters with their voice assignments
       // Track used voices by gender for round-robin within each gender
@@ -794,6 +818,7 @@ export class LaunchSequenceManager {
       // PERSIST voice assignments to database for ALL characters
       // This ensures multi-voice narration works correctly
       agentTracker.updateAgentProgress(this.sessionId, 'voice', 70, 'Saving voice assignments...');
+      this.emitStageProgress(stage, 0.7, 'Saving voice assignments...');
 
       this.emitDetailedProgress('voice', `=== VOICE CASTING COMPLETE ===`, {
         action: 'casting_summary',
@@ -867,6 +892,7 @@ export class LaunchSequenceManager {
         characterCount,
         narrators
       });
+      this.emitStageProgress(stage, 1, message);
 
       // Emit detailed voice assignment update for HUD
       this.io.to(this.sessionId).emit('voice-assignment-update', {
@@ -907,6 +933,7 @@ export class LaunchSequenceManager {
   async runSFXGeneration() {
     const stage = STAGES.SFX;
     this.emitStageStatus(stage, STATUS.IN_PROGRESS, { message: 'Detecting sound effects...' });
+    this.emitStageProgress(stage, 0.05, 'Detecting sound effects...');
 
     // Start SFX agent tracking
     agentTracker.startAgent(this.sessionId, 'sfx', 'Analyzing scene for sound opportunities...');
@@ -982,6 +1009,7 @@ export class LaunchSequenceManager {
         // Try to detect SFX from scene text or synopsis (if SFX coordinator is available)
         this.emitStageStatus(stage, STATUS.IN_PROGRESS, { message: 'Analyzing for sound effects...' });
         agentTracker.updateAgentProgress(this.sessionId, 'sfx', 20, 'AI scanning for sound opportunities...');
+        this.emitStageProgress(stage, 0.2, 'Analyzing for sound effects...');
 
         this.emitDetailedProgress('sfx', 'AI analyzing scene text for sound opportunities...', {
           action: 'sfx_ai_analysis',
@@ -1089,6 +1117,7 @@ export class LaunchSequenceManager {
       if (sfxList.length > 0) {
         this.emitStageStatus(stage, STATUS.IN_PROGRESS, { message: 'Checking SFX cache...' });
         agentTracker.updateAgentProgress(this.sessionId, 'sfx', 50, `Checking cache for ${sfxList.length} sounds...`);
+        this.emitStageProgress(stage, 0.5, 'Checking SFX cache...');
 
         this.emitDetailedProgress('sfx', `Checking SFX library cache for ${sfxList.length} effects...`, {
           action: 'cache_check_start',
@@ -1128,6 +1157,7 @@ export class LaunchSequenceManager {
           missingCount,
           missingSfx: missingSfx.slice(0, 5) // First 5 missing
         });
+        this.emitStageProgress(stage, 0.8, `Found ${cachedCount} cached, ${missingCount} to generate`);
 
         this.emitDetailedProgress('sfx', `=== SFX CACHE CHECK COMPLETE ===`, {
           action: 'cache_check_complete',
@@ -1172,6 +1202,9 @@ export class LaunchSequenceManager {
         missingSfx,
         totalLocalSfx
       });
+      this.emitStageProgress(stage, 1, sfxCount > 0
+        ? `${sfxCount} sound effect${sfxCount > 1 ? 's' : ''} ready`
+        : 'No sound effects needed');
 
       // Emit detailed SFX update for HUD
       // Log raw sfxList for debugging
@@ -1241,6 +1274,7 @@ export class LaunchSequenceManager {
   async runCoverArtValidation() {
     const stage = STAGES.COVER;
     this.emitStageStatus(stage, STATUS.IN_PROGRESS, { message: 'Checking cover art...' });
+    this.emitStageProgress(stage, 0.05, 'Checking cover art...');
 
     // Start cover agent tracking
     agentTracker.startAgent(this.sessionId, 'cover', 'Checking for existing cover art...');
@@ -1280,6 +1314,7 @@ export class LaunchSequenceManager {
         logger.info(`[LaunchSequence] No cover art found, generating...`);
         this.emitStageStatus(stage, STATUS.IN_PROGRESS, { message: 'Generating cover art...' });
         agentTracker.updateAgentProgress(this.sessionId, 'cover', 20, 'Generating cover art with DALL-E...');
+        this.emitStageProgress(stage, 0.2, 'Generating cover art...');
 
         this.emitDetailedProgress('cover', 'No existing cover art - generating with DALL-E 3...', {
           action: 'cover_generation_start',
@@ -1297,6 +1332,7 @@ export class LaunchSequenceManager {
           message: 'Creating cover art with AI...',
           coverUrl: null
         });
+        this.emitStageProgress(stage, 0.2, 'Creating cover art with AI...');
 
         try {
           // Prepare session data for cover generation
@@ -1337,6 +1373,7 @@ export class LaunchSequenceManager {
               message: 'Cover art generated, validating...',
               coverUrl: coverUrl
             });
+            this.emitStageProgress(stage, 0.6, 'Cover art generated, validating...');
           } else {
             logger.error(`[LaunchSequence] CRITICAL: Cover generation returned no URL - this is a REQUIRED step`);
             this.io.to(this.sessionId).emit('cover-generation-progress', {
@@ -1359,6 +1396,7 @@ export class LaunchSequenceManager {
             coverUrl: null,
             canRetry: true
           });
+          this.emitStageProgress(stage, 0.8, 'Cover generation failed - continuing without cover');
 
           // Emit warning status - NOT error (story can proceed)
           this.io.to(this.sessionId).emit('launch-stage-update', {
@@ -1385,6 +1423,7 @@ export class LaunchSequenceManager {
           message: 'Validating existing cover art...',
           coverUrl: coverUrl
         });
+        this.emitStageProgress(stage, 0.5, 'Validating existing cover art...');
       }
 
       if (coverUrl) {
@@ -1392,6 +1431,7 @@ export class LaunchSequenceManager {
 
         // Perform OCR validation using OpenAI Vision
         this.emitStageStatus(stage, STATUS.IN_PROGRESS, { message: 'Validating cover text...' });
+        this.emitStageProgress(stage, 0.7, 'Validating cover text...');
 
         this.emitDetailedProgress('cover', 'Running OCR validation on cover title...', {
           action: 'ocr_validation_start',
@@ -1425,6 +1465,7 @@ export class LaunchSequenceManager {
               title,
               ocrWarning: ocrResult.reason
             });
+            this.emitStageProgress(stage, 1, coverGenerated ? 'Cover generated (text may need review)' : 'Cover art ready (text may need review)');
 
             logger.info(`[LaunchSequence] Cover art validation complete with OCR warning`);
             return;
@@ -1472,6 +1513,7 @@ export class LaunchSequenceManager {
         coverUrl,
         title
       });
+      this.emitStageProgress(stage, 1, message);
 
       // Emit final cover progress
       this.io.to(this.sessionId).emit('cover-generation-progress', {
@@ -1578,6 +1620,7 @@ Minor spelling variations or stylization are acceptable.`
   async runQAChecks() {
     const stage = STAGES.QA;
     this.emitStageStatus(stage, STATUS.IN_PROGRESS, { message: 'Running quality checks...' });
+    this.emitStageProgress(stage, 0.1, 'Running quality checks...');
 
     // Start QA and safety agents
     agentTracker.startAgent(this.sessionId, 'qa', 'Running quality assurance...');
@@ -1604,6 +1647,7 @@ Minor spelling variations or stylization are acceptable.`
       // Safety check with structured intensity analysis (Section 5 of Storyteller Gospel)
       emitQACheck('safety', 'running', 'Analyzing content intensity...');
       agentTracker.updateAgentProgress(this.sessionId, 'safety', 20, 'Analyzing content intensity levels...');
+      this.emitStageProgress(stage, 0.3, 'Analyzing content intensity...');
 
       this.emitDetailedProgress('safety', 'SafetyAgent analyzing content intensity levels...', {
         action: 'safety_analysis_start',
@@ -1627,6 +1671,7 @@ Minor spelling variations or stylization are acceptable.`
 
       if (sceneText) {
         agentTracker.updateAgentProgress(this.sessionId, 'safety', 40, 'Checking intensity levels...');
+        this.emitStageProgress(stage, 0.5, 'Checking intensity levels...');
         safetyResult = await safetyAgent.checkAndAdjust(sceneText, intensityLimits, audience, this.sessionId);
         this.stageResults.safety = safetyResult.report;
 
@@ -1641,6 +1686,7 @@ Minor spelling variations or stylization are acceptable.`
         });
 
         agentTracker.updateAgentProgress(this.sessionId, 'safety', 60, 'Intensity analysis complete');
+        this.emitStageProgress(stage, 0.6, 'Intensity analysis complete');
       }
 
       // Use the validation agent to compile final stats
@@ -1659,6 +1705,7 @@ Minor spelling variations or stylization are acceptable.`
       // Sliders compliance check - reuse configJson from safety check above
       emitQACheck('sliders', 'running', 'Verifying mood/genre sliders...');
       agentTracker.updateAgentProgress(this.sessionId, 'qa', 50, 'Verifying sliders compliance...');
+      this.emitStageProgress(stage, 0.7, 'Verifying mood/genre sliders...');
 
       // Build comprehensive story settings display
       const storySettings = [];
@@ -1771,11 +1818,13 @@ Minor spelling variations or stylization are acceptable.`
       // Continuity check
       emitQACheck('continuity', 'running', 'Checking story continuity...');
       agentTracker.updateAgentProgress(this.sessionId, 'qa', 70, 'Checking continuity...');
+      this.emitStageProgress(stage, 0.85, 'Checking continuity...');
       emitQACheck('continuity', 'passed', 'Continuity verified');
 
       // Engagement check
       emitQACheck('engagement', 'running', 'Analyzing engagement level...');
       agentTracker.updateAgentProgress(this.sessionId, 'qa', 90, 'Analyzing engagement...');
+      this.emitStageProgress(stage, 0.95, 'Analyzing engagement...');
       emitQACheck('engagement', 'passed', 'Engagement level optimal');
 
       // Store the complete validation stats
@@ -1836,6 +1885,7 @@ Minor spelling variations or stylization are acceptable.`
           : 'All quality checks passed',
         warnings: validation.warnings
       });
+      this.emitStageProgress(stage, 1, 'Quality checks complete');
 
       // Complete QA agent
       agentTracker.completeAgent(this.sessionId, 'qa', 'All quality checks passed', {
@@ -2170,7 +2220,7 @@ Minor spelling variations or stylization are acceptable.`
       scene: {
         id: this.scene.id,
         index: this.scene.sequence_index,
-        text: this.scene.polished_text,
+        text: stripTags(this.scene.polished_text || ''), // Strip [CHAR] tags for display
         mood: this.scene.mood,
         hasChoices: this.scene.choices && this.scene.choices.length > 0,
         choices: this.scene.choices,
@@ -2271,7 +2321,7 @@ Minor spelling variations or stylization are acceptable.`
           scene: {
             id: this.scene.id,
             index: this.scene.sequence_index,
-            text: this.scene.polished_text,
+            text: stripTags(this.scene.polished_text || ''), // Strip [CHAR] tags for display
             mood: this.scene.mood,
             hasChoices: this.scene.choices && this.scene.choices.length > 0,
             choices: this.scene.choices,

@@ -261,6 +261,7 @@ export function convertDialogueMapToSegments(sceneText, dialogueMap) {
   // ALWAYS verify and re-locate positions - text may have been modified since position calculation
   // This is the FIX for the fragmentation bug caused by polishing/validation changing the text
   let searchStart = 0;
+  let lastProcessedEnd = 0; // Track last successfully processed position for fallback searches
   let verifiedCount = 0;
   let relocatedCount = 0;
   let failedCount = 0;
@@ -293,6 +294,7 @@ export function convertDialogueMapToSegments(sceneText, dialogueMap) {
       verifiedCount++;
       logger.debug(`[SegmentBuilder] QUOTE[${idx}] VERIFIED | speaker: ${d.speaker} | pos: [${d.start_char}-${d.end_char}]`);
       searchStart = d.end_char;
+      lastProcessedEnd = d.end_char;
       return d;
     }
 
@@ -357,6 +359,65 @@ export function convertDialogueMapToSegments(sceneText, dialogueMap) {
       }
     }
 
+    // AGGRESSIVE FALLBACK 1: Search from beginning of text (quote may have moved earlier)
+    // This handles cases where text was inserted before the quote
+    for (const pattern of quotePatterns) {
+      const idx = sceneText.indexOf(pattern, 0);
+      if (idx !== -1 && idx >= lastProcessedEnd) {
+        const endPos = idx + pattern.length;
+        relocatedCount++;
+        logger.info(`[SegmentBuilder] QUOTE[${idx}] RELOCATED_FROM_START | speaker: ${d.speaker} | newPos: [${idx}-${endPos}]`);
+        searchStart = endPos;
+        return {
+          ...d,
+          start_char: idx,
+          end_char: endPos,
+          position_relocated: true
+        };
+      }
+    }
+
+    // AGGRESSIVE FALLBACK 2: Fuzzy content match - search for distinctive words from the quote
+    // Extract 2-3 distinctive words and search for them together
+    const words = normalizedQuote.split(/\s+/).filter(w => w.length > 4);
+    if (words.length >= 2) {
+      const searchWords = words.slice(0, 3).map(w => w.toLowerCase());
+      // Look for any quoted text containing these words
+      const quoteRegex = /[""\u201C]([^""\u201D]+)[""\u201D]/g;
+      let match;
+      while ((match = quoteRegex.exec(sceneText)) !== null) {
+        if (match.index >= searchStart) {
+          const quotedContent = match[1].toLowerCase();
+          const matchCount = searchWords.filter(w => quotedContent.includes(w)).length;
+          if (matchCount >= 2) {
+            const startPos = match.index;
+            const endPos = match.index + match[0].length;
+            relocatedCount++;
+            logger.info(`[SegmentBuilder] QUOTE[${idx}] RELOCATED_FUZZY_WORDS | speaker: ${d.speaker} | matchedWords: ${matchCount}/${searchWords.length} | newPos: [${startPos}-${endPos}]`);
+            searchStart = endPos;
+            return {
+              ...d,
+              start_char: startPos,
+              end_char: endPos,
+              position_relocated: true
+            };
+          }
+        }
+      }
+    }
+
+    // LAST RESORT: Include as synthetic segment if text is substantial
+    // Instead of dropping dialogue completely, we'll mark it for special handling
+    if (normalizedQuote.length > 10) {
+      logger.warn(`[SegmentBuilder] QUOTE[${idx}] SYNTHETIC | speaker: ${d.speaker} | Cannot locate in prose - will include as standalone segment`);
+      relocatedCount++;
+      return {
+        ...d,
+        _synthetic: true,
+        quote: normalizedQuote // Use original quote text
+      };
+    }
+
     // FAIL LOUD: Quote not found means positions are severely corrupted
     failedCount++;
     const errorMsg = `[SegmentBuilder] FAIL_LOUD: Quote not found anywhere in prose! speaker: ${d.speaker} | quote: "${normalizedQuote.substring(0, 50)}..." | searchStart: ${searchStart}`;
@@ -371,9 +432,18 @@ export function convertDialogueMapToSegments(sceneText, dialogueMap) {
 
   logger.info(`[SegmentBuilder] VERIFICATION_COMPLETE | verified: ${verifiedCount} | relocated: ${relocatedCount} | failed: ${failedCount}`);
 
-  // FAIL LOUD: If more than 30% of quotes failed to locate, something is seriously wrong
+  // Warn loudly if ANY quotes failed (user should know dialogue was skipped)
+  if (failedEntries.length > 0) {
+    logger.warn(`[SegmentBuilder] ⚠️ WARNING: ${failedEntries.length}/${dialogueMap.length} dialogue lines could not be located and will be SKIPPED`);
+    for (const failed of failedEntries) {
+      logger.warn(`[SegmentBuilder]   SKIPPED: ${failed.speaker} - "${failed.quote?.substring(0, 50)}..."`);
+    }
+  }
+
+  // FAIL LOUD: If more than 15% of quotes failed to locate, something is seriously wrong
+  // (Lowered from 30% to catch issues earlier)
   const failureRate = failedEntries.length / dialogueMap.length;
-  if (failureRate > 0.3) {
+  if (failureRate > 0.15) {
     const errorMsg = `[SegmentBuilder] FAIL_LOUD: ${failedEntries.length}/${dialogueMap.length} quotes (${Math.round(failureRate * 100)}%) could not be located in prose. Position calculation is severely broken.`;
     logger.error(errorMsg);
     throw new Error(errorMsg);
@@ -386,9 +456,32 @@ export function convertDialogueMapToSegments(sceneText, dialogueMap) {
     throw new Error(errorMsg);
   }
 
-  // Sort valid entries by position and build segments
-  const sortedMap = [...validEntries].sort((a, b) => a.start_char - b.start_char);
-  return buildSegmentsFromMap(sceneText, sortedMap);
+  // Separate synthetic entries (no position) from position-based entries
+  const syntheticEntries = validEntries.filter(d => d._synthetic);
+  const positionBasedEntries = validEntries.filter(d => !d._synthetic);
+
+  // Sort position-based entries and build segments
+  const sortedMap = [...positionBasedEntries].sort((a, b) => a.start_char - b.start_char);
+  const segments = buildSegmentsFromMap(sceneText, sortedMap);
+
+  // Append synthetic segments at the end (dialogue we couldn't locate but shouldn't skip)
+  // These represent dialogue that was definitely in the original text but got displaced
+  if (syntheticEntries.length > 0) {
+    logger.info(`[SegmentBuilder] Appending ${syntheticEntries.length} synthetic segments (couldn't locate in prose)`);
+    for (const synthetic of syntheticEntries) {
+      segments.push({
+        speaker: synthetic.speaker,
+        text: synthetic.quote,
+        voice_role: 'dialogue',
+        emotion: synthetic.emotion || 'neutral',
+        delivery: synthetic.delivery,
+        _synthetic: true
+      });
+      logger.info(`[SegmentBuilder] SYNTHETIC_APPENDED | speaker: ${synthetic.speaker} | text: "${synthetic.quote?.substring(0, 40)}..."`);
+    }
+  }
+
+  return segments;
 }
 
 /**

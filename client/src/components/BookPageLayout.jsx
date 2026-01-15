@@ -86,11 +86,14 @@ function BookPageLayout({
       const saved = localStorage.getItem(DETAILS_STORAGE_KEY);
       if (saved !== null) {
         const parsed = JSON.parse(saved);
-        // FAIL LOUDLY: Validate type to prevent corrupted data from breaking UI
+        // Validate type to prevent corrupted data from breaking UI
         if (typeof parsed === 'boolean') {
           setDetailsExpanded(parsed);
         } else {
-          console.warn('[BookPageLayout] Invalid localStorage value type, expected boolean got:', typeof parsed);
+          // Reset corrupted data to default and log warning
+          console.warn('[BookPageLayout] Invalid localStorage value type, expected boolean got:', typeof parsed, '- resetting to default');
+          setDetailsExpanded(true);
+          localStorage.setItem(DETAILS_STORAGE_KEY, JSON.stringify(true));
         }
       } else {
         const legacySaved = localStorage.getItem(LEGACY_DETAILS_STORAGE_KEY);
@@ -101,12 +104,17 @@ function BookPageLayout({
             localStorage.removeItem(LEGACY_DETAILS_STORAGE_KEY);
             setDetailsExpanded(parsed);
           } else {
-            console.warn('[BookPageLayout] Invalid legacy localStorage value type, expected boolean got:', typeof parsed);
+            // Reset legacy corrupted data to default
+            console.warn('[BookPageLayout] Invalid legacy localStorage value type, expected boolean got:', typeof parsed, '- resetting to default');
+            setDetailsExpanded(true);
+            localStorage.setItem(DETAILS_STORAGE_KEY, JSON.stringify(true));
+            localStorage.removeItem(LEGACY_DETAILS_STORAGE_KEY);
           }
         }
       }
     } catch (err) {
-      console.warn('[BookPageLayout] Failed to read details state from localStorage:', err);
+      console.warn('[BookPageLayout] Failed to read details state from localStorage:', err, '- using default');
+      setDetailsExpanded(true);
     }
     setDetailsLoaded(true);
   }, []);

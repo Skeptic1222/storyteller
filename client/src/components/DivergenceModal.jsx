@@ -26,18 +26,18 @@ const DivergenceModal = memo(function DivergenceModal({
       />
 
       {/* Modal */}
-      <div className="relative bg-night-800 border border-night-600 rounded-2xl max-w-md w-full shadow-2xl overflow-hidden">
+      <div className="relative bg-slate-800 border border-slate-600 rounded-2xl max-w-md w-full shadow-2xl overflow-hidden">
         {/* Header with gradient */}
-        <div className="bg-gradient-to-r from-amber-500/20 to-purple-500/20 p-6 border-b border-night-700">
+        <div className="bg-gradient-to-r from-amber-500/20 to-purple-500/20 p-6 border-b border-slate-700">
           <div className="flex items-center gap-3">
             <div className="p-3 rounded-xl bg-amber-500/20">
               <GitBranch className="w-6 h-6 text-amber-400" />
             </div>
             <div>
-              <h3 className="text-xl font-bold text-night-100">
+              <h3 className="text-xl font-bold text-slate-100">
                 New Adventure Path
               </h3>
-              <p className="text-night-400 text-sm">
+              <p className="text-slate-400 text-sm">
                 Creating a new story branch
               </p>
             </div>
@@ -47,12 +47,12 @@ const DivergenceModal = memo(function DivergenceModal({
         {/* Content */}
         <div className="p-6 space-y-4">
           {/* Choice info */}
-          <div className="p-4 bg-night-900/50 rounded-xl border border-night-700">
+          <div className="p-4 bg-slate-900/50 rounded-xl border border-slate-700">
             <div className="flex items-start gap-3">
               <span className="flex-shrink-0 w-8 h-8 rounded-full bg-golden-500/20 flex items-center justify-center text-golden-400 font-bold">
                 {choiceKey}
               </span>
-              <p className="text-night-200 leading-relaxed">
+              <p className="text-slate-200 leading-relaxed">
                 {choiceText || `Option ${choiceKey}`}
               </p>
             </div>
@@ -62,7 +62,7 @@ const DivergenceModal = memo(function DivergenceModal({
           <div className="space-y-3 text-sm">
             <div className="flex items-start gap-3">
               <Sparkles className="w-5 h-5 text-purple-400 flex-shrink-0 mt-0.5" />
-              <p className="text-night-300">
+              <p className="text-slate-300">
                 This choice leads to an <span className="text-purple-400 font-medium">uncharted path</span>.
                 A new story will be generated for you.
               </p>
@@ -70,7 +70,7 @@ const DivergenceModal = memo(function DivergenceModal({
 
             <div className="flex items-start gap-3">
               <Disc className="w-5 h-5 text-green-400 flex-shrink-0 mt-0.5" />
-              <p className="text-night-300">
+              <p className="text-slate-300">
                 Your new adventure will be <span className="text-green-400 font-medium">recorded</span> for
                 future listening without any wait.
               </p>
@@ -82,7 +82,7 @@ const DivergenceModal = memo(function DivergenceModal({
             <button
               onClick={onCancel}
               disabled={isLoading}
-              className="flex-1 px-4 py-3 rounded-xl bg-night-700 text-night-300 hover:bg-night-600 hover:text-night-100 transition-colors disabled:opacity-50"
+              className="flex-1 px-4 py-3 rounded-xl bg-slate-700 text-slate-300 hover:bg-slate-600 hover:text-slate-100 transition-colors disabled:opacity-50"
             >
               Go Back
             </button>
@@ -90,7 +90,7 @@ const DivergenceModal = memo(function DivergenceModal({
             <button
               onClick={() => onContinue(choiceKey)}
               disabled={isLoading}
-              className="flex-1 px-4 py-3 rounded-xl bg-gradient-to-r from-golden-500 to-amber-500 text-night-900 font-medium hover:from-golden-400 hover:to-amber-400 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+              className="flex-1 px-4 py-3 rounded-xl bg-gradient-to-r from-golden-500 to-amber-500 text-slate-900 font-medium hover:from-golden-400 hover:to-amber-400 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
             >
               {isLoading ? (
                 <>
@@ -108,8 +108,8 @@ const DivergenceModal = memo(function DivergenceModal({
         </div>
 
         {/* Footer note */}
-        <div className="px-6 py-3 bg-night-900/50 border-t border-night-700">
-          <p className="text-center text-night-500 text-xs">
+        <div className="px-6 py-3 bg-slate-900/50 border-t border-slate-700">
+          <p className="text-center text-slate-500 text-xs">
             Stories are generated using AI and may take a moment to create
           </p>
         </div>

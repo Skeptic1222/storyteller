@@ -42,7 +42,20 @@ function SettingsPanel({
   coverUrl,
   onViewCoverFullscreen
 }) {
-  const { textLayout, setTextLayout } = useTheme();
+  let textLayout = 'vertical';
+  let setTextLayout = null;
+
+  try {
+    const themeContext = useTheme();
+    if (themeContext) {
+      textLayout = themeContext.textLayout;
+      setTextLayout = themeContext.setTextLayout;
+    } else {
+      console.warn('[SettingsPanel] ThemeContext not available - text layout toggle disabled');
+    }
+  } catch (error) {
+    console.error('[SettingsPanel] Error accessing ThemeContext:', error);
+  }
 
   if (!isOpen) return null;
 
@@ -175,34 +188,36 @@ function SettingsPanel({
         )}
 
         {/* Text Layout */}
-        <div>
-          <h4 className="text-slate-200 text-sm font-medium mb-2 flex items-center gap-2">
-            <Columns className="w-4 h-4" />
-            Text Layout
-          </h4>
-          <div className="grid grid-cols-1 gap-2">
-            {TEXT_LAYOUTS.map(layout => {
-              const IconComponent = layout.icon;
-              return (
-                <button
-                  key={layout.id}
-                  onClick={() => setTextLayout(layout.id)}
-                  className={`p-2 rounded-lg border text-left text-sm flex items-center gap-2 ${
-                    textLayout === layout.id
-                      ? 'border-golden-400 bg-slate-700 text-white'
-                      : 'border-slate-600 hover:border-slate-500 text-slate-300'
-                  }`}
-                >
-                  <IconComponent className="w-4 h-4" />
-                  {layout.label}
-                </button>
-              );
-            })}
+        {setTextLayout && (
+          <div>
+            <h4 className="text-slate-200 text-sm font-medium mb-2 flex items-center gap-2">
+              <Columns className="w-4 h-4" />
+              Text Layout
+            </h4>
+            <div className="grid grid-cols-1 gap-2">
+              {TEXT_LAYOUTS.map(layout => {
+                const IconComponent = layout.icon;
+                return (
+                  <button
+                    key={layout.id}
+                    onClick={() => setTextLayout(layout.id)}
+                    className={`p-2 rounded-lg border text-left text-sm flex items-center gap-2 ${
+                      textLayout === layout.id
+                        ? 'border-golden-400 bg-slate-700 text-white'
+                        : 'border-slate-600 hover:border-slate-500 text-slate-300'
+                    }`}
+                  >
+                    <IconComponent className="w-4 h-4" />
+                    {layout.label}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="mt-2 text-xs text-slate-500">
+              Choose how story text is displayed during playback.
+            </p>
           </div>
-          <p className="mt-2 text-xs text-slate-500">
-            Choose how story text is displayed during playback.
-          </p>
-        </div>
+        )}
 
         {/* Narrator Style */}
         <div>

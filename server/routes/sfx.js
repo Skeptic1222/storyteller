@@ -9,9 +9,13 @@ import { SoundEffectsService, AMBIENT_SFX_LIBRARY, SFX_KEYWORD_MAP } from '../se
 import { GENRE_SFX_LIBRARY } from '../services/sfxAgents.js';
 import { SFX_LEVELS } from '../services/agents/sfxCoordinator.js';
 import { logger } from '../utils/logger.js';
+import { wrapRoutes } from '../middleware/errorHandler.js';
+import { authenticateToken, requireAuth } from '../middleware/auth.js';
 
 const router = Router();
+wrapRoutes(router); // Auto-wrap async handlers for error catching
 const sfxService = new SoundEffectsService();
+router.use(authenticateToken, requireAuth);
 
 /**
  * GET /api/sfx/library

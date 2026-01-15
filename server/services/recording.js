@@ -5,11 +5,16 @@
  */
 
 import crypto from 'crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
+import { existsSync, mkdirSync } from 'fs';
+import { promises as fsPromises } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { pool } from '../database/pool.js';
 import { logger } from '../utils/logger.js';
+
+// PERFORMANCE: Use async file operations to avoid blocking event loop
+// Only sync ops used at startup (existsSync, mkdirSync) for initialization
+const { writeFile, readFile, unlink } = fsPromises;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -148,7 +153,7 @@ export class RecordingService {
         const filename = `segment_${sequenceIndex}_${audioHash}.mp3`;
         const filePath = join(sessionDir, filename);
 
-        writeFileSync(filePath, audioBuffer);
+        await writeFile(filePath, audioBuffer);
         fileChecksum = crypto.createHash('sha256').update(audioBuffer).digest('hex');
         fileSizeBytes = audioBuffer.length;
         finalAudioUrl = `/audio/recordings/${recording.story_session_id}/${filename}`;
@@ -203,6 +208,90 @@ export class RecordingService {
 
     } catch (error) {
       logger.error('Failed to add segment:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Add intro segment (title + synopsis narration) to a recording
+   * Uses sequence_index -1 to place before scene 0
+   * @param {string} recordingId - Recording ID
+   * @param {object} introData - Intro segment data
+   * @returns {object} Created segment
+   */
+  async addIntroSegment(recordingId, introData) {
+    const {
+      audioBuffer,
+      title,
+      synopsis,
+      durationSeconds
+    } = introData;
+
+    try {
+      // Save audio file
+      let audioUrl = null;
+      let fileChecksum = null;
+      let fileSizeBytes = null;
+
+      if (audioBuffer) {
+        const recording = await this.getRecording(recordingId);
+        const sessionDir = join(RECORDINGS_DIR, recording.story_session_id);
+        if (!existsSync(sessionDir)) {
+          mkdirSync(sessionDir, { recursive: true });
+        }
+
+        const audioHash = crypto.createHash('md5').update(audioBuffer).digest('hex');
+        const filename = `intro_${audioHash}.mp3`;
+        const filePath = join(sessionDir, filename);
+
+        await writeFile(filePath, audioBuffer);
+        fileChecksum = crypto.createHash('sha256').update(audioBuffer).digest('hex');
+        fileSizeBytes = audioBuffer.length;
+        audioUrl = `/audio/recordings/${recording.story_session_id}/${filename}`;
+      }
+
+      // Calculate duration if not provided
+      const finalDuration = durationSeconds || this.estimateDuration(`${title} ${synopsis}`);
+
+      // Build intro text: "Title. Synopsis. And now, our story begins."
+      const introText = `${title}. ${synopsis}. And now, our story begins.`;
+
+      // Insert intro segment with sequence_index -1 (before scene 0)
+      const result = await pool.query(`
+        INSERT INTO recording_segments (
+          recording_id, scene_id, sequence_index,
+          audio_url, audio_hash, file_checksum, file_size_bytes,
+          start_time_seconds, duration_seconds,
+          word_timings, scene_text, scene_summary,
+          image_url, visual_timeline, sfx_data,
+          choices_at_end, selected_choice_key,
+          mood, chapter_number, chapter_title
+        ) VALUES ($1, NULL, -1, $2, $3, $4, $5, 0, $6, NULL, $7, $8, NULL, NULL, '[]', NULL, NULL, 'introduction', 0, 'Introduction')
+        ON CONFLICT (recording_id, sequence_index)
+        DO UPDATE SET
+          audio_url = EXCLUDED.audio_url,
+          file_checksum = EXCLUDED.file_checksum,
+          duration_seconds = EXCLUDED.duration_seconds,
+          scene_text = EXCLUDED.scene_text,
+          scene_summary = EXCLUDED.scene_summary
+        RETURNING *
+      `, [
+        recordingId,
+        audioUrl,
+        audioBuffer ? crypto.createHash('md5').update(audioBuffer).digest('hex') : null,
+        fileChecksum,
+        fileSizeBytes,
+        finalDuration,
+        introText,
+        `Title: ${title}` // Store title in summary for easy retrieval
+      ]);
+
+      logger.info(`Added intro segment to recording ${recordingId} (${fileSizeBytes} bytes, ${finalDuration}s)`);
+
+      return result.rows[0];
+
+    } catch (error) {
+      logger.error('Failed to add intro segment:', error);
       throw error;
     }
   }
@@ -503,7 +592,7 @@ export class RecordingService {
     // Verify checksum if available
     if (segment.file_checksum) {
       try {
-        const fileBuffer = readFileSync(filePath);
+        const fileBuffer = await readFile(filePath);
         const actualChecksum = crypto.createHash('sha256').update(fileBuffer).digest('hex');
 
         if (actualChecksum !== segment.file_checksum) {
@@ -654,13 +743,13 @@ export class RecordingService {
       // Delete from database (cascades to segments)
       await pool.query('DELETE FROM story_recordings WHERE id = $1', [recordingId]);
 
-      // Delete audio files
+      // Delete audio files (async to avoid blocking)
       for (const segment of segments) {
         if (segment.audio_url) {
           const filePath = join(__dirname, '..', '..', 'public', segment.audio_url);
           if (existsSync(filePath)) {
             try {
-              unlinkSync(filePath);
+              await unlink(filePath);
             } catch (e) {
               logger.warn(`Failed to delete file: ${filePath}`);
             }
@@ -671,9 +760,12 @@ export class RecordingService {
       // Try to remove session directory if empty
       const sessionDir = join(RECORDINGS_DIR, recording.story_session_id);
       try {
-        const { readdirSync, rmdirSync } = await import('fs');
-        if (existsSync(sessionDir) && readdirSync(sessionDir).length === 0) {
-          rmdirSync(sessionDir);
+        const { readdir, rmdir } = fsPromises;
+        if (existsSync(sessionDir)) {
+          const files = await readdir(sessionDir);
+          if (files.length === 0) {
+            await rmdir(sessionDir);
+          }
         }
       } catch (e) {
         // Ignore - directory not empty or other error

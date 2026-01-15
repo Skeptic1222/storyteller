@@ -4,12 +4,17 @@
  */
 
 import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
 import { pool } from '../database/pool.js';
 import { logger } from '../utils/logger.js';
 
-// FAIL LOUD: JWT_SECRET must be configured in production
+// FAIL LOUD: JWT_SECRET must be configured
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const JWT_SECRET = process.env.JWT_SECRET;
+
+// Generate a random fallback for development ONLY - changes on every restart
+// This prevents tokens from being reused across restarts in dev
+const DEV_RANDOM_SECRET = crypto.randomBytes(32).toString('hex');
 
 if (!JWT_SECRET) {
   if (NODE_ENV === 'production') {
@@ -21,16 +26,54 @@ if (!JWT_SECRET) {
     logger.error(error.message);
     throw error;
   } else {
-    // Development only - log loud warning but allow startup
+    // Development only - use random secret that changes on restart
+    // This is secure but means tokens don't persist across server restarts
     logger.warn('='.repeat(80));
-    logger.warn('WARNING: JWT_SECRET not set - using insecure development default');
-    logger.warn('DO NOT deploy to production without setting JWT_SECRET');
+    logger.warn('WARNING: JWT_SECRET not set - using random per-instance secret');
+    logger.warn('Tokens will be invalidated on server restart (dev only)');
+    logger.warn('Set JWT_SECRET in .env for persistent sessions');
     logger.warn('='.repeat(80));
   }
 }
 
-const EFFECTIVE_JWT_SECRET = JWT_SECRET || 'storyteller-dev-secret-INSECURE';
+// Use configured secret, or random secret in development
+const EFFECTIVE_JWT_SECRET = JWT_SECRET || DEV_RANDOM_SECRET;
 const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '').split(',').map(e => e.trim().toLowerCase());
+
+async function loadUserById(userId) {
+  const result = await pool.query(
+    `SELECT u.*, s.tier, s.status as subscription_status, s.stories_limit, s.minutes_limit
+     FROM users u
+     LEFT JOIN user_subscriptions s ON u.id = s.user_id
+     WHERE u.id = $1`,
+    [userId]
+  );
+
+  if (result.rows.length === 0) {
+    return null;
+  }
+
+  const user = result.rows[0];
+  user.is_admin = user.is_admin || ADMIN_EMAILS.includes(user.email?.toLowerCase());
+  return user;
+}
+
+export async function authenticateSocketToken(token) {
+  if (!token) return null;
+  try {
+    const decoded = jwt.verify(token, EFFECTIVE_JWT_SECRET);
+    return await loadUserById(decoded.userId);
+  } catch (error) {
+    if (error.name === 'TokenExpiredError') {
+      logger.debug('Socket token expired');
+    } else if (error.name === 'JsonWebTokenError') {
+      logger.debug('Invalid socket token');
+    } else {
+      logger.error('Socket auth error:', error);
+    }
+    return null;
+  }
+}
 
 /**
  * Verify JWT token and attach user to request
@@ -38,47 +81,25 @@ const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '').split(',').map(e => e.trim
  */
 export async function authenticateToken(req, res, next) {
   try {
-    const authHeader = req.headers.authorization;
-    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    const authHeader =
+      req.headers.authorization ||
+      req.headers['x-authorization'] ||
+      req.headers['x-auth-token'] ||
+      req.headers['x-access-token'];
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
 
-    if (!token) {
+    if (!token || token === 'null' || token === 'undefined') {
       req.user = null;
       return next();
     }
 
-    const decoded = jwt.verify(token, EFFECTIVE_JWT_SECRET);
-
-    // Fetch user from database
-    const result = await pool.query(
-      `SELECT u.*, s.tier, s.status as subscription_status, s.stories_limit, s.minutes_limit
-       FROM users u
-       LEFT JOIN user_subscriptions s ON u.id = s.user_id
-       WHERE u.id = $1`,
-      [decoded.userId]
-    );
-
-    if (result.rows.length === 0) {
-      req.user = null;
-      return next();
-    }
-
-    const user = result.rows[0];
-
-    // Check if admin
-    user.is_admin = user.is_admin || ADMIN_EMAILS.includes(user.email?.toLowerCase());
-
+    const user = await authenticateSocketToken(token);
     req.user = user;
-    next();
+    return next();
   } catch (error) {
-    if (error.name === 'TokenExpiredError') {
-      logger.debug('Token expired');
-    } else if (error.name === 'JsonWebTokenError') {
-      logger.debug('Invalid token');
-    } else {
-      logger.error('Auth middleware error:', error);
-    }
+    logger.error('Auth middleware error:', error);
     req.user = null;
-    next();
+    return next();
   }
 }
 
@@ -220,6 +241,7 @@ export async function recordNarrationUsage(userId, minutes) {
 
 export default {
   authenticateToken,
+  authenticateSocketToken,
   requireAuth,
   requireAdmin,
   optionalAuth,

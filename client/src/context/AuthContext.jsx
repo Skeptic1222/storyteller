@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
 import { apiCall } from '../config';
+import { getStoredToken, setStoredToken, clearStoredToken, isTokenExpired } from '../utils/authToken';
 
 const AuthContext = createContext(null);
 
@@ -16,8 +17,9 @@ export function AuthProvider({ children }) {
 
   const checkAuthStatus = async () => {
     try {
-      const token = localStorage.getItem('storyteller_token');
-      if (!token) {
+      const token = getStoredToken();
+      if (!token || isTokenExpired(token)) {
+        clearStoredToken();
         setLoading(false);
         return;
       }
@@ -33,14 +35,14 @@ export function AuthProvider({ children }) {
         setUsage(data.usage);
       } else {
         // Token invalid, clear it
-        localStorage.removeItem('storyteller_token');
+        clearStoredToken();
         setUser(null);
         setSubscription(null);
         setUsage(null);
       }
     } catch (error) {
       console.error('Auth check failed:', error);
-      localStorage.removeItem('storyteller_token');
+      clearStoredToken();
       setUser(null);
     } finally {
       setLoading(false);
@@ -58,7 +60,7 @@ export function AuthProvider({ children }) {
 
       if (response.ok) {
         const data = await response.json();
-        localStorage.setItem('storyteller_token', data.token);
+        setStoredToken(data.token);
         setUser(data.user);
         setSubscription(data.subscription);
         setUsage(data.usage);
@@ -78,7 +80,7 @@ export function AuthProvider({ children }) {
   // Logout
   const logout = useCallback(async () => {
     try {
-      const token = localStorage.getItem('storyteller_token');
+      const token = getStoredToken();
       if (token) {
         await apiCall('/auth/logout', {
           method: 'POST',
@@ -88,7 +90,7 @@ export function AuthProvider({ children }) {
     } catch (error) {
       console.error('Logout error:', error);
     } finally {
-      localStorage.removeItem('storyteller_token');
+      clearStoredToken();
       setUser(null);
       setSubscription(null);
       setUsage(null);
@@ -98,7 +100,7 @@ export function AuthProvider({ children }) {
   // Refresh usage data
   const refreshUsage = useCallback(async () => {
     try {
-      const token = localStorage.getItem('storyteller_token');
+      const token = getStoredToken();
       if (!token) return;
 
       const response = await apiCall('/auth/usage', {
@@ -164,7 +166,7 @@ export function AuthProvider({ children }) {
 
   // Get auth header for API calls
   const getAuthHeader = useCallback(() => {
-    const token = localStorage.getItem('storyteller_token');
+    const token = getStoredToken();
     return token ? { Authorization: `Bearer ${token}` } : {};
   }, []);
 

@@ -17,8 +17,12 @@ import {
   getDashboardSummary
 } from '../services/analytics.js';
 import { logger } from '../utils/logger.js';
+import { wrapRoutes } from '../middleware/errorHandler.js';
+import { authenticateToken, requireAuth, requireAdmin } from '../middleware/auth.js';
 
 const router = express.Router();
+wrapRoutes(router); // Auto-wrap async handlers for error catching
+router.use(authenticateToken, requireAuth, requireAdmin);
 
 /**
  * GET /api/analytics/dashboard

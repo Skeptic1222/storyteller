@@ -1,6 +1,6 @@
 /**
- * Storyteller Server
- * Main Express server for the bedtime storytelling application
+ * Narrimo Server
+ * Main Express server for the narrated storytelling application
  */
 
 import express from 'express';
@@ -17,6 +17,9 @@ import { pool, testConnection } from './database/pool.js';
 import { logger } from './utils/logger.js';
 import { runStartupChecks } from './utils/startupCheck.js';
 import { setupSocketHandlers } from './socket/handlers.js';
+import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
+import { cache } from './services/cache.js';
+import { authenticateSocketToken } from './middleware/auth.js';
 
 // Routes
 import healthRoutes from './routes/health.js';
@@ -37,6 +40,8 @@ import sharingRoutes from './routes/sharing.js';
 import streamingRoutes from './routes/streaming.js';
 import continuationRoutes from './routes/continuation.js';
 import analyticsRoutes from './routes/analytics.js';
+import storyBibleRoutes from './routes/story-bible.js';
+// DnD routes removed - migrated to GameMaster project (2026-01-08)
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -58,11 +63,24 @@ app.set('trust proxy', 1);
 const socketOptions = {
   cors: {
     origin: process.env.ALLOWED_ORIGINS?.split(',') || '*',
-    methods: ['GET', 'POST']
+    methods: ['GET', 'POST'],
+    credentials: true  // Required for withCredentials: true on client
   },
   maxHttpBufferSize: 10 * 1024 * 1024, // 10MB for audio
   pingTimeout: 60000,
-  pingInterval: 25000
+  pingInterval: 25000,
+  // Enable WebSocket compression for bandwidth savings
+  perMessageDeflate: {
+    threshold: 1024, // Only compress messages larger than 1KB
+    zlibDeflateOptions: {
+      chunkSize: 16 * 1024 // 16KB chunks
+    },
+    zlibInflateOptions: {
+      chunkSize: 16 * 1024
+    },
+    clientNoContextTakeover: true, // Reduce memory usage
+    serverNoContextTakeover: true
+  }
 };
 
 // Primary socket path (direct access)
@@ -76,6 +94,118 @@ const ioPrefixed = new SocketIO(server, {
   path: '/storyteller/socket.io',
   ...socketOptions
 });
+
+// Debug: Log all connection attempts
+io.engine.on('connection', (rawSocket) => {
+  logger.info(`[Socket:Primary] Raw connection from ${rawSocket.remoteAddress}`);
+});
+ioPrefixed.engine.on('connection', (rawSocket) => {
+  logger.info(`[Socket:Prefixed] Raw connection from ${rawSocket.remoteAddress}`);
+});
+io.on('connection', (socket) => {
+  logger.info(`[Socket:Primary] Connected: ${socket.id} from ${socket.handshake.address}`);
+});
+ioPrefixed.on('connection', (socket) => {
+  logger.info(`[Socket:Prefixed] Connected: ${socket.id} from ${socket.handshake.address}`);
+});
+
+// =============================================================================
+// SOCKET.IO CONNECTION RATE LIMITING
+// =============================================================================
+
+// Track connection attempts per IP
+const connectionAttempts = new Map();
+const CONNECTION_RATE_LIMIT = {
+  maxConnections: 10,      // Max connections per IP per window
+  windowMs: 60000,         // 1 minute window
+  blockDurationMs: 300000  // 5 minute block after exceeding limit
+};
+
+/**
+ * Socket.IO connection rate limiting middleware
+ * Prevents DoS attacks by limiting connection attempts per IP
+ */
+function connectionRateLimiter(socket, next) {
+  // Extract IP, handling IIS proxy format (IP:port)
+  const forwarded = socket.handshake.headers['x-forwarded-for'];
+  let clientIp = forwarded
+    ? forwarded.split(',')[0].trim()
+    : socket.handshake.address || 'unknown';
+
+  // Strip port if present (IIS sometimes sends IP:port)
+  clientIp = clientIp.split(':')[0] || clientIp;
+
+  const now = Date.now();
+  let record = connectionAttempts.get(clientIp);
+
+  if (!record) {
+    record = { attempts: [], blockedUntil: 0 };
+    connectionAttempts.set(clientIp, record);
+  }
+
+  // Check if IP is currently blocked
+  if (record.blockedUntil > now) {
+    const remainingMs = record.blockedUntil - now;
+    logger.warn(`[SocketRateLimit] Blocked connection from ${clientIp} (${Math.ceil(remainingMs / 1000)}s remaining)`);
+    return next(new Error('Too many connections. Please try again later.'));
+  }
+
+  // Remove old attempts outside window
+  record.attempts = record.attempts.filter(t => now - t < CONNECTION_RATE_LIMIT.windowMs);
+
+  // Check rate limit
+  if (record.attempts.length >= CONNECTION_RATE_LIMIT.maxConnections) {
+    record.blockedUntil = now + CONNECTION_RATE_LIMIT.blockDurationMs;
+    logger.warn(`[SocketRateLimit] Blocking ${clientIp} for ${CONNECTION_RATE_LIMIT.blockDurationMs / 1000}s (exceeded ${CONNECTION_RATE_LIMIT.maxConnections} connections)`);
+    return next(new Error('Too many connections. Please try again later.'));
+  }
+
+  // Record this attempt
+  record.attempts.push(now);
+  next();
+}
+
+// Apply rate limiting to both socket instances
+io.use(connectionRateLimiter);
+ioPrefixed.use(connectionRateLimiter);
+
+async function socketAuthMiddleware(socket, next) {
+  try {
+    const authHeader = socket.handshake.headers?.authorization;
+    const headerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    const token = headerToken || socket.handshake.auth?.token || socket.handshake.query?.token || null;
+
+    socket.data.user = await authenticateSocketToken(token);
+    return next();
+  } catch (error) {
+    logger.error('[SocketAuth] Error:', error);
+    socket.data.user = null;
+    return next();
+  }
+}
+
+io.use(socketAuthMiddleware);
+ioPrefixed.use(socketAuthMiddleware);
+
+// Cleanup old connection records every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  const maxAge = CONNECTION_RATE_LIMIT.windowMs + CONNECTION_RATE_LIMIT.blockDurationMs;
+
+  for (const [ip, record] of connectionAttempts) {
+    // Remove if no recent attempts and not blocked
+    if (record.attempts.length === 0 && record.blockedUntil < now) {
+      connectionAttempts.delete(ip);
+    } else {
+      // Clean old attempts
+      record.attempts = record.attempts.filter(t => now - t < maxAge);
+    }
+  }
+
+  if (connectionAttempts.size > 0) {
+    logger.debug(`[SocketRateLimit] Tracking ${connectionAttempts.size} IPs`);
+  }
+}, 5 * 60 * 1000);
 
 // =============================================================================
 // MIDDLEWARE
@@ -91,7 +221,8 @@ app.use(helmet({
 const corsOptions = {
   origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost', 'http://localhost:5173'],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  credentials: true
+  credentials: true,
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Auth-Token', 'X-Authorization', 'X-Requested-With']
 };
 app.use(cors(corsOptions));
 
@@ -128,6 +259,30 @@ app.use((req, res, next) => {
   next();
 });
 
+// Cache control - prevent stale content issues
+// HTML files: no-cache (always revalidate to get fresh asset hashes)
+// Assets with hashes: long cache (Vite adds content hashes)
+app.use((req, res, next) => {
+  const path = req.path.toLowerCase();
+
+  // No cache for HTML files - ensures fresh builds are served
+  if (path === '/' || path.endsWith('.html') || path === '/storyteller' || path === '/storyteller/') {
+    res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
+  }
+  // Long cache for hashed assets (Vite adds content hashes like main-abc123.js)
+  else if (path.match(/\.(js|css)$/) && path.match(/-[a-f0-9]{8}\./)) {
+    res.set('Cache-Control', 'public, max-age=31536000, immutable');
+  }
+  // Short cache for other static assets
+  else if (path.match(/\.(png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|eot)$/)) {
+    res.set('Cache-Control', 'public, max-age=86400'); // 1 day
+  }
+
+  next();
+});
+
 // Serve static files (mount at /storyteller to match vite base path)
 app.use('/storyteller', express.static(join(__dirname, '..', 'public')));
 // Also serve at root for direct access
@@ -156,7 +311,9 @@ const apiRoutes = [
   ['sharing', sharingRoutes],
   ['streaming', streamingRoutes],
   ['continuation', continuationRoutes],
-  ['analytics', analyticsRoutes]
+  ['analytics', analyticsRoutes],
+  ['story-bible', storyBibleRoutes]
+  // DnD campaign/maps routes removed - migrated to GameMaster (2026-01-08)
 ];
 
 // Mount at /api/ (direct access via localhost:5100)
@@ -169,8 +326,8 @@ apiRoutes.forEach(([path, router]) => app.use(`/storyteller/api/${path}`, router
 // SOCKET.IO HANDLERS
 // =============================================================================
 
-setupSocketHandlers(io);
-setupSocketHandlers(ioPrefixed);  // Also handle prefixed socket path
+setupSocketHandlers(io, app);
+setupSocketHandlers(ioPrefixed, app);  // Also handle prefixed socket path
 
 // =============================================================================
 // SPA FALLBACK
@@ -188,17 +345,12 @@ app.get('*', (req, res) => {
 // ERROR HANDLING
 // =============================================================================
 
-app.use((err, req, res, next) => {
-  logger.error('Unhandled error:', err);
+// 404 handler for unmatched API routes
+app.use('/api/', notFoundHandler);
+app.use('/storyteller/api/', notFoundHandler);
 
-  // Don't leak stack traces in production
-  const response = {
-    error: 'Internal server error',
-    message: NODE_ENV === 'development' ? err.message : undefined
-  };
-
-  res.status(err.status || 500).json(response);
-});
+// Centralized error handler
+app.use(errorHandler);
 
 // =============================================================================
 // SERVER STARTUP
@@ -257,7 +409,7 @@ async function startServer() {
     // Start server
     server.listen(PORT, '0.0.0.0', () => {
       logger.info(`=================================================`);
-      logger.info(`Storyteller Server v1.0.0`);
+      logger.info(`Narrimo Server v1.0.0`);
       logger.info(`=================================================`);
       logger.info(`Environment: ${NODE_ENV}`);
       logger.info(`Port: ${PORT}`);
@@ -276,6 +428,7 @@ async function startServer() {
 // Graceful shutdown
 process.on('SIGTERM', async () => {
   logger.info('SIGTERM received, shutting down gracefully...');
+  await cache.close();
   await pool.end();
   server.close(() => {
     logger.info('Server closed');
@@ -285,6 +438,7 @@ process.on('SIGTERM', async () => {
 
 process.on('SIGINT', async () => {
   logger.info('SIGINT received, shutting down gracefully...');
+  await cache.close();
   await pool.end();
   server.close(() => {
     logger.info('Server closed');

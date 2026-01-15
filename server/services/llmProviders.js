@@ -344,6 +344,7 @@ export function analyzeContentRequirements(settings) {
   const violence = intensity.violence || 0;
   const romance = intensity.romance || 0;
   const scary = intensity.scary || 0;
+  const adultContent = intensity.adultContent || 0;
 
   // Children or general audience always use OpenAI
   if (audience !== 'mature') {
@@ -351,23 +352,26 @@ export function analyzeContentRequirements(settings) {
       provider: PROVIDERS.OPENAI,
       reason: 'Non-mature audience uses safe provider',
       requiresVenice: false,
-      intensity: { gore, violence, romance, scary }
+      intensity: { gore, violence, romance, scary, adultContent }
     };
   }
 
   // Check if any intensity exceeds Venice threshold
+  // adultContent > 50 always triggers Venice (explicit sexual content)
   const requiresVenice =
     gore > GORE_THRESHOLDS.MODERATE ||
     violence > VIOLENCE_THRESHOLDS.MODERATE ||
-    romance > ROMANCE_THRESHOLDS.STEAMY;
+    romance > ROMANCE_THRESHOLDS.STEAMY ||
+    adultContent > 50;
 
   // Estimate provider split for this configuration
   let venicePercentage = 0;
   if (requiresVenice) {
     // Estimate based on how much content likely needs Venice
-    if (gore > 80 || violence > 80 || romance > 80) {
+    // adultContent > 70 = very explicit, needs Venice for most scenes
+    if (gore > 80 || violence > 80 || romance > 80 || adultContent > 70) {
       venicePercentage = 40; // Very intense - many scenes need Venice
-    } else if (gore > 60 || violence > 60 || romance > 60) {
+    } else if (gore > 60 || violence > 60 || romance > 60 || adultContent > 50) {
       venicePercentage = 25; // Intense - some scenes need Venice
     } else {
       venicePercentage = 10; // Moderate - few scenes need Venice
@@ -377,11 +381,11 @@ export function analyzeContentRequirements(settings) {
   return {
     provider: requiresVenice ? PROVIDERS.VENICE : PROVIDERS.OPENAI,
     reason: requiresVenice
-      ? `Mature content with high intensity (gore:${gore}, violence:${violence}, romance:${romance})`
+      ? `Mature content with high intensity (gore:${gore}, violence:${violence}, romance:${romance}, adultContent:${adultContent})`
       : 'Mature audience with moderate intensity - OpenAI can handle',
     requiresVenice,
     venicePercentage,
-    intensity: { gore, violence, romance, scary }
+    intensity: { gore, violence, romance, scary, adultContent }
   };
 }
 
@@ -548,7 +552,16 @@ export async function callLLM(options) {
   }
 
   const { provider, reason, needsObfuscation } = providerSelection;
-  const selectedModel = model || providerSelection.model;
+
+  // CRITICAL: If Venice is selected, use a Venice-compatible model, not the passed OpenAI model
+  let selectedModel;
+  if (provider === PROVIDERS.VENICE) {
+    // Venice only supports its own models - ignore any OpenAI model names
+    const isOpenAIModel = model && (model.startsWith('gpt-') || model.startsWith('o1') || model.startsWith('o3'));
+    selectedModel = isOpenAIModel ? PROVIDER_CONFIG[PROVIDERS.VENICE].models[agent_category] : (model || providerSelection.model);
+  } else {
+    selectedModel = model || providerSelection.model;
+  }
 
   logger.info(`[LLM] ${agent_name}: Using ${provider} (${selectedModel}) - ${reason}`);
 
@@ -630,7 +643,37 @@ export async function callLLM(options) {
           originalError: error.message
         };
       } catch (veniceError) {
-        logger.error(`[LLM] ${agent_name}: Venice fallback also failed: ${veniceError.message}`);
+        logger.error(`[LLM] ${agent_name}: Venice fallback failed: ${veniceError.message}`);
+
+        // Try OpenRouter as final fallback (Claude 3.5 Sonnet for creative content)
+        if (isProviderAvailable(PROVIDERS.OPENROUTER)) {
+          logger.warn(`[LLM] ${agent_name}: Trying OpenRouter as final fallback`);
+          try {
+            const openRouterResult = await callOpenRouter({
+              messages,
+              model: 'anthropic/claude-3.5-sonnet',
+              temperature,
+              max_tokens
+            });
+
+            if (sessionId) {
+              trackProviderUsage(sessionId, PROVIDERS.OPENROUTER, openRouterResult.usage, 'anthropic/claude-3.5-sonnet');
+            }
+
+            return {
+              ...openRouterResult,
+              agent_name,
+              selectedProvider: PROVIDERS.OPENROUTER,
+              selectionReason: 'Fallback from Venice to OpenRouter',
+              wasRerouted: true,
+              originalError: veniceError.message
+            };
+          } catch (openRouterError) {
+            logger.error(`[LLM] ${agent_name}: All providers failed. OpenRouter error: ${openRouterError.message}`);
+            throw openRouterError;
+          }
+        }
+
         throw veniceError;
       }
     }

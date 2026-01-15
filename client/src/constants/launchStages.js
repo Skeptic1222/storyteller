@@ -20,11 +20,10 @@ export const STATUS = {
   ERROR: 'error'
 };
 
-// Countdown phases for visual display
+// Countdown phases (deprecated - simplified flow goes directly to ready)
+// Kept for backward compatibility with existing components
 export const COUNTDOWN_PHASE = {
-  PRE_CUE: 'pre_cue',
-  COUNTDOWN: 'countdown',
-  GO: 'go',
+  READY: 'ready',
   COMPLETE: 'complete'
 };
 

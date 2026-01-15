@@ -27,7 +27,7 @@ function AutoSelectToggle({
           ? animating
             ? 'bg-golden-400/30 border border-golden-400 text-golden-300 animate-pulse'
             : 'bg-golden-400/20 border border-golden-400/50 text-golden-400 hover:bg-golden-400/30'
-          : 'bg-night-700/50 border border-night-600 text-night-500 hover:border-night-500 hover:text-night-400'
+          : 'bg-slate-700/50 border border-slate-600 text-slate-500 hover:border-slate-500 hover:text-slate-400'
         }
         ${locked ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
         ${isSmall ? 'text-xs' : 'text-sm'}
@@ -71,11 +71,11 @@ export function MasterAutoToggle({
         flex items-center gap-2 px-3 py-1.5 rounded-lg transition-all text-sm font-medium
         ${allEnabled
           ? animating
-            ? 'bg-golden-400 text-night-900 animate-pulse'
-            : 'bg-golden-400/80 hover:bg-golden-400 text-night-900'
+            ? 'bg-golden-400 text-slate-900 animate-pulse'
+            : 'bg-golden-400/80 hover:bg-golden-400 text-slate-900'
           : someEnabled
             ? 'bg-golden-400/30 text-golden-400 border border-golden-400/50 hover:bg-golden-400/40'
-            : 'bg-night-700 text-night-400 hover:bg-night-600 hover:text-night-300'
+            : 'bg-slate-700 text-slate-400 hover:bg-slate-600 hover:text-slate-300'
         }
       `}
     >

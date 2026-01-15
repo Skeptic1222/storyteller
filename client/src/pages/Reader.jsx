@@ -90,6 +90,7 @@ export default function Reader() {
   const controlsTimeoutRef = useRef(null);
   const readingStartRef = useRef(null);
   const wordRefs = useRef(new Map());
+  const exportModalTriggeredRef = useRef(false);
   const currentScene = scenes[currentSceneIndex];
 
   const getAuthHeaders = useCallback(() => {
@@ -256,12 +257,15 @@ export default function Reader() {
 
   // Auto-open export modal if navigated from Library
   useEffect(() => {
-    if (!loading && story && location.state?.openExport) {
+    if (!loading && story && location.state?.openExport && !exportModalTriggeredRef.current) {
+      exportModalTriggeredRef.current = true;
       openExportModal();
-      // Clear the state to prevent reopening on re-renders
-      navigate(location.pathname, { replace: true, state: {} });
+      // Defer state clearing to next tick to avoid navigation during render
+      setTimeout(() => {
+        navigate(location.pathname, { replace: true, state: {} });
+      }, 0);
     }
-  }, [loading, story, location.state]);
+  }, [loading, story, location.state?.openExport]);
 
   const saveProgress = async () => {
     if (!currentScene) return;
@@ -761,51 +765,55 @@ export default function Reader() {
           textAlign: 'justify'
         }}>
           {/* Render with word-by-word karaoke highlighting if word_timings available */}
-          {syncHighlight && currentScene?.word_timings?.words ? (
-            <div style={{ marginBottom: '1.5em' }}>
-              {currentScene.word_timings.words.map((word, i) => {
-                const isCurrentWord = i === currentWordIndex;
-                const isOnCurrentLine = i >= currentLineStart && i <= currentLineEnd && currentLineStart >= 0;
+          {useMemo(() => {
+            if (syncHighlight && currentScene?.word_timings?.words) {
+              return (
+                <div style={{ marginBottom: '1.5em' }}>
+                  {currentScene.word_timings.words.map((word, i) => {
+                    const isCurrentWord = i === currentWordIndex;
+                    const isOnCurrentLine = i >= currentLineStart && i <= currentLineEnd && currentLineStart >= 0;
 
-                return (
-                  <span
-                    key={i}
-                    ref={(el) => {
-                      if (el) wordRefs.current.set(i, el);
-                      else wordRefs.current.delete(i);
-                    }}
-                    style={{
-                      backgroundColor: isCurrentWord
-                        ? colors.accent
-                        : isOnCurrentLine
-                          ? colors.highlight
-                          : 'transparent',
-                      color: isCurrentWord ? '#fff' : colors.text,
-                      padding: isCurrentWord
-                        ? `${Math.round(fontSize * 0.1)}px ${Math.round(fontSize * 0.2)}px`
-                        : isOnCurrentLine
-                          ? `${Math.round(fontSize * 0.05)}px 0`
-                          : '0',
-                      borderRadius: `${Math.round(fontSize * 0.15)}px`,
-                      transition: 'background-color 0.15s, color 0.15s',
-                      display: 'inline'
-                    }}
-                  >
-                    {word.text}
-                    {/* Add space after word */}
-                    {i < currentScene.word_timings.words.length - 1 ? ' ' : ''}
-                  </span>
-                );
-              })}
-            </div>
-          ) : (
-            /* Fallback to paragraph-based rendering when no word timings */
-            stripAllTags(currentScene?.polished_text || '')?.split('\n').map((paragraph, i) => (
+                    return (
+                      <span
+                        key={i}
+                        ref={(el) => {
+                          if (el) wordRefs.current.set(i, el);
+                          else wordRefs.current.delete(i);
+                        }}
+                        style={{
+                          backgroundColor: isCurrentWord
+                            ? colors.accent
+                            : isOnCurrentLine
+                              ? colors.highlight
+                              : 'transparent',
+                          color: isCurrentWord ? '#fff' : colors.text,
+                          padding: isCurrentWord
+                            ? `${Math.round(fontSize * 0.1)}px ${Math.round(fontSize * 0.2)}px`
+                            : isOnCurrentLine
+                              ? `${Math.round(fontSize * 0.05)}px 0`
+                              : '0',
+                          borderRadius: `${Math.round(fontSize * 0.15)}px`,
+                          transition: 'background-color 0.15s, color 0.15s',
+                          display: 'inline'
+                        }}
+                      >
+                        {word.text}
+                        {/* Add space after word */}
+                        {i < currentScene.word_timings.words.length - 1 ? ' ' : ''}
+                      </span>
+                    );
+                  })}
+                </div>
+              );
+            }
+
+            // Fallback to paragraph-based rendering when no word timings
+            return stripAllTags(currentScene?.polished_text || '')?.split('\n').map((paragraph, i) => (
               <p key={i} style={{ marginBottom: '1.5em' }}>
                 {paragraph}
               </p>
-            ))
-          )}
+            ));
+          }, [syncHighlight, currentScene?.word_timings?.words, currentWordIndex, currentLineStart, currentLineEnd, colors.accent, colors.highlight, colors.text, fontSize, currentScene?.polished_text])}
         </div>
 
         {/* CYOA Choices */}

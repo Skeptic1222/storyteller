@@ -14,13 +14,83 @@ dotenv.config({ path: join(__dirname, '..', '..', '.env') });
 
 const { Pool } = pg;
 
-// Create connection pool
+// Create connection pool with optimized settings
 export const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  max: 20,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 2000
+  max: 20,                        // Maximum connections in pool
+  min: 2,                         // Keep 2 connections warm
+  idleTimeoutMillis: 30000,       // Close idle connections after 30s
+  connectionTimeoutMillis: 5000,  // Increased from 2s - prevents timeout under load
+  allowExitOnIdle: false          // Keep pool alive for server lifetime
 });
+
+// =============================================================================
+// CONNECTION POOL MONITORING
+// =============================================================================
+// Track pool health for diagnostics and alerting
+
+let poolStats = {
+  acquireCount: 0,
+  releaseCount: 0,
+  errorCount: 0,
+  lastError: null,
+  lastErrorTime: null
+};
+
+// Log when connection is acquired
+pool.on('connect', (client) => {
+  poolStats.acquireCount++;
+  if (process.env.LOG_POOL === 'true') {
+    console.log(`[DB Pool] Connection acquired | total: ${pool.totalCount} | idle: ${pool.idleCount} | waiting: ${pool.waitingCount}`);
+  }
+});
+
+// Log when connection is released
+pool.on('remove', (client) => {
+  poolStats.releaseCount++;
+  if (process.env.LOG_POOL === 'true') {
+    console.log(`[DB Pool] Connection removed | total: ${pool.totalCount} | idle: ${pool.idleCount}`);
+  }
+});
+
+// FAIL LOUDLY: Log pool errors prominently
+pool.on('error', (err, client) => {
+  poolStats.errorCount++;
+  poolStats.lastError = err.message;
+  poolStats.lastErrorTime = new Date().toISOString();
+  console.error('[DB Pool] ERROR - Idle client error:', err.message);
+});
+
+// Periodic pool stats logging (every 5 minutes in production)
+const STATS_INTERVAL = process.env.NODE_ENV === 'production' ? 300000 : 60000;
+setInterval(() => {
+  const stats = getPoolStats();
+  if (stats.waiting > 0 || stats.utilization > 80) {
+    // FAIL LOUDLY: Warn if pool is under pressure
+    console.warn('[DB Pool] WARNING - High utilization:', stats);
+  } else if (process.env.LOG_POOL === 'true') {
+    console.log('[DB Pool] Stats:', stats);
+  }
+}, STATS_INTERVAL);
+
+/**
+ * Get current pool statistics
+ * @returns {object} Pool stats for monitoring/health checks
+ */
+export function getPoolStats() {
+  return {
+    total: pool.totalCount,
+    idle: pool.idleCount,
+    waiting: pool.waitingCount,
+    utilization: pool.totalCount > 0
+      ? Math.round(((pool.totalCount - pool.idleCount) / pool.totalCount) * 100)
+      : 0,
+    acquireCount: poolStats.acquireCount,
+    errorCount: poolStats.errorCount,
+    lastError: poolStats.lastError,
+    lastErrorTime: poolStats.lastErrorTime
+  };
+}
 
 // Test connection
 export async function testConnection() {
@@ -77,4 +147,4 @@ export async function withTransaction(callback) {
   }
 }
 
-export default { pool, query, testConnection, withTransaction };
+export default { pool, query, testConnection, withTransaction, getPoolStats };

@@ -6,7 +6,7 @@ function GenreSlider({
   value,
   onChange,
   max = 100,
-  colorClass = 'from-night-500 to-golden-400',
+  colorClass = 'from-slate-500 to-golden-400',
   threshold = null,  // Optional threshold marker (e.g., { value: 61, label: 'Venice.ai', icon: '🔓' })
   showProvider = false,  // Show which provider will be used
   animating = false,  // If true, slider is being auto-configured
@@ -88,7 +88,7 @@ function GenreSlider({
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className={isAnimating ? 'animate-bounce' : ''}>{icon}</span>
-          <span className="text-night-200">{label}</span>
+          <span className="text-slate-200">{label}</span>
           {/* Provider badge when above threshold */}
           {isAboveThreshold && showProvider && (
             <span className="text-xs px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30 animate-pulse">
@@ -106,7 +106,7 @@ function GenreSlider({
           <span className={`text-sm transition-all ${
             isAnimating
               ? 'text-golden-400 font-medium animate-pulse'
-              : 'text-night-400'
+              : 'text-slate-400'
           }`}>
             {displayValue}%
           </span>
@@ -121,8 +121,8 @@ function GenreSlider({
         onMouseLeave={() => setShowTooltip(false)}
       >
         {/* Background track */}
-        <div className={`h-2 bg-night-700 rounded-full overflow-hidden relative ${
-          isAnimating ? 'ring-2 ring-golden-400/50 ring-offset-1 ring-offset-night-900' : ''
+        <div className={`h-2 bg-slate-700 rounded-full overflow-hidden relative ${
+          isAnimating ? 'ring-2 ring-golden-400/50 ring-offset-1 ring-offset-slate-900' : ''
         }`}>
           {/* Threshold zone indicator (shows uncensored zone) */}
           {threshold && (
@@ -180,7 +180,7 @@ function GenreSlider({
         {/* Tooltip */}
         {showTooltip && threshold && (
           <div
-            className="absolute -top-10 transform -translate-x-1/2 px-2 py-1 bg-night-800 border border-purple-500/30 rounded text-xs text-purple-300 whitespace-nowrap z-20"
+            className="absolute -top-10 transform -translate-x-1/2 px-2 py-1 bg-slate-800 border border-purple-500/30 rounded text-xs text-purple-300 whitespace-nowrap z-20"
             style={{ left: `${thresholdPercent}%` }}
           >
             {threshold.value}%+ = {threshold.label}
@@ -193,7 +193,7 @@ function GenreSlider({
         <p className={`text-xs transition-all ${
           isAboveThreshold
             ? 'text-purple-400'
-            : 'text-night-500'
+            : 'text-slate-500'
         }`}>
           {isAboveThreshold
             ? `🔓 Uncensored AI enabled for graphic content`

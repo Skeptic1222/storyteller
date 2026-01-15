@@ -16,6 +16,67 @@
 import logger from '../utils/logger.js';
 import { completion, parseJsonResponse } from './openai.js';
 import { getUtilityModel } from './modelSelection.js';
+import { AUTHOR_STYLES } from './authorStyles.js';
+
+function formatAuthorCatalogLine(id, author) {
+  const genres = Array.isArray(author?.genres) ? author.genres.join(', ') : '';
+  const knownFor = Array.isArray(author?.knownFor) && author.knownFor.length
+    ? ` | Known for: ${author.knownFor.join('; ')}`
+    : '';
+  const description = author?.description ? ` – ${author.description}` : '';
+  return `- ${id}: ${author?.name || id}${genres ? ` (${genres})` : ''}${knownFor}${description}`;
+}
+
+const AUTHOR_STYLE_CATALOG = Object.entries(AUTHOR_STYLES)
+  .map(([id, author]) => formatAuthorCatalogLine(id, author))
+  .join('\n');
+
+const AUTHOR_CATALOG_STOPWORDS = new Set([
+  'the', 'and', 'for', 'with', 'from', 'into', 'onto', 'over', 'under', 'about',
+  'your', 'their', 'this', 'that', 'these', 'those', 'like', 'style', 'story',
+  'written', 'write', 'inspired', 'in', 'of', 'to', 'a', 'an', 'as', 'at', 'by',
+  'it', 'its', 'on', 'or', 'is', 'are', 'was', 'were', 'be', 'been', 'being'
+]);
+
+function tokenizeForCatalog(text) {
+  return (String(text || '').toLowerCase().match(/[a-z0-9]+/g) || [])
+    .filter(token => token.length >= 3 && !AUTHOR_CATALOG_STOPWORDS.has(token));
+}
+
+function scoreAuthorForPremise(author, premiseTokens) {
+  const nameTokens = new Set(tokenizeForCatalog(author?.name));
+  const genreTokens = new Set(tokenizeForCatalog(Array.isArray(author?.genres) ? author.genres.join(' ') : author?.genres));
+  const knownForTokens = new Set(tokenizeForCatalog(Array.isArray(author?.knownFor) ? author.knownFor.join(' ') : author?.knownFor));
+  const descriptionTokens = new Set(tokenizeForCatalog(author?.description));
+
+  let score = 0;
+  for (const token of premiseTokens) {
+    if (knownForTokens.has(token)) score += 10;
+    else if (nameTokens.has(token)) score += 6;
+    else if (genreTokens.has(token)) score += 3;
+    else if (descriptionTokens.has(token)) score += 2;
+  }
+  return score;
+}
+
+function buildAuthorStyleCatalogForPremise(premiseText, maxEntries = 24) {
+  const premiseTokens = tokenizeForCatalog(premiseText);
+  if (premiseTokens.length === 0) return AUTHOR_STYLE_CATALOG;
+
+  const ranked = Object.entries(AUTHOR_STYLES)
+    .map(([id, author]) => ({ id, author, score: scoreAuthorForPremise(author, premiseTokens) }))
+    .sort((a, b) => b.score - a.score);
+
+  if (!ranked.length || ranked[0].score <= 0) {
+    return AUTHOR_STYLE_CATALOG;
+  }
+
+  return ranked
+    .filter(entry => entry.score > 0)
+    .slice(0, maxEntries)
+    .map(entry => formatAuthorCatalogLine(entry.id, entry.author))
+    .join('\n');
+}
 
 // Genre keyword mappings for rule-based detection
 const GENRE_KEYWORDS = {
@@ -26,7 +87,11 @@ const GENRE_KEYWORDS = {
   romance: ['romance', 'love', 'romantic', 'relationship', 'dating', 'wedding', 'passion', 'heart', 'kiss', 'couple', 'soulmate', 'affection', 'desire'],
   adventure: ['adventure', 'quest', 'journey', 'explore', 'expedition', 'treasure', 'hunt', 'discover', 'voyage', 'travel', 'escape', 'survival', 'action'],
   humor: ['humor', 'funny', 'comedy', 'comedic', 'hilarious', 'silly', 'joke', 'laugh', 'absurd', 'parody', 'satire', 'witty', 'whimsical'],
-  fairytale: ['fairytale', 'fairy tale', 'once upon a time', 'princess', 'prince', 'enchanted', 'magical kingdom', 'happily ever after', 'fable', 'folklore', 'bedtime']
+  fairytale: ['fairytale', 'fairy tale', 'once upon a time', 'princess', 'prince', 'enchanted', 'magical kingdom', 'happily ever after', 'fable', 'folklore', 'bedtime'],
+  // P6: Added YA/Poetry/Literary genres
+  literary: ['literary', 'literary fiction', 'character study', 'introspective', 'stream of consciousness', 'experimental', 'avant-garde', 'postmodern', 'surreal', 'surrealist', 'absurdist', 'dreamlike', 'kafkaesque'],
+  poetry: ['poetic', 'poetry', 'lyrical', 'verse', 'prose poetry', 'metaphorical', 'symbolic', 'abstract narrative', 'lyrical prose'],
+  ya: ['young adult', 'ya', 'teen', 'teenager', 'coming of age', 'high school', 'middle grade', 'tween']
 };
 
 // Intensity keyword mappings
@@ -34,8 +99,8 @@ const INTENSITY_KEYWORDS = {
   violence: ['violent', 'violence', 'battle', 'war', 'fight', 'combat', 'attack', 'kill', 'killing', 'death', 'weapon', 'sword fight', 'gun', 'explosion', 'murder', 'slaughter', 'massacre'],
   gore: ['gore', 'gory', 'blood', 'bloody', 'graphic', 'gruesome', 'dismember', 'brutal', 'visceral', 'intestines', 'decapitate', 'mutilate'],
   scary: ['scary', 'terrifying', 'frightening', 'creepy', 'haunted', 'nightmare', 'dread', 'fear', 'suspenseful', 'tense', 'eerie', 'horrifying', 'chilling'],
-  romance: ['steamy', 'passionate', 'intimate', 'sensual', 'erotic', 'seductive', 'explicit', 'adult romance', 'love scene'],
-  adultContent: ['explicit', 'adult only', 'mature content', 'nsfw', '18+', 'erotic', 'sexual', 'nude', 'nudity', 'x-rated']
+  romance: ['steamy', 'passionate', 'intimate', 'sensual', 'erotic', 'seductive', 'explicit', 'adult romance', 'love scene', 'sex scene', 'sexual encounter', 'making love'],
+  adultContent: ['explicit', 'adult only', 'mature content', 'nsfw', '18+', 'erotic', 'sexual', 'nude', 'nudity', 'x-rated', 'sex', 'sex scene', 'hardcore', 'porn', 'pornographic', 'smut', 'xxx', 'intercourse', 'orgasm', 'foreplay', 'threesome', 'orgy']
 };
 
 // Mood keyword mappings
@@ -58,11 +123,11 @@ const FORMAT_KEYWORDS = {
   novel: ['novel', 'long story', 'full-length', 'epic saga', 'epic story', '60 minute', 'hour long']
 };
 
-// Story length detection keywords
+// Story length detection keywords (P2: Expanded)
 const LENGTH_KEYWORDS = {
-  short: ['short', 'quick', 'brief', '5 minute', '10 minute', 'one scene', 'flash fiction'],
-  medium: ['medium', 'normal', '15 minute', '20 minute', 'standard'],
-  long: ['long', 'epic', 'extended', '30 minute', '45 minute', 'hour long', 'feature length', 'full length']
+  short: ['short', 'quick', 'brief', '5 minute', '10 minute', 'one scene', 'flash fiction', 'micro story', 'quick tale', 'mini story', 'bite-sized'],
+  medium: ['medium', 'normal', '15 minute', '20 minute', 'standard', 'regular length', 'moderate length', 'typical story'],
+  long: ['long', 'epic', 'extended', '30 minute', '45 minute', 'hour long', 'feature length', 'full length', 'spanning', 'multi-volume', 'several books', 'saga', 'sprawling', 'extensive', 'lengthy', 'marathon']
 };
 
 // Bedtime mode keywords - use word boundaries to avoid false positives like "hyper sleep"
@@ -98,10 +163,10 @@ const MULTI_NARRATOR_KEYWORDS = [
   'audio drama', 'radio play', 'dramatized', 'voiced characters'
 ];
 
-// Sound effects keywords
+// Sound effects keywords (P1: Tuned - explicit only, removed broad terms)
 const SFX_KEYWORDS = [
   'sound effects', 'sfx', 'sound fx', 'audio effects', 'ambient sounds',
-  'immersive audio', 'atmospheric', 'soundscape', 'audio drama'
+  'ambient audio', 'background sounds', 'environmental sounds'
 ];
 
 // SFX Level detection keywords - determines low/medium/high intensity
@@ -158,9 +223,9 @@ const CONFIG_TEMPLATES = {
   },
   bedtime_fairy_tale: {
     id: 'bedtime_fairy_tale',
-    name: 'Bedtime Fairy Tale',
+    name: 'Calm Fairy Tale',
     icon: '🌙',
-    description: 'Gentle, calming stories perfect for sleep',
+    description: 'Gentle, low-intensity fairy tales for winding down',
     config: {
       genres: { fairytale: 80, fantasy: 60, adventure: 40 },
       intensity: { violence: 5, scary: 10 },
@@ -412,12 +477,177 @@ const AUTHOR_STYLE_RECOMMENDATIONS = {
   literary: ['hemingway', 'fitzgerald', 'woolf', 'nabokov'],
   gothic: ['poe', 'stevenson', 'lovecraft', 'king'],
   psychological: ['dostoevsky', 'kafka', 'dick'],
+  // P6: Added YA/Poetry/Literary genre recommendations
+  ya: ['rowling', 'gaiman', 'pratchett', 'none'],
+  poetry: ['gaiman', 'woolf', 'none'],  // Gaiman for lyrical/poetic, Woolf for stream-of-consciousness
+  surreal: ['gaiman', 'kafka', 'dick', 'vonnegut'],  // For surreal/absurdist narratives
   default: ['none']
 };
+
+// P0: Negation prefixes for feature detection
+const NEGATION_PREFIXES = ['no ', 'not ', 'without ', "don't ", "doesn't ", 'never ', 'avoid ', 'skip ', 'disable '];
 
 class SmartConfigEngine {
   constructor() {
     this.logger = logger;
+  }
+
+  /**
+   * P0: Detect if a feature keyword is negated in text
+   * Returns { detected: boolean, negated: boolean }
+   * @param {string} text - Lowercased text to search
+   * @param {Array} keywords - Keywords to look for
+   * @param {string} featureName - Name of feature for logging
+   */
+  detectNegatedFeature(text, keywords, featureName) {
+    for (const keyword of keywords) {
+      for (const neg of NEGATION_PREFIXES) {
+        if (text.includes(neg + keyword)) {
+          this.logger.info(`[SmartConfig] Negation detected: "${neg}${keyword}" - disabling ${featureName}`);
+          return { detected: true, negated: true };
+        }
+      }
+      if (text.includes(keyword)) {
+        return { detected: true, negated: false };
+      }
+    }
+    return { detected: false, negated: false };
+  }
+
+  /**
+   * P3: Extract author preference from text
+   * Looks for patterns like "like Stephen King", "in the style of Tolkien"
+   * @param {string} text - Lowercased text to search
+   * @returns {string|null} - Normalized author name or null
+   */
+  extractAuthorPreference(text) {
+    // Author pattern matching - matches phrases like:
+    // "like Stephen King", "similar to Tolkien", "in the style of Hemingway"
+    const authorPatterns = [
+      /(?:like|similar to|in the style of|inspired by|channeling|written like|write like|writing like)\s+([a-z]+(?:\s+[a-z]+)?)/gi,
+      /([a-z]+(?:\s+[a-z]+)?)\s+(?:style|vibes?|feeling|tone|esque)/gi
+    ];
+
+    for (const pattern of authorPatterns) {
+      const matches = text.matchAll(pattern);
+      for (const match of matches) {
+        const authorName = match[1].trim();
+        const normalized = this.normalizeAuthorName(authorName);
+        if (normalized) {
+          return normalized;
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * P3: Normalize author name to available style options
+   * Maps common author requests to available styles in the system
+   * @param {string} authorName - Raw author name from text
+   * @returns {string|null} - Normalized author style key or null
+   */
+  normalizeAuthorName(authorName) {
+    const lowerName = authorName.toLowerCase().trim();
+
+    // If the LLM already returned a valid author style id, accept it directly.
+    if (AUTHOR_STYLES[lowerName]) {
+      return lowerName;
+    }
+
+    // Mapping of author name variations to system style keys
+    const authorMappings = {
+      // Horror authors
+      'stephen king': 'king',
+      'king': 'king',
+      'lovecraft': 'lovecraft',
+      'hp lovecraft': 'lovecraft',
+      'h.p. lovecraft': 'lovecraft',
+      'edgar allan poe': 'poe',
+      'edgar poe': 'poe',
+      'poe': 'poe',
+
+      // Fantasy authors
+      'tolkien': 'tolkien',
+      'jrr tolkien': 'tolkien',
+      'j.r.r. tolkien': 'tolkien',
+      'brandon sanderson': 'sanderson',
+      'sanderson': 'sanderson',
+      'robert jordan': 'jordan',
+      'jordan': 'jordan',
+      'george martin': 'martin',
+      'grrm': 'martin',
+      'martin': 'martin',
+      'neil gaiman': 'gaiman',
+      'gaiman': 'gaiman',
+      'robin hobb': 'hobb',
+      'hobb': 'hobb',
+      'patrick rothfuss': 'rothfuss',
+      'rothfuss': 'rothfuss',
+
+      // Sci-fi authors
+      'isaac asimov': 'asimov',
+      'asimov': 'asimov',
+      'frank herbert': 'herbert',
+      'herbert': 'herbert',
+      'ursula le guin': 'leguin',
+      'le guin': 'leguin',
+      'leguin': 'leguin',
+      'arthur clarke': 'clarke',
+      'clarke': 'clarke',
+      'philip dick': 'dick',
+      'philip k dick': 'dick',
+      'dick': 'dick',
+      'iain banks': 'banks',
+      'banks': 'banks',
+
+      // Classic/Literary authors
+      'jane austen': 'austen',
+      'austen': 'austen',
+      'fitzgerald': 'fitzgerald',
+      'f scott fitzgerald': 'fitzgerald',
+      'hemingway': 'hemingway',
+      'ernest hemingway': 'hemingway',
+      'virginia woolf': 'woolf',
+      'woolf': 'woolf',
+      'nabokov': 'nabokov',
+      'vladimir nabokov': 'nabokov',
+      'dostoevsky': 'dostoevsky',
+      'kafka': 'kafka',
+      'franz kafka': 'kafka',
+
+      // Comedy/Satire authors
+      'terry pratchett': 'pratchett',
+      'pratchett': 'pratchett',
+      'kurt vonnegut': 'vonnegut',
+      'vonnegut': 'vonnegut',
+      'oscar wilde': 'wilde',
+      'wilde': 'wilde',
+      'mark twain': 'twain',
+      'twain': 'twain',
+
+      // Adventure authors
+      'robert e howard': 'howard',
+      'howard': 'howard',
+      'l sprague de camp': 'decamp',
+      'l. sprague de camp': 'decamp',
+      'sprague de camp': 'decamp',
+      'de camp': 'decamp',
+      'decamp': 'decamp',
+      'alexandre dumas': 'dumas',
+      'dumas': 'dumas',
+      'robert louis stevenson': 'stevenson',
+      'stevenson': 'stevenson',
+
+      // Children/YA authors
+      'jk rowling': 'rowling',
+      'j.k. rowling': 'rowling',
+      'rowling': 'rowling',
+      'agatha christie': 'christie',
+      'christie': 'christie'
+    };
+
+    return authorMappings[lowerName] || null;
   }
 
   /**
@@ -440,7 +670,9 @@ class SmartConfigEngine {
 
       // Step 2: AI-powered deep analysis (for complex premises)
       let aiAnalysis = null;
-      if (premiseText.length > 50) {
+      // Run AI analysis when the prompt is complex OR when keyword analysis finds no signal.
+      // This catches short, entity-driven prompts (e.g., "Conan story") without brittle regex mapping.
+      if (premiseText.length > 50 || (keywordAnalysis.detectedKeywords || []).length === 0) {
         aiAnalysis = await this.aiAnalyzePremise(premiseText);
       }
 
@@ -482,7 +714,9 @@ class SmartConfigEngine {
       bedtime_mode: false,
       audience: 'general',
       multi_narrator: false,
+      multi_narrator_explicitly_disabled: false,  // P0: Negation detection flag
       sfx_enabled: false,
+      sfx_explicitly_disabled: false,  // P0: Negation detection flag
       sfx_level: null,  // null = default, 'medium', 'high'
       character_count: null,  // { min: X, max: Y, estimated: Z }
       detectedKeywords: []
@@ -576,18 +810,34 @@ class SmartConfigEngine {
       }
     }
 
-    // Multi-narrator detection
-    if (MULTI_NARRATOR_KEYWORDS.some(kw => text.includes(kw))) {
-      analysis.multi_narrator = true;
-      analysis.detectedKeywords.push('multi-narrator');
-      this.logger.info('[SmartConfig] Detected multi-narrator request');
+    // Multi-narrator detection with negation support (P0)
+    const multiNarratorResult = this.detectNegatedFeature(text, MULTI_NARRATOR_KEYWORDS, 'multi_narrator');
+    if (multiNarratorResult.detected) {
+      if (multiNarratorResult.negated) {
+        analysis.multi_narrator = false;
+        analysis.multi_narrator_explicitly_disabled = true;
+        analysis.detectedKeywords.push('multi-narrator-disabled');
+        this.logger.info('[SmartConfig] Multi-narrator explicitly disabled by user');
+      } else {
+        analysis.multi_narrator = true;
+        analysis.detectedKeywords.push('multi-narrator');
+        this.logger.info('[SmartConfig] Detected multi-narrator request');
+      }
     }
 
-    // Sound effects detection
-    if (SFX_KEYWORDS.some(kw => text.includes(kw))) {
-      analysis.sfx_enabled = true;
-      analysis.detectedKeywords.push('sound effects');
-      this.logger.info('[SmartConfig] Detected sound effects request');
+    // Sound effects detection with negation support (P0)
+    const sfxResult = this.detectNegatedFeature(text, SFX_KEYWORDS, 'sfx_enabled');
+    if (sfxResult.detected) {
+      if (sfxResult.negated) {
+        analysis.sfx_enabled = false;
+        analysis.sfx_explicitly_disabled = true;
+        analysis.detectedKeywords.push('sfx-disabled');
+        this.logger.info('[SmartConfig] Sound effects explicitly disabled by user');
+      } else {
+        analysis.sfx_enabled = true;
+        analysis.detectedKeywords.push('sound effects');
+        this.logger.info('[SmartConfig] Detected sound effects request');
+      }
     }
 
     // SFX Level detection - check for phrases indicating more sound effects
@@ -647,35 +897,165 @@ class SmartConfigEngine {
       analysis.audience = 'children';
     }
 
+    // P3: Author preference extraction
+    // Need to use original case text for proper author name detection
+    const authorPreference = this.extractAuthorPreference(text);
+    if (authorPreference) {
+      analysis.authorPreference = authorPreference;
+      analysis.detectedKeywords.push(`author:${authorPreference}`);
+      this.logger.info(`[SmartConfig] Detected author preference: ${authorPreference}`);
+    }
+
     return analysis;
   }
 
   /**
    * Use AI to deeply analyze the premise for nuanced understanding
+   * This is the PRIMARY detection method - LLM-based, not regex-based
+   * All semantic understanding (negation, author preference, genre, etc.) happens here
    */
   async aiAnalyzePremise(premiseText) {
     try {
-      const systemPrompt = `You are a story configuration analyzer. Given a story premise, extract configuration settings.
-Return a JSON object with these fields:
-- genres: object with genre names as keys and intensity 0-100 as values (fantasy, adventure, mystery, scifi, romance, horror, humor, fairytale)
-- mood: one of "calm", "exciting", "scary", "funny", "mysterious", "dramatic"
-- format: one of "short_story", "novella", "novel", "picture_book", "cyoa" (if interactive/choices mentioned)
-- audience: one of "children", "general", "mature"
-- intensity: object with violence (0-100), gore (0-100), scary (0-100), romance (0-100)
-- narratorStyle: recommended style from "warm", "dramatic", "playful", "mysterious"
-- storyType: detected type like "horror", "childrens", "romance", "adventure", "mystery"
-- characterCount: estimated number of main characters
-- themes: array of 2-3 main themes
-- sfxLevel: one of "low", "medium", "high" - infer from context:
-  * "high" if: user wants immersive/cinematic experience, audio drama, lots of atmosphere, movie-like quality, rich soundscape, continuous audio, professional production, or explicitly asks for many/lots of sound effects
-  * "medium" if: user wants enhanced audio, more sounds than default, frequent effects, or moderate immersion
-  * "low" if: user prefers minimal audio, simple narration, or doesn't mention audio/sounds (this is the default)
-- multiNarrator: boolean - true if user wants different voices for characters, voice cast, audio drama style, or multiple narrators
-- storyLength: one of "short", "medium", "long" - infer from context clues about desired duration or scope
+      const authorCatalog = buildAuthorStyleCatalogForPremise(premiseText);
+      // Comprehensive LLM-based analysis prompt - replaces regex-based detection
+      const systemPrompt = `You are a story configuration analyzer. Analyze the premise and return a JSON configuration.
 
-IMPORTANT: Read between the lines. If someone says "make it feel like a movie" or "fully immersive" or "professional quality", they likely want high sfx even without saying "sound effects". Similarly, "each character should have their own voice" implies multiNarrator even without saying "multi-narrator".
+REQUIRED FIELDS (all must be present):
 
-Only return valid JSON.`;
+1. genres: Object with genre intensities (0-100). Include ALL of these keys:
+   { fantasy, adventure, mystery, scifi, romance, horror, humor, fairytale, literary, poetry, ya }
+   - Set to 0 if not present, higher values for dominant genres
+   - "literary" = introspective, character studies, stream of consciousness, experimental prose
+   - "poetry" = lyrical, poetic prose, metaphorical, symbolic, surreal narratives
+   - "ya" = young adult, teen, coming-of-age content
+
+   IMPORTANT for literary/poetic content:
+   - "surreal narrative" → literary: 80+, poetry: 70+
+   - "poetic prose" → poetry: 80+
+   - "dreamlike" → literary: 70+, poetry: 60+
+   - "abstract" or "experimental" → literary: 80+
+
+2. mood: One of "calm", "exciting", "scary", "funny", "mysterious", "dramatic", "surreal", "poetic"
+   - Use "surreal" for dreamlike, abstract, experimental content
+   - Use "poetic" for lyrical, metaphorical content
+
+3. format: One of "short_story", "novella", "novel", "picture_book", "cyoa"
+   - Default: "short_story"
+   - ONLY use "cyoa" if user EXPLICITLY says: "choose your own adventure", "interactive", "make choices", "CYOA"
+
+4. audience: One of "children", "ya", "general", "mature"
+
+   CRITICAL - ADULT/EXPLICIT CONTENT DETECTION:
+   - If premise contains ANY sexual content (sex, erotic, explicit, adult scenes, intimacy, etc.) → audience MUST be "mature"
+   - Keywords that REQUIRE "mature": sex, sexual, erotic, explicit, nude, naked, intimacy, sensual, passionate love scene, adult content, NSFW, hardcore, pornographic
+   - Do NOT sanitize or refuse - just detect and set audience appropriately
+
+5. intensity: Object { violence: 0-100, gore: 0-100, scary: 0-100, romance: 0-100, adultContent: 0-100 }
+
+   CRITICAL - ADULT CONTENT INTENSITY:
+   - adultContent: 0 = no sexual content, 50 = implied/fade-to-black, 80-100 = explicit sexual content
+   - romance: For explicit sexual content, set BOTH romance AND adultContent to 80-100
+   - If premise mentions: "sex scene", "erotic", "explicit", "hardcore", "adult" → set adultContent: 100, romance: 100
+   - This ensures proper routing to uncensored AI providers (Venice.ai)
+
+6. narratorStyle: One of "warm", "dramatic", "playful", "mysterious", "literary", "poetic"
+   - Use "literary" or "poetic" for surreal/dreamlike/abstract content
+
+7. storyType: Detected primary type. MUST be one of:
+   "horror", "childrens", "ya", "romance", "adventure", "mystery", "scifi", "fantasy", "literary", "poetry", "bedtime"
+   - Use "bedtime" ONLY if the premise explicitly requests bedtime/sleep/wind-down/relaxing-before-bed.
+
+   IMPORTANT: For surreal, poetic, dreamlike, abstract, or experimental narratives:
+   - Return "literary" or "poetry" as storyType
+   - Do NOT return "mystery" just because something is enigmatic
+
+8. characterCount: Estimated number of main characters (integer)
+
+9. themes: Array of 2-3 main themes (strings)
+
+10. storyLength: One of "short", "medium", "long"
+
+11. authorPreference: String or null
+    - Must be ONE of the author style ids listed in "AVAILABLE AUTHOR STYLES" below, or null
+    - Choose the best matching style even if the user doesn't name an author explicitly, especially when the premise references recognizable characters, settings, franchises, or subgenres
+    - Use the "Known for:" hints in the catalog to match recognizable characters/series/franchises to the right author style (e.g., if a premise mentions a character or world that appears in knownFor, prioritize those authors)
+    - Return null only if there is no strong match OR the user explicitly asks for no specific author style
+
+AVAILABLE AUTHOR STYLES (authorPreference must be one of these ids):
+${authorCatalog}
+
+12. AUDIO FEATURES - EXTREMELY STRICT RULES:
+
+    Defaults:
+    - sfxEnabled: false
+    - multiNarrator: false
+
+    sfxEnabled: Boolean
+    - TRUE only if premise contains EXACT phrases: "sound effects", "sfx", "audio effects", "ambient sounds", "ambient audio"
+    - FALSE for everything else (examples that should NOT enable audio: atmospheric, cinematic, immersive, vivid, rich, detailed, dramatic)
+
+    multiNarrator: Boolean
+    - TRUE only if premise contains EXACT phrases: "multi-voice", "multiple voices", "voice cast", "different voices for", "audio drama", "radio play", "full cast", "voiced characters"
+    - FALSE for everything else (examples that should NOT enable multiNarrator: multiple characters, dialogue-heavy, many speakers, conversations)
+
+    sfxLevel: "low" | "medium" | "high" | null
+    - null when sfxEnabled is false
+    - "low" default when sfxEnabled is true
+
+13. negations: Object with explicit negation flags
+    {
+      sfxDisabled: boolean - true if "no sound effects", "without sfx", "no audio", etc.
+      multiVoiceDisabled: boolean - true if "single narrator", "no multiple voices", "one voice", etc.
+      anyNegationDetected: boolean - true if ANY negation phrase found
+    }
+
+14. styleIndicators: Array of detected style keywords from the premise
+    - MUST include if present: "surreal", "absurdist", "dreamlike", "kafkaesque", "poetic", "lyrical", "literary", "experimental", "abstract"
+    - Empty array [] only if NONE of these styles are detected
+
+EXAMPLES:
+
+Example 1 - Atmospheric horror (NO audio features):
+Input: "An atmospheric horror story with a mysterious setting"
+Output: {
+  "sfxEnabled": false,
+  "multiNarrator": false,
+  "storyType": "horror",
+  "mood": "scary"
+}
+REASON: "atmospheric" describes mood, NOT audio request
+
+Example 2 - Cinematic adventure (NO audio features):
+Input: "A cinematic adventure through ancient ruins"
+Output: {
+  "sfxEnabled": false,
+  "multiNarrator": false,
+  "storyType": "adventure"
+}
+REASON: "cinematic" describes visual style, NOT audio request
+
+Example 3 - Surreal poetic narrative (literary, NOT mystery):
+Input: "A surreal poetic narrative exploring dreams and consciousness"
+Output: {
+  "genres": { "literary": 85, "poetry": 75, "fantasy": 30, "mystery": 0 },
+  "mood": "surreal",
+  "storyType": "literary",
+  "styleIndicators": ["surreal", "poetic", "dreamlike"],
+  "sfxEnabled": false,
+  "multiNarrator": false
+}
+REASON: Surreal/poetic content = literary storyType, NOT mystery
+
+Example 4 - Explicit audio drama request (YES audio features):
+Input: "An audio drama with full voice cast and sound effects"
+Output: {
+  "sfxEnabled": true,
+  "sfxLevel": "high",
+  "multiNarrator": true
+}
+REASON: Explicit "audio drama", "voice cast", "sound effects" = enable audio
+
+Return ONLY valid JSON, no markdown, no explanation.`;
 
       const response = await completion({
         messages: [
@@ -692,24 +1072,59 @@ Only return valid JSON.`;
       if (response?.content) {
         const parsed = parseJsonResponse(response.content);
         this.logger.info('[SmartConfig] AI analysis completed:', JSON.stringify(parsed).substring(0, 200));
+
+        // Check if OpenAI refused to analyze (empty or sanitized response)
+        // If content was refused, assume it's mature/adult content
+        if (!parsed || Object.keys(parsed).length === 0) {
+          this.logger.warn('[SmartConfig] AI returned empty analysis - likely content refusal, marking as mature');
+          return {
+            audience: 'mature',
+            intensity: { adultContent: 100, romance: 100, violence: 0, gore: 0, scary: 0 },
+            refusedByOpenAI: true
+          };
+        }
+
         return parsed;
       }
-      return null;
+
+      // Empty response - OpenAI likely refused
+      this.logger.warn('[SmartConfig] AI returned no content - likely content refusal, marking as mature');
+      return {
+        audience: 'mature',
+        intensity: { adultContent: 100, romance: 100, violence: 0, gore: 0, scary: 0 },
+        refusedByOpenAI: true
+      };
     } catch (error) {
       this.logger.warn('[SmartConfig] AI analysis failed:', error.message);
+
+      // Check if it's a content policy error
+      if (error.message?.includes('content') || error.message?.includes('policy') || error.message?.includes('refused')) {
+        this.logger.warn('[SmartConfig] Content policy error detected - marking as mature for Venice routing');
+        return {
+          audience: 'mature',
+          intensity: { adultContent: 100, romance: 100, violence: 0, gore: 0, scary: 0 },
+          refusedByOpenAI: true
+        };
+      }
+
       return null;
     }
   }
 
   /**
    * Generate configuration from analysis results
+   * PRIORITY: AI analysis is PRIMARY for all semantic understanding
+   * Keywords are SECONDARY backup only
    */
   generateConfig(keywordAnalysis, aiAnalysis, currentConfig) {
     const config = {};
 
-    // Merge genre scores (prefer AI analysis if available)
-    config.genres = { ...currentConfig.genres };
+    // P2 FIX: Start with EMPTY genres, not currentConfig.genres
+    // This ensures Auto-Detect fully resets genres instead of merging with old values
+    // The frontend will overlay these on its own defaults
+    config.genres = {};
 
+    // AI genres are PRIMARY source
     if (aiAnalysis?.genres) {
       for (const [genre, score] of Object.entries(aiAnalysis.genres)) {
         if (typeof score === 'number') {
@@ -718,27 +1133,27 @@ Only return valid JSON.`;
       }
     }
 
-    // Apply keyword-detected genres
+    // Apply keyword-detected genres only as fallback
     for (const [genre, score] of Object.entries(keywordAnalysis.genres)) {
-      // Only override if keyword detection found something significant
-      if (score > 40) {
-        config.genres[genre] = Math.max(config.genres[genre] || 0, score);
+      // Only add if AI didn't detect this genre AND keyword detection found something significant
+      if (!config.genres[genre] && score > 40) {
+        config.genres[genre] = score;
       }
     }
 
-    // Set mood
+    // Set mood - AI takes precedence
     config.mood = aiAnalysis?.mood || keywordAnalysis.mood || currentConfig.mood || 'calm';
 
-    // Set format
-    if (keywordAnalysis.format) {
-      config.story_format = keywordAnalysis.format;
-      if (keywordAnalysis.format === 'cyoa') {
+    // Set format - AI takes precedence for semantic understanding
+    if (aiAnalysis?.format) {
+      config.story_format = aiAnalysis.format;
+      if (aiAnalysis.format === 'cyoa') {
         config.story_type = 'cyoa';
         config.cyoa_enabled = true;
       }
-    } else if (aiAnalysis?.format) {
-      config.story_format = aiAnalysis.format;
-      if (aiAnalysis.format === 'cyoa') {
+    } else if (keywordAnalysis.format) {
+      config.story_format = keywordAnalysis.format;
+      if (keywordAnalysis.format === 'cyoa') {
         config.story_type = 'cyoa';
         config.cyoa_enabled = true;
       }
@@ -751,20 +1166,23 @@ Only return valid JSON.`;
     const intensityViolence = config.intensity?.violence || aiAnalysis?.intensity?.violence || keywordAnalysis.intensity?.violence || 0;
     const intensityGore = config.intensity?.gore || aiAnalysis?.intensity?.gore || keywordAnalysis.intensity?.gore || 0;
     const intensityScary = config.intensity?.scary || aiAnalysis?.intensity?.scary || keywordAnalysis.intensity?.scary || 0;
+    const intensityRomance = config.intensity?.romance || aiAnalysis?.intensity?.romance || keywordAnalysis.intensity?.romance || 0;
+    const intensityAdultContent = config.intensity?.adultContent || aiAnalysis?.intensity?.adultContent || keywordAnalysis.intensity?.adultContent || 0;
 
     // High intensity content should force mature audience
-    const hasMatureContent = intensityViolence >= 60 || intensityGore >= 40 || intensityScary >= 70;
+    // Include romance and adultContent for explicit sexual content detection
+    const hasMatureContent = intensityViolence >= 60 || intensityGore >= 40 || intensityScary >= 70 || intensityRomance >= 70 || intensityAdultContent >= 50;
 
     if (aiAudience === 'mature' || keywordAudience === 'mature' || hasMatureContent) {
       config.audience = 'mature';
-      this.logger.info(`[SmartConfig] Setting audience=mature (AI: ${aiAudience}, Keywords: ${keywordAudience}, Violence: ${intensityViolence}, Gore: ${intensityGore}, Scary: ${intensityScary})`);
+      this.logger.info(`[SmartConfig] Setting audience=mature (AI: ${aiAudience}, Keywords: ${keywordAudience}, Violence: ${intensityViolence}, Gore: ${intensityGore}, Scary: ${intensityScary}, Romance: ${intensityRomance}, AdultContent: ${intensityAdultContent})`);
     } else if (aiAudience === 'children' || keywordAudience === 'children') {
       config.audience = 'children';
     } else {
       config.audience = aiAudience || keywordAudience || currentConfig.audience || 'general';
     }
 
-    // Set intensity
+    // Set intensity - AI takes precedence
     config.intensity = { ...currentConfig.intensity };
 
     const intensitySource = aiAnalysis?.intensity || keywordAnalysis.intensity;
@@ -793,37 +1211,78 @@ Only return valid JSON.`;
     }
 
     // Recommend author writing style
+    // PRIORITY ORDER: AI-detected author > user-extracted author > style-based recommendation
     const storyType = aiAnalysis?.storyType || this.detectStoryType(keywordAnalysis);
-    config.author_style = this.recommendAuthorStyle(storyType, config);
 
-    // Multi-narrator: AI analysis takes precedence, then keyword analysis
-    if (aiAnalysis?.multiNarrator) {
+    // Pass styleIndicators from AI to author recommendation for surreal/poetic detection
+    const styleIndicators = aiAnalysis?.styleIndicators || [];
+    config.detectedKeywords = [...(keywordAnalysis.detectedKeywords || []), ...styleIndicators];
+
+    if (aiAnalysis?.authorPreference) {
+      const normalized = this.normalizeAuthorName(aiAnalysis.authorPreference);
+      if (normalized) {
+        config.author_style = normalized;
+        this.logger.info(`[SmartConfig] Using AI-detected author style: ${normalized}`);
+      } else {
+        config.author_style = this.recommendAuthorStyle(storyType, config);
+      }
+    } else if (keywordAnalysis.authorPreference) {
+      config.author_style = keywordAnalysis.authorPreference;
+      this.logger.info(`[SmartConfig] Using keyword-extracted author style: ${keywordAnalysis.authorPreference}`);
+    } else {
+      config.author_style = this.recommendAuthorStyle(storyType, config);
+    }
+
+    // =======================================================================
+    // AUDIO FEATURES - LLM-BASED DETECTION IS PRIMARY (not keywords)
+    // The AI prompt has STRICT rules about what enables audio features
+    // =======================================================================
+
+    // NEGATION DETECTION: AI semantic understanding is PRIMARY
+    // Check AI negations FIRST before any enables
+    const aiNegations = aiAnalysis?.negations || {};
+
+    // Multi-narrator: AI negation > AI enable > keyword negation > keyword enable
+    if (aiNegations.multiVoiceDisabled === true) {
+      config.multi_narrator = false;
+      config.multi_narrator_explicitly_disabled = true;
+      this.logger.info('[SmartConfig] AI detected explicit negation: multi-voice disabled');
+    } else if (keywordAnalysis.multi_narrator_explicitly_disabled) {
+      config.multi_narrator = false;
+      config.multi_narrator_explicitly_disabled = true;
+      this.logger.info('[SmartConfig] Keywords detected multi-narrator negation');
+    } else if (aiAnalysis?.multiNarrator === true) {
+      // AI says ENABLE - trust it (it has strict rules)
       config.multi_narrator = true;
-      this.logger.info('[SmartConfig] AI detected multi_narrator=true from context');
+      this.logger.info('[SmartConfig] AI detected multi_narrator=true (explicit request found)');
     } else if (keywordAnalysis.multi_narrator) {
       config.multi_narrator = true;
       this.logger.info('[SmartConfig] Keywords detected multi_narrator=true');
     }
+    // If neither AI nor keywords found multi-narrator request, it stays undefined (false)
 
-    // SFX enabled: AI analysis or keyword analysis
-    if (aiAnalysis?.sfxLevel && aiAnalysis.sfxLevel !== 'low') {
+    // SFX: AI negation > AI enable > keyword negation > keyword enable
+    if (aiNegations.sfxDisabled === true) {
+      config.sfx_enabled = false;
+      config.sfx_explicitly_disabled = true;
+      config.sfx_level = null;
+      this.logger.info('[SmartConfig] AI detected explicit negation: SFX disabled');
+    } else if (keywordAnalysis.sfx_explicitly_disabled) {
+      config.sfx_enabled = false;
+      config.sfx_explicitly_disabled = true;
+      config.sfx_level = null;
+      this.logger.info('[SmartConfig] Keywords detected SFX negation');
+    } else if (aiAnalysis?.sfxEnabled === true) {
+      // AI says ENABLE - trust it (it has strict rules that filter out "atmospheric", "cinematic", etc.)
       config.sfx_enabled = true;
+      config.sfx_level = aiAnalysis.sfxLevel || 'low';
+      this.logger.info(`[SmartConfig] AI detected sfx_enabled=true, level=${config.sfx_level} (explicit request found)`);
     } else if (keywordAnalysis.sfx_enabled) {
       config.sfx_enabled = true;
-      this.logger.info('[SmartConfig] Setting sfx_enabled=true in config');
+      config.sfx_level = keywordAnalysis.sfx_level || 'low';
+      this.logger.info(`[SmartConfig] Keywords detected sfx_enabled=true, level=${config.sfx_level}`);
     }
-
-    // SFX level: AI analysis takes precedence (understands context better)
-    if (aiAnalysis?.sfxLevel) {
-      config.sfx_level = aiAnalysis.sfxLevel;
-      if (aiAnalysis.sfxLevel !== 'low') {
-        config.sfx_enabled = true;
-      }
-      this.logger.info(`[SmartConfig] AI inferred sfx_level=${aiAnalysis.sfxLevel} from context`);
-    } else if (keywordAnalysis.sfx_level) {
-      config.sfx_level = keywordAnalysis.sfx_level;
-      this.logger.info(`[SmartConfig] Keywords detected sfx_level=${keywordAnalysis.sfx_level}`);
-    }
+    // If neither AI nor keywords found SFX request, it stays undefined (false)
 
     // Story length: AI analysis takes precedence
     if (aiAnalysis?.storyLength) {
@@ -832,6 +1291,19 @@ Only return valid JSON.`;
     } else if (keywordAnalysis.story_length) {
       config.story_length = keywordAnalysis.story_length;
       this.logger.info(`[SmartConfig] Keywords detected story_length=${keywordAnalysis.story_length}`);
+    }
+
+    // P2: Story length fallback - infer from format if not explicitly set
+    if (!config.story_length) {
+      const formatLengthMap = {
+        'picture_book': 'short',
+        'short_story': 'short',
+        'novella': 'medium',
+        'novel': 'long',
+        'series': 'long'
+      };
+      config.story_length = formatLengthMap[config.story_format] || 'medium';
+      this.logger.info(`[SmartConfig] Inferred story_length=${config.story_length} from format or default`);
     }
 
     // Pass through bedtime mode if detected
@@ -855,38 +1327,93 @@ Only return valid JSON.`;
   }
 
   /**
-   * Recommend author writing style based on story type and genres
+   * Recommend author writing style based on story type, audience, and genres
+   * P4 FIX: Priority order: audience → story type → genre combinations → single genre
    */
   recommendAuthorStyle(storyType, config) {
-    // Get recommendations for the story type
+    // PRIORITY 1: Audience-based selection (children/YA gets YA authors)
+    // This takes precedence over genre selection
+    if (config.audience === 'children') {
+      this.logger.info('[SmartConfig] Author style: YA authors for children audience');
+      return AUTHOR_STYLE_RECOMMENDATIONS.ya[0] || 'rowling';
+    }
+
+    // PRIORITY 1b: YA story type or YA genre detection
+    // YA content (young adult, teen, coming-of-age) gets YA authors
+    if (storyType === 'ya' || storyType === 'childrens' || (config.genres?.ya > 40)) {
+      this.logger.info('[SmartConfig] Author style: YA authors for YA/teen content');
+      return AUTHOR_STYLE_RECOMMENDATIONS.ya[0] || 'rowling';
+    }
+
+    // PRIORITY 2: Story type-based (if explicit type like 'bedtime', 'horror')
     let recommendations = AUTHOR_STYLE_RECOMMENDATIONS[storyType] || AUTHOR_STYLE_RECOMMENDATIONS.default;
 
-    // If high fantasy, prefer Tolkien/Sanderson
-    if (config.genres?.fantasy > 70) {
-      recommendations = AUTHOR_STYLE_RECOMMENDATIONS.fantasy;
+    // PRIORITY 3: Genre combinations (order matters - check from most to least specific)
+    // Romance should override sci-fi for "romantic space opera" type stories
+    const genres = config.genres || {};
+
+    // Poetry/Literary/Surreal FIRST - these are specialized and shouldn't default to mystery
+    // "surreal poetic narrative" should get Gaiman/Kafka, not Christie
+    // Check multiple signals: storyType, genres, mood, detectedKeywords
+    if (genres.poetry > 40 || storyType === 'poetry' || config.mood === 'poetic') {
+      this.logger.info('[SmartConfig] Author style: Poetry authors for poetic content');
+      return AUTHOR_STYLE_RECOMMENDATIONS.poetry[0] || 'gaiman';
     }
 
-    // If high horror, prefer King/Lovecraft
-    if (config.genres?.horror > 60 || config.intensity?.gore > 50) {
-      recommendations = AUTHOR_STYLE_RECOMMENDATIONS.horror;
+    if (genres.literary > 40 || storyType === 'literary') {
+      this.logger.info('[SmartConfig] Author style: Literary authors for literary fiction');
+      return AUTHOR_STYLE_RECOMMENDATIONS.literary[0] || 'hemingway';
     }
 
-    // If high scifi, prefer Asimov/Herbert
-    if (config.genres?.scifi > 60) {
-      recommendations = AUTHOR_STYLE_RECOMMENDATIONS.scifi;
+    // Surreal/absurdist content - check mood, keywords, and any surreal indicators
+    // This catches "surreal poetic narrative" even if genres aren't set high
+    if (config.mood === 'surreal' ||
+        config.detectedKeywords?.includes('surreal') || config.detectedKeywords?.includes('absurdist') ||
+        config.detectedKeywords?.includes('dreamlike') || config.detectedKeywords?.includes('experimental') ||
+        config.detectedKeywords?.includes('poetic') || config.detectedKeywords?.includes('lyrical')) {
+      this.logger.info('[SmartConfig] Author style: Surreal authors for surreal/absurdist/poetic content');
+      return AUTHOR_STYLE_RECOMMENDATIONS.surreal[0] || 'gaiman';
     }
 
-    // If mystery-focused
-    if (config.genres?.mystery > 60) {
-      recommendations = AUTHOR_STYLE_RECOMMENDATIONS.mystery;
+    // Check romance - if romance is significant, prioritize romance authors
+    // This ensures "romantic space opera" gets romance authors, not sci-fi
+    if (genres.romance > 50) {
+      this.logger.info('[SmartConfig] Author style: Romance authors (romance genre detected)');
+      return AUTHOR_STYLE_RECOMMENDATIONS.romance[0] || 'austen';
     }
 
-    // If comedic
-    if (config.mood === 'funny' || config.genres?.humor > 60) {
-      recommendations = AUTHOR_STYLE_RECOMMENDATIONS.comedy;
+    // If comedic mood or high humor, prioritize comedy authors
+    if (config.mood === 'funny' || genres.humor > 60) {
+      this.logger.info('[SmartConfig] Author style: Comedy authors');
+      return AUTHOR_STYLE_RECOMMENDATIONS.comedy[0] || 'pratchett';
     }
 
-    // Return first recommendation (most suitable)
+    // If high horror or gore
+    if (genres.horror > 60 || config.intensity?.gore > 50) {
+      this.logger.info('[SmartConfig] Author style: Horror authors');
+      return AUTHOR_STYLE_RECOMMENDATIONS.horror[0] || 'king';
+    }
+
+    // If mystery-focused (but not if poetry/surreal - already handled above)
+    if (genres.mystery > 60) {
+      this.logger.info('[SmartConfig] Author style: Mystery authors');
+      return AUTHOR_STYLE_RECOMMENDATIONS.mystery[0] || 'christie';
+    }
+
+    // If high fantasy (but not for children - already handled above)
+    if (genres.fantasy > 70) {
+      this.logger.info('[SmartConfig] Author style: Fantasy authors');
+      return AUTHOR_STYLE_RECOMMENDATIONS.fantasy[0] || 'tolkien';
+    }
+
+    // If high scifi (but not romance-dominant - already handled above)
+    if (genres.scifi > 60) {
+      this.logger.info('[SmartConfig] Author style: Sci-Fi authors');
+      return AUTHOR_STYLE_RECOMMENDATIONS.scifi[0] || 'asimov';
+    }
+
+    // Return first recommendation from story type or default
+    this.logger.info(`[SmartConfig] Author style: Using story type '${storyType}' default`);
     return recommendations[0] || 'none';
   }
 
@@ -979,6 +1506,10 @@ Only return valid JSON.`;
     if (genres.adventure > 50) return 'adventure';
     if (genres.humor > 50) return 'comedy';
     if (genres.fairytale > 50 || analysis.mood === 'calm') return 'bedtime';
+    // P6: Added YA/Poetry/Literary detection
+    if (genres.ya > 50) return 'ya';
+    if (genres.literary > 50) return 'literary';
+    if (genres.poetry > 50) return 'poetry';
 
     return 'adventure'; // Default
   }

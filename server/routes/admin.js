@@ -7,8 +7,10 @@ import express from 'express';
 import { pool } from '../database/pool.js';
 import { logger } from '../utils/logger.js';
 import { authenticateToken, requireAdmin, getUserUsage } from '../middleware/auth.js';
+import { wrapRoutes, NotFoundError, ValidationError } from '../middleware/errorHandler.js';
 
 const router = express.Router();
+wrapRoutes(router); // Auto-wrap async handlers for error catching
 
 // All admin routes require authentication and admin role
 router.use(authenticateToken);

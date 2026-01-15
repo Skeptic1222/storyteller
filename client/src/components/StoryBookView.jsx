@@ -145,15 +145,15 @@ function StoryBookView({
       className={`
         story-document
         ${isFullscreen
-          ? 'fixed inset-0 z-50 bg-night-950 overflow-y-auto'
-          : 'relative bg-night-900/95 rounded-2xl border border-night-700 overflow-y-auto max-h-[80vh]'
+          ? 'fixed inset-0 z-50 bg-slate-950 overflow-y-auto'
+          : 'relative bg-slate-900/95 rounded-2xl border border-slate-700 overflow-y-auto max-h-[80vh]'
         }
         ${className}
       `}
     >
       {/* Title Header */}
       <header className={`
-        sticky top-0 z-20 bg-night-900/95 backdrop-blur-sm border-b border-night-700/50
+        sticky top-0 z-20 bg-slate-900/95 backdrop-blur-sm border-b border-slate-700/50
         ${isFullscreen ? 'px-8 py-6' : 'px-6 py-4'}
       `}>
         <div className="flex items-start justify-between gap-4">
@@ -166,13 +166,13 @@ function StoryBookView({
               {title}
             </h1>
             {authorStyle && (
-              <p className={`text-night-500 italic mt-1 ${isFullscreen ? 'text-lg' : 'text-sm'}`}>
+              <p className={`text-slate-500 italic mt-1 ${isFullscreen ? 'text-lg' : 'text-sm'}`}>
                 In the style of {authorStyle}
               </p>
             )}
             {sceneProgress && (
               <div className={`mt-2 ${isFullscreen ? 'text-base' : 'text-sm'}`}>
-                <span className="text-night-500">{sceneProgress}</span>
+                <span className="text-slate-500">{sceneProgress}</span>
                 {isPlaying && (
                   <span className="ml-3 text-green-400 text-xs animate-pulse">
                     Playing
@@ -187,7 +187,7 @@ function StoryBookView({
             {/* Minimize text button */}
             <button
               onClick={() => setTextMinimized(!textMinimized)}
-              className="p-2 rounded-lg bg-night-800 text-night-400 hover:text-night-200 transition-colors"
+              className="p-2 rounded-lg bg-slate-800 text-slate-400 hover:text-slate-200 transition-colors"
               title={textMinimized ? 'Expand text' : 'Minimize text'}
             >
               <Minus className="w-5 h-5" />
@@ -197,7 +197,7 @@ function StoryBookView({
             {fullscreenEnabled && (
               <button
                 onClick={toggleFullscreen}
-                className="p-2 rounded-lg bg-night-800 text-night-400 hover:text-night-200 transition-colors"
+                className="p-2 rounded-lg bg-slate-800 text-slate-400 hover:text-slate-200 transition-colors"
                 title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
               >
                 {isFullscreen ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
@@ -222,14 +222,14 @@ function StoryBookView({
               src={coverImageUrl}
               alt="Story cover"
               onClick={() => setCoverFullscreen(true)}
-              className="cover-image rounded-xl shadow-2xl border-2 border-night-600 cursor-pointer hover:border-golden-400 transition-colors"
+              className="cover-image rounded-xl shadow-2xl border-2 border-slate-600 cursor-pointer hover:border-golden-400 transition-colors"
             />
 
             {/* Minimize cover icon - top right, shows on hover */}
             {/* Click anywhere else on cover opens fullscreen */}
             <button
               onClick={(e) => { e.stopPropagation(); setCoverMinimized(true); }}
-              className="absolute top-2 right-2 p-1.5 rounded-lg bg-night-900/80 text-night-400 hover:text-night-200 hover:bg-night-800 opacity-0 group-hover:opacity-100 transition-all"
+              className="absolute top-2 right-2 p-1.5 rounded-lg bg-slate-900/80 text-slate-400 hover:text-slate-200 hover:bg-slate-800 opacity-0 group-hover:opacity-100 transition-all"
               title="Minimize cover"
             >
               <Minus className="w-4 h-4" />
@@ -239,7 +239,7 @@ function StoryBookView({
             {onRegenerateCover && (
               <button
                 onClick={(e) => { e.stopPropagation(); onRegenerateCover(); }}
-                className="absolute bottom-2 left-2 p-1.5 rounded-lg bg-night-900/80 text-night-400 hover:text-amber-400 hover:bg-night-800 opacity-0 group-hover:opacity-100 transition-all"
+                className="absolute bottom-2 left-2 p-1.5 rounded-lg bg-slate-900/80 text-slate-400 hover:text-amber-400 hover:bg-slate-800 opacity-0 group-hover:opacity-100 transition-all"
                 title="Regenerate cover"
               >
                 <RefreshCw className="w-4 h-4" />
@@ -252,10 +252,10 @@ function StoryBookView({
         {coverImageUrl && coverMinimized && (
           <button
             onClick={() => setCoverMinimized(false)}
-            className="story-cover-minimized float-left mr-4 mb-2 p-2 rounded-lg bg-night-800 border border-night-600 hover:border-golden-400 transition-colors group"
+            className="story-cover-minimized float-left mr-4 mb-2 p-2 rounded-lg bg-slate-800 border border-slate-600 hover:border-golden-400 transition-colors group"
             title="Expand cover"
           >
-            <Image className="w-6 h-6 text-night-400 group-hover:text-golden-400" />
+            <Image className="w-6 h-6 text-slate-400 group-hover:text-golden-400" />
           </button>
         )}
 
@@ -273,15 +273,15 @@ function StoryBookView({
                 </span>
               </div>
               {synopsisExpanded ? (
-                <ChevronUp className="w-4 h-4 text-night-500 group-hover:text-night-300" />
+                <ChevronUp className="w-4 h-4 text-slate-500 group-hover:text-slate-300" />
               ) : (
-                <ChevronDown className="w-4 h-4 text-night-500 group-hover:text-night-300" />
+                <ChevronDown className="w-4 h-4 text-slate-500 group-hover:text-slate-300" />
               )}
             </button>
 
             {synopsisExpanded && (
               <div className={isFullscreen ? 'text-lg' : 'text-base'}>
-                <p className="text-night-300 leading-relaxed">
+                <p className="text-slate-300 leading-relaxed">
                   {synopsis}
                 </p>
 
@@ -291,7 +291,7 @@ function StoryBookView({
                     {themes.map((theme, i) => (
                       <span
                         key={i}
-                        className="px-2 py-1 bg-night-800 rounded text-night-400 text-xs"
+                        className="px-2 py-1 bg-slate-800 rounded text-slate-400 text-xs"
                       >
                         {theme}
                       </span>
@@ -300,7 +300,7 @@ function StoryBookView({
                 )}
 
                 {setting && (
-                  <div className="mt-3 text-night-400 text-sm">
+                  <div className="mt-3 text-slate-400 text-sm">
                     <span className="font-medium">Setting:</span> {setting}
                   </div>
                 )}
@@ -333,10 +333,10 @@ function StoryBookView({
                       inline-block px-1 py-0.5 mx-0.5 rounded cursor-pointer
                       transition-all duration-150 ease-out
                       ${idx === currentWordIndex
-                        ? 'bg-golden-400 text-night-900 scale-110 font-semibold shadow-lg shadow-golden-400/40'
+                        ? 'bg-golden-400 text-slate-900 scale-110 font-semibold shadow-lg shadow-golden-400/40'
                         : idx < currentWordIndex
-                          ? 'text-night-500'
-                          : 'text-night-200 hover:bg-night-700/50'
+                          ? 'text-slate-500'
+                          : 'text-slate-200 hover:bg-slate-700/50'
                       }
                     `}
                   >
@@ -348,7 +348,7 @@ function StoryBookView({
           ) : sceneText ? (
             /* Plain text fallback */
             <div className={`
-              story-plain-text font-serif leading-loose text-night-200
+              story-plain-text font-serif leading-loose text-slate-200
               ${isFullscreen
                 ? 'text-2xl md:text-3xl'
                 : 'text-xl'
@@ -359,8 +359,8 @@ function StoryBookView({
           ) : (
             /* Empty state */
             <div className="text-center py-12">
-              <BookOpen className="w-12 h-12 text-night-600 mx-auto mb-4" />
-              <p className="text-night-500">
+              <BookOpen className="w-12 h-12 text-slate-600 mx-auto mb-4" />
+              <p className="text-slate-500">
                 The story will appear here...
               </p>
             </div>
@@ -370,7 +370,7 @@ function StoryBookView({
       </section>
       ) : (
         /* Minimized state - compact view */
-        <div className="px-6 py-4 text-center text-night-500 border-b border-night-700/30">
+        <div className="px-6 py-4 text-center text-slate-500 border-b border-slate-700/30">
           <p className="text-sm">Story text minimized. Click the expand button to show.</p>
         </div>
       )}
@@ -378,18 +378,18 @@ function StoryBookView({
       {/* Footer - Reading indicator */}
       {words.length > 0 && (
         <footer className={`
-          sticky bottom-0 z-20 bg-night-900/95 backdrop-blur-sm border-t border-night-700/30
+          sticky bottom-0 z-20 bg-slate-900/95 backdrop-blur-sm border-t border-slate-700/30
           ${isFullscreen ? 'px-8 py-4' : 'px-6 py-3'}
         `}>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <BookOpen className="w-4 h-4 text-night-600" />
-              <span className="text-night-600 text-xs">
+              <BookOpen className="w-4 h-4 text-slate-600" />
+              <span className="text-slate-600 text-xs">
                 Read Along Mode
               </span>
             </div>
 
-            <span className="text-night-600 text-xs">
+            <span className="text-slate-600 text-xs">
               {currentWordIndex >= 0 ? currentWordIndex + 1 : 0} / {words.length} words
             </span>
           </div>
@@ -399,7 +399,7 @@ function StoryBookView({
       {/* Cover Fullscreen Overlay */}
       {coverFullscreen && coverImageUrl && (
         <div
-          className="fixed inset-0 z-[100] bg-night-950/95 flex items-center justify-center p-4"
+          className="fixed inset-0 z-[100] bg-slate-950/95 flex items-center justify-center p-4"
           onClick={() => setCoverFullscreen(false)}
         >
           <div className="relative max-w-4xl max-h-[90vh]">
@@ -412,7 +412,7 @@ function StoryBookView({
             {/* Close button */}
             <button
               onClick={() => setCoverFullscreen(false)}
-              className="absolute top-4 right-4 p-2 rounded-lg bg-night-900/80 text-night-400 hover:text-night-200 hover:bg-night-800 transition-colors"
+              className="absolute top-4 right-4 p-2 rounded-lg bg-slate-900/80 text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors"
               title="Close"
             >
               <Minimize2 className="w-5 h-5" />
@@ -422,7 +422,7 @@ function StoryBookView({
             {onRegenerateCover && (
               <button
                 onClick={(e) => { e.stopPropagation(); onRegenerateCover(); }}
-                className="absolute bottom-4 left-4 p-2 rounded-lg bg-night-900/80 text-night-400 hover:text-amber-400 hover:bg-night-800 transition-colors"
+                className="absolute bottom-4 left-4 p-2 rounded-lg bg-slate-900/80 text-slate-400 hover:text-amber-400 hover:bg-slate-800 transition-colors"
                 title="Regenerate cover"
               >
                 <RefreshCw className="w-5 h-5" />

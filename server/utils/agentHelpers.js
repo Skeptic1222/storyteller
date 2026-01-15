@@ -81,51 +81,8 @@ export function buildCharacterContext(characters, options = {}) {
   }).join('\n');
 }
 
-/**
- * Parse JSON response from LLM
- * Handles markdown code blocks, raw JSON, and various error cases
- *
- * @param {string} content - Raw LLM response content
- * @param {string} agentName - Agent name for logging
- * @returns {object|null} Parsed JSON or null on failure
- */
-export function parseLLMJsonResponse(content, agentName = 'Agent') {
-  if (!content) {
-    logger.warn(`[${agentName}] Empty response content`);
-    return null;
-  }
-
-  try {
-    // Try direct JSON parse first
-    return JSON.parse(content);
-  } catch (directError) {
-    // Try extracting from markdown code blocks
-    const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (jsonMatch) {
-      try {
-        return JSON.parse(jsonMatch[1].trim());
-      } catch (blockError) {
-        logger.warn(`[${agentName}] Failed to parse JSON from code block:`, blockError.message);
-      }
-    }
-
-    // Try finding JSON object/array in content
-    const objectMatch = content.match(/\{[\s\S]*\}/);
-    const arrayMatch = content.match(/\[[\s\S]*\]/);
-    const jsonStr = objectMatch?.[0] || arrayMatch?.[0];
-
-    if (jsonStr) {
-      try {
-        return JSON.parse(jsonStr);
-      } catch (extractError) {
-        logger.warn(`[${agentName}] Failed to parse extracted JSON:`, extractError.message);
-      }
-    }
-
-    logger.error(`[${agentName}] Could not parse JSON from response:`, content.substring(0, 200));
-    return null;
-  }
-}
+// NOTE: parseLLMJsonResponse was REMOVED (dead code - never called)
+// Use parseJsonResponse from services/openai.js instead - it's the robust, well-tested implementation
 
 /**
  * Validate required fields in parsed JSON response
@@ -171,62 +128,14 @@ export function createAgentError(error, agentName, context = {}) {
   };
 }
 
-/**
- * Extract dialogue segments from text
- * Shared utility for dialogue attribution and tagging agents
- *
- * @param {string} text - Text containing dialogue
- * @returns {Array} Array of {text, isDialogue, startIndex, endIndex}
- */
-export function extractDialogueSegments(text) {
-  const segments = [];
-  let currentIndex = 0;
-
-  // Match quoted dialogue (both single and double quotes)
-  const dialogueRegex = /["']([^"']+)["']/g;
-  let match;
-
-  while ((match = dialogueRegex.exec(text)) !== null) {
-    // Add narration before this dialogue
-    if (match.index > currentIndex) {
-      segments.push({
-        text: text.slice(currentIndex, match.index),
-        isDialogue: false,
-        startIndex: currentIndex,
-        endIndex: match.index
-      });
-    }
-
-    // Add the dialogue
-    segments.push({
-      text: match[0],
-      dialogueText: match[1],
-      isDialogue: true,
-      startIndex: match.index,
-      endIndex: match.index + match[0].length
-    });
-
-    currentIndex = match.index + match[0].length;
-  }
-
-  // Add remaining narration
-  if (currentIndex < text.length) {
-    segments.push({
-      text: text.slice(currentIndex),
-      isDialogue: false,
-      startIndex: currentIndex,
-      endIndex: text.length
-    });
-  }
-
-  return segments;
-}
+// extractDialogueSegments was REMOVED - dead code, never called
+// Use dialogueSegmentUtils.js for dialogue parsing instead
 
 export default {
   parseCharacterTraits,
   buildCharacterContext,
-  parseLLMJsonResponse,
+  // parseLLMJsonResponse was REMOVED - use parseJsonResponse from services/openai.js
   validateResponseFields,
-  createAgentError,
-  extractDialogueSegments
+  createAgentError
+  // extractDialogueSegments was REMOVED - use dialogueSegmentUtils.js
 };

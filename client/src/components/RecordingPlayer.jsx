@@ -150,25 +150,25 @@ function RecordingPlayer({
 
   if (!recording || !segments?.length) {
     return (
-      <div className="flex items-center justify-center h-64 text-night-400">
+      <div className="flex items-center justify-center h-64 text-slate-400">
         No recording available
       </div>
     );
   }
 
   return (
-    <div className="recording-player bg-night-900 rounded-2xl overflow-hidden shadow-2xl">
+    <div className="recording-player bg-slate-900 rounded-2xl overflow-hidden shadow-2xl">
       {/* Header */}
-      <div className="flex items-center justify-between p-4 bg-night-800 border-b border-night-700">
+      <div className="flex items-center justify-between p-4 bg-slate-800 border-b border-slate-700">
         <div className="flex items-center gap-3">
           <div className="p-2 rounded-lg bg-amber-500/20">
             <Disc className="w-5 h-5 text-amber-400 animate-spin-slow" />
           </div>
           <div>
-            <h3 className="text-night-100 font-medium">
+            <h3 className="text-slate-100 font-medium">
               {recording.title || 'Recorded Story'}
             </h3>
-            <p className="text-night-400 text-sm">
+            <p className="text-slate-400 text-sm">
               Playing recorded audio
             </p>
           </div>
@@ -179,7 +179,7 @@ function RecordingPlayer({
           <button
             onClick={() => setShowReadAlong(!showReadAlong)}
             className={`p-2 rounded-lg transition-colors ${
-              showReadAlong ? 'bg-amber-500/20 text-amber-400' : 'bg-night-700 text-night-400'
+              showReadAlong ? 'bg-amber-500/20 text-amber-400' : 'bg-slate-700 text-slate-400'
             }`}
             title="Toggle Read Along"
           >
@@ -190,7 +190,7 @@ function RecordingPlayer({
           <button
             onClick={() => setShowSegmentList(!showSegmentList)}
             className={`p-2 rounded-lg transition-colors ${
-              showSegmentList ? 'bg-amber-500/20 text-amber-400' : 'bg-night-700 text-night-400'
+              showSegmentList ? 'bg-amber-500/20 text-amber-400' : 'bg-slate-700 text-slate-400'
             }`}
             title="Show chapters"
           >
@@ -201,7 +201,7 @@ function RecordingPlayer({
           {onClose && (
             <button
               onClick={onClose}
-              className="p-2 rounded-lg bg-night-700 text-night-400 hover:text-night-200"
+              className="p-2 rounded-lg bg-slate-700 text-slate-400 hover:text-slate-200"
               title="Close player"
             >
               <X className="w-5 h-5" />
@@ -214,9 +214,9 @@ function RecordingPlayer({
       <div className="flex">
         {/* Segment list sidebar */}
         {showSegmentList && (
-          <div className="w-64 border-r border-night-700 bg-night-800/50 max-h-[500px] overflow-y-auto">
-            <div className="p-3 border-b border-night-700">
-              <h4 className="text-night-300 text-sm font-medium">Chapters</h4>
+          <div className="w-64 border-r border-slate-700 bg-slate-800/50 max-h-[500px] overflow-y-auto">
+            <div className="p-3 border-b border-slate-700">
+              <h4 className="text-slate-300 text-sm font-medium">Chapters</h4>
             </div>
             <div className="p-2 space-y-1">
               {segments.map((seg, idx) => (
@@ -226,19 +226,19 @@ function RecordingPlayer({
                   className={`w-full text-left p-2 rounded-lg transition-colors ${
                     idx === currentSegmentIndex
                       ? 'bg-golden-500/20 text-golden-400'
-                      : 'hover:bg-night-700 text-night-300'
+                      : 'hover:bg-slate-700 text-slate-300'
                   }`}
                 >
                   <div className="flex items-center justify-between">
                     <span className="text-sm">
                       {seg.chapter_title || `Chapter ${idx + 1}`}
                     </span>
-                    <span className="text-xs text-night-500">
+                    <span className="text-xs text-slate-500">
                       {Math.floor(seg.duration_seconds / 60)}:{String(Math.floor(seg.duration_seconds % 60)).padStart(2, '0')}
                     </span>
                   </div>
                   {seg.scene_summary && (
-                    <p className="text-xs text-night-500 mt-1 line-clamp-2">
+                    <p className="text-xs text-slate-500 mt-1 line-clamp-2">
                       {seg.scene_summary}
                     </p>
                   )}
@@ -291,7 +291,7 @@ function RecordingPlayer({
               />
 
               {currentSegment?.scene_summary && (
-                <p className="text-night-400 text-center mt-4 max-w-md">
+                <p className="text-slate-400 text-center mt-4 max-w-md">
                   {currentSegment.scene_summary}
                 </p>
               )}
@@ -299,7 +299,7 @@ function RecordingPlayer({
           )}
 
           {/* SFX Player */}
-          <div className="px-4 py-2 border-t border-night-700 bg-night-800/50">
+          <div className="px-4 py-2 border-t border-slate-700 bg-slate-800/50">
             <SFXPlayer
               sfxData={sfxData}
               currentTime={currentTime}
@@ -310,13 +310,13 @@ function RecordingPlayer({
           </div>
 
           {/* Playback controls */}
-          <div className="p-4 border-t border-night-700 bg-night-800">
+          <div className="p-4 border-t border-slate-700 bg-slate-800">
             <div className="flex items-center justify-center gap-4">
               {/* Previous */}
               <button
                 onClick={previousSegment}
                 disabled={currentSegmentIndex === 0}
-                className="p-2 rounded-lg bg-night-700 text-night-300 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed"
+                className="p-2 rounded-lg bg-slate-700 text-slate-300 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed"
               >
                 <SkipBack className="w-5 h-5" />
               </button>
@@ -324,7 +324,7 @@ function RecordingPlayer({
               {/* Play/Pause */}
               <button
                 onClick={() => setIsPlaying(!isPlaying)}
-                className="p-4 rounded-full bg-golden-500 text-night-900 hover:bg-golden-400 transition-colors"
+                className="p-4 rounded-full bg-golden-500 text-slate-900 hover:bg-golden-400 transition-colors"
               >
                 {isPlaying ? (
                   <Pause className="w-6 h-6" />
@@ -337,14 +337,14 @@ function RecordingPlayer({
               <button
                 onClick={nextSegment}
                 disabled={currentSegmentIndex === segments.length - 1}
-                className="p-2 rounded-lg bg-night-700 text-night-300 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed"
+                className="p-2 rounded-lg bg-slate-700 text-slate-300 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed"
               >
                 <SkipForward className="w-5 h-5" />
               </button>
             </div>
 
             {/* Progress info */}
-            <div className="flex items-center justify-between mt-4 text-sm text-night-400">
+            <div className="flex items-center justify-between mt-4 text-sm text-slate-400">
               <span>Chapter {currentSegmentIndex + 1} of {segments.length}</span>
               <span>
                 {Math.floor(currentOverallTime / 60)}:{String(Math.floor(currentOverallTime % 60)).padStart(2, '0')}
@@ -354,7 +354,7 @@ function RecordingPlayer({
             </div>
 
             {/* Overall progress bar */}
-            <div className="mt-2 h-1 bg-night-700 rounded-full overflow-hidden">
+            <div className="mt-2 h-1 bg-slate-700 rounded-full overflow-hidden">
               <div
                 className="h-full bg-golden-500 transition-all duration-300"
                 style={{ width: `${(currentOverallTime / totalDuration) * 100}%` }}
@@ -364,8 +364,8 @@ function RecordingPlayer({
 
           {/* CYOA Choices at end of segment */}
           {choicesAtEnd && choicesAtEnd.length > 0 && !isPlaying && (
-            <div className="p-4 border-t border-night-700 bg-night-800/50">
-              <h4 className="text-night-300 text-sm mb-3">Continue the story:</h4>
+            <div className="p-4 border-t border-slate-700 bg-slate-800/50">
+              <h4 className="text-slate-300 text-sm mb-3">Continue the story:</h4>
               <div className="space-y-2">
                 {choicesAtEnd.map((choice) => {
                   const hasRecording = currentSegment?.has_recording_for_choice?.[choice.key];
@@ -373,13 +373,13 @@ function RecordingPlayer({
                     <button
                       key={choice.key}
                       onClick={() => handleChoiceSelect(choice.key)}
-                      className="w-full p-3 rounded-lg bg-night-700 hover:bg-night-600 text-left flex items-center gap-3 transition-colors"
+                      className="w-full p-3 rounded-lg bg-slate-700 hover:bg-slate-600 text-left flex items-center gap-3 transition-colors"
                     >
-                      <span className="w-8 h-8 rounded-full bg-night-600 flex items-center justify-center text-night-200 font-bold">
+                      <span className="w-8 h-8 rounded-full bg-slate-600 flex items-center justify-center text-slate-200 font-bold">
                         {choice.key}
                       </span>
                       <div className="flex-1">
-                        <span className="text-night-200">{choice.text}</span>
+                        <span className="text-slate-200">{choice.text}</span>
                         {!hasRecording && (
                           <span className="text-amber-400 text-xs ml-2">(new path)</span>
                         )}
@@ -396,24 +396,24 @@ function RecordingPlayer({
 
           {/* Playback complete message */}
           {playbackComplete && (
-            <div className="p-6 text-center bg-gradient-to-t from-night-800 to-transparent">
+            <div className="p-6 text-center bg-gradient-to-t from-slate-800 to-transparent">
               <h3 className="text-golden-400 text-xl font-medium mb-2">
                 The End
               </h3>
-              <p className="text-night-400 mb-4">
+              <p className="text-slate-400 mb-4">
                 Story playback complete
               </p>
               <div className="flex items-center justify-center gap-3">
                 <button
                   onClick={() => goToSegment(0)}
-                  className="px-4 py-2 rounded-lg bg-night-700 text-night-200 hover:bg-night-600"
+                  className="px-4 py-2 rounded-lg bg-slate-700 text-slate-200 hover:bg-slate-600"
                 >
                   Play Again
                 </button>
                 {onClose && (
                   <button
                     onClick={onClose}
-                    className="px-4 py-2 rounded-lg bg-golden-500 text-night-900 hover:bg-golden-400"
+                    className="px-4 py-2 rounded-lg bg-golden-500 text-slate-900 hover:bg-golden-400"
                   >
                     Close
                   </button>
@@ -425,8 +425,8 @@ function RecordingPlayer({
       </div>
 
       {/* Keyboard shortcuts hint */}
-      <div className="px-4 py-2 bg-night-800/50 border-t border-night-700 text-center">
-        <span className="text-night-500 text-xs">
+      <div className="px-4 py-2 bg-slate-800/50 border-t border-slate-700 text-center">
+        <span className="text-slate-500 text-xs">
           Space: Play/Pause | Arrow keys: Navigate | R: Toggle Read Along | Esc: Close
         </span>
       </div>

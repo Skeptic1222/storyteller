@@ -244,8 +244,62 @@ CREATE TABLE IF NOT EXISTS agent_prompts (
 );
 
 -- =============================================================================
+-- RECORDING SYSTEM
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS story_recordings (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    story_session_id UUID NOT NULL REFERENCES story_sessions(id) ON DELETE CASCADE,
+    path_hash VARCHAR(64),  -- Hash of CYOA choice path for uniqueness
+    choice_sequence TEXT,   -- Human-readable path like "A-B-C"
+    title VARCHAR(500),
+    voice_snapshot JSONB,   -- Preserves voice settings used
+    recording_state VARCHAR(20) DEFAULT 'active' CHECK (recording_state IN ('active', 'paused', 'complete', 'failed')),
+    recording_started_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    recording_completed_at TIMESTAMP WITH TIME ZONE,
+    is_complete BOOLEAN DEFAULT FALSE,
+    interrupted_at_segment INTEGER,
+    total_duration_seconds INTEGER,
+    segment_count INTEGER DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(story_session_id, path_hash)
+);
+
+CREATE TABLE IF NOT EXISTS recording_segments (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    recording_id UUID NOT NULL REFERENCES story_recordings(id) ON DELETE CASCADE,
+    scene_id UUID REFERENCES story_scenes(id) ON DELETE SET NULL,
+    sequence_index INTEGER NOT NULL,  -- -1 for intro, 0+ for scenes
+    audio_url VARCHAR(500),
+    audio_hash VARCHAR(64),
+    file_checksum VARCHAR(64),
+    file_size_bytes INTEGER,
+    start_time_seconds FLOAT DEFAULT 0,
+    duration_seconds FLOAT,
+    word_timings JSONB,  -- For karaoke/read-along highlighting
+    scene_text TEXT,
+    scene_summary TEXT,
+    image_url VARCHAR(500),
+    visual_timeline JSONB,
+    sfx_data JSONB DEFAULT '[]',
+    choices_at_end JSONB,
+    selected_choice_key VARCHAR(50),
+    mood VARCHAR(50),
+    chapter_number INTEGER,
+    chapter_title VARCHAR(200),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(recording_id, sequence_index)
+);
+
+-- =============================================================================
 -- INDEXES
 -- =============================================================================
+
+-- Recording lookups
+CREATE INDEX IF NOT EXISTS idx_story_recordings_session ON story_recordings(story_session_id);
+CREATE INDEX IF NOT EXISTS idx_story_recordings_state ON story_recordings(recording_state);
+CREATE INDEX IF NOT EXISTS idx_recording_segments_recording ON recording_segments(recording_id, sequence_index);
 
 -- Session lookups
 CREATE INDEX idx_story_sessions_user_id ON story_sessions(user_id);

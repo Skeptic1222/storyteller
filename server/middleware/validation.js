@@ -1,10 +1,32 @@
 /**
  * Input Validation Middleware
- * Lightweight validation without external dependencies
+ * Zod-based validation with XSS protection
+ *
+ * Usage:
+ *   import { validateBody, schemas } from '../middleware/validation.js';
+ *   router.post('/start', validateBody(schemas.storyStart), handler);
  */
+
+import { z } from 'zod';
+import sanitizeHtml from 'sanitize-html';
+import { ValidationError } from './errorHandler.js';
 
 // UUID v4 regex pattern
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+// Strict sanitization config - removes all HTML
+const STRICT_SANITIZE_CONFIG = {
+  allowedTags: [],
+  allowedAttributes: {},
+  disallowedTagsMode: 'recursiveEscape'
+};
+
+// Lenient config for user content that may contain basic formatting
+const BASIC_SANITIZE_CONFIG = {
+  allowedTags: ['b', 'i', 'em', 'strong', 'br'],
+  allowedAttributes: {},
+  disallowedTagsMode: 'recursiveEscape'
+};
 
 /**
  * Validate that a value is a valid UUID v4
@@ -37,13 +59,38 @@ export function isOneOf(value, allowedValues) {
 
 /**
  * Sanitize string input - remove potential XSS vectors
+ * Uses sanitize-html for comprehensive protection against:
+ * - Script injection
+ * - Event handler injection
+ * - CSS injection
+ * - javascript: URLs
+ * - data: URLs with scripts
+ *
+ * @param {string} value - Input string to sanitize
+ * @param {object} options - Optional config override
+ * @returns {string} - Sanitized string
  */
-export function sanitizeString(value) {
+export function sanitizeString(value, options = {}) {
   if (typeof value !== 'string') return '';
-  return value
-    .replace(/[<>]/g, '') // Remove angle brackets
+
+  const config = options.allowBasicFormatting
+    ? BASIC_SANITIZE_CONFIG
+    : STRICT_SANITIZE_CONFIG;
+
+  return sanitizeHtml(value, config)
     .trim()
-    .substring(0, 10000); // Limit length
+    .substring(0, options.maxLength || 10000);
+}
+
+/**
+ * Sanitize for plain text contexts (story prompts, messages)
+ * Strips ALL HTML - for content that should never have formatting
+ */
+export function sanitizeText(value, maxLength = 10000) {
+  if (typeof value !== 'string') return '';
+  return sanitizeHtml(value, STRICT_SANITIZE_CONFIG)
+    .trim()
+    .substring(0, maxLength);
 }
 
 /**
@@ -184,17 +231,217 @@ export function validatePagination(req, res, next) {
   next();
 }
 
+// =============================================================================
+// ZOD SCHEMAS
+// =============================================================================
+
+// Common schemas
+const uuidSchema = z.string().uuid('Invalid UUID format');
+
+export const schemas = {
+  // UUID validation
+  uuid: uuidSchema,
+
+  // Session ID in params
+  sessionIdParam: z.object({
+    id: uuidSchema,
+    sessionId: uuidSchema.optional()
+  }).partial().refine(data => data.id || data.sessionId, {
+    message: 'Session ID is required'
+  }),
+
+  // Pagination
+  pagination: z.object({
+    page: z.coerce.number().int().min(1).default(1),
+    limit: z.coerce.number().int().min(1).max(100).default(20)
+  }),
+
+  // Story start
+  storyStart: z.object({
+    mode: z.enum(['storytime', 'advanced', 'quick', 'cyoa', 'conversation', 'campaign']).default('storytime'),
+    config: z.object({
+      genre: z.string().max(100).optional(),
+      themes: z.array(z.string().max(50)).max(10).optional(),
+      audience: z.enum(['children', 'young_adult', 'adult', 'all_ages', 'general', 'mature']).optional(),
+      length: z.enum(['short', 'medium', 'long', 'epic']).optional(),
+      voice_id: z.string().max(50).optional(),
+      narrator_style: z.string().max(50).optional(),
+      author_style: z.string().max(50).optional(),
+      multi_voice: z.boolean().optional(),
+      hide_speech_tags: z.boolean().optional(),
+      sfx_enabled: z.boolean().optional(),
+      autoplay: z.boolean().optional(),
+      bedtime_mode: z.boolean().optional(),
+      cyoa_enabled: z.boolean().optional(),
+      custom_prompt: z.string().max(2000).optional()
+    }).passthrough().default({}),
+    cyoa_enabled: z.boolean().default(false),
+    bedtime_mode: z.boolean().default(false),
+    storyBibleContext: z.any().nullable().optional()
+  }).passthrough(),
+
+  // Choice submission
+  storyChoice: z.object({
+    session_id: uuidSchema,
+    choice_key: z.string().min(1).max(50),
+    choice_text: z.string().max(500).optional(),
+    from_recording: z.boolean().optional(),
+    diverge_at_segment: z.number().int().min(0).optional()
+  }),
+
+  // Continue story
+  storyContinue: z.object({
+    session_id: uuidSchema,
+    voice_id: z.string().max(50).optional(),
+    autoplay: z.boolean().optional()
+  }),
+
+  // Backtrack
+  storyBacktrack: z.object({
+    scene_id: uuidSchema,
+    scene_index: z.number().int().min(0)
+  }),
+
+  // Library progress
+  libraryProgress: z.object({
+    scene_id: uuidSchema.nullable().optional(),
+    scene_index: z.number().int().min(0),
+    reading_time: z.number().int().min(0).max(3600).default(0)
+  }),
+
+  // Voice preview
+  voicePreview: z.object({
+    voice_id: z.string().min(1).max(50),
+    text: z.string().min(1).max(500).optional()
+  }),
+
+  // Config update
+  configUpdate: z.object({
+    voice_id: z.string().max(50).optional(),
+    narrator_style: z.string().max(50).optional(),
+    sfx_enabled: z.boolean().optional(),
+    autoplay: z.boolean().optional(),
+    multi_voice: z.boolean().optional()
+  }).passthrough(),
+
+  // Smart interpret
+  smartInterpret: z.object({
+    prompt: z.string().min(1).max(2000),
+    context: z.any().optional()
+  }),
+
+  // Lorebook entry
+  lorebookEntry: z.object({
+    name: z.string().min(1).max(100),
+    content: z.string().min(1).max(5000),
+    keywords: z.array(z.string().max(50)).max(20).optional(),
+    category: z.enum(['character', 'location', 'item', 'event', 'lore', 'other']).default('other'),
+    priority: z.number().int().min(0).max(100).default(50)
+  }),
+
+  // Share create
+  shareCreate: z.object({
+    session_id: uuidSchema,
+    is_public: z.boolean().default(false),
+    allow_comments: z.boolean().default(true)
+  }),
+
+  // D&D dice roll
+  diceRoll: z.object({
+    dice: z.string().regex(/^\d+d\d+([+-]\d+)?$/, 'Invalid dice notation'),
+    advantage: z.boolean().optional(),
+    disadvantage: z.boolean().optional()
+  })
+};
+
+// =============================================================================
+// ZOD VALIDATION MIDDLEWARE
+// =============================================================================
+
+/**
+ * Validate request body with Zod schema
+ */
+export function validateBody(schema) {
+  return (req, res, next) => {
+    try {
+      req.body = schema.parse(req.body);
+      next();
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        const details = error.errors.map(e => ({
+          field: e.path.join('.'),
+          message: e.message
+        }));
+        next(new ValidationError('Invalid request body', details));
+      } else {
+        next(error);
+      }
+    }
+  };
+}
+
+/**
+ * Validate URL params with Zod schema
+ */
+export function validateParams(schema) {
+  return (req, res, next) => {
+    try {
+      req.params = schema.parse(req.params);
+      next();
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        const details = error.errors.map(e => ({
+          field: e.path.join('.'),
+          message: e.message
+        }));
+        next(new ValidationError('Invalid URL parameters', details));
+      } else {
+        next(error);
+      }
+    }
+  };
+}
+
+/**
+ * Validate query string with Zod schema
+ */
+export function validateQuery(schema) {
+  return (req, res, next) => {
+    try {
+      req.query = schema.parse(req.query);
+      next();
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        const details = error.errors.map(e => ({
+          field: e.path.join('.'),
+          message: e.message
+        }));
+        next(new ValidationError('Invalid query parameters', details));
+      } else {
+        next(error);
+      }
+    }
+  };
+}
+
 export default {
+  // Legacy validators
   isValidUUID,
   isNonEmptyString,
   isValidInteger,
   isOneOf,
   sanitizeString,
+  sanitizeText,
   validateSessionId,
   validateUserId,
   validateStoryStart,
   validateChoice,
   validateConversation,
   validateVoicePreview,
-  validatePagination
+  validatePagination,
+  // Zod validators
+  schemas,
+  validateBody,
+  validateParams,
+  validateQuery
 };

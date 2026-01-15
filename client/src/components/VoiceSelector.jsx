@@ -250,7 +250,7 @@ function VoiceSelector({ selectedVoice, onSelect, narratorStyle = 'warm', skipAu
   if (loading) {
     return (
       <div className="flex items-center justify-center p-8">
-        <Loader className="w-6 h-6 text-night-400 animate-spin" />
+        <Loader className="w-6 h-6 text-slate-400 animate-spin" />
       </div>
     );
   }
@@ -261,7 +261,7 @@ function VoiceSelector({ selectedVoice, onSelect, narratorStyle = 'warm', skipAu
 
   if (displayVoices.length === 0) {
     return (
-      <div className="p-4 bg-night-800/50 rounded-xl text-center text-night-400">
+      <div className="p-4 bg-slate-800/50 rounded-xl text-center text-slate-400">
         No voices available. Using default narrator.
       </div>
     );
@@ -286,8 +286,8 @@ function VoiceSelector({ selectedVoice, onSelect, narratorStyle = 'warm', skipAu
           onClick={() => setGenderFilter('all')}
           className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-1 ${
             genderFilter === 'all'
-              ? 'bg-golden-400 text-night-900'
-              : 'bg-night-700 text-night-300 hover:bg-night-600'
+              ? 'bg-golden-400 text-slate-900'
+              : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
           }`}
         >
           <Users className="w-4 h-4" />
@@ -298,7 +298,7 @@ function VoiceSelector({ selectedVoice, onSelect, narratorStyle = 'warm', skipAu
           className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-all ${
             genderFilter === 'male'
               ? 'bg-blue-500 text-white'
-              : 'bg-night-700 text-night-300 hover:bg-night-600'
+              : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
           }`}
         >
           Male ({voices.male.length})
@@ -308,7 +308,7 @@ function VoiceSelector({ selectedVoice, onSelect, narratorStyle = 'warm', skipAu
           className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-all ${
             genderFilter === 'female'
               ? 'bg-pink-500 text-white'
-              : 'bg-night-700 text-night-300 hover:bg-night-600'
+              : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
           }`}
         >
           Female ({voices.female.length})
@@ -316,7 +316,7 @@ function VoiceSelector({ selectedVoice, onSelect, narratorStyle = 'warm', skipAu
       </div>
 
       {/* Style indicator */}
-      <div className="text-night-400 text-xs flex items-center gap-2">
+      <div className="text-slate-400 text-xs flex items-center gap-2">
         <Sparkles className="w-3 h-3" />
         Style preview will use: <span className="text-golden-400">{styleLabels[narratorStyle] || narratorStyle}</span>
       </div>
@@ -334,8 +334,8 @@ function VoiceSelector({ selectedVoice, onSelect, narratorStyle = 'warm', skipAu
               key={voiceId}
               className={`w-full p-3 rounded-xl border-2 transition-all ${
                 isSelected
-                  ? 'border-golden-400 bg-night-800'
-                  : 'border-night-700 bg-night-800/50'
+                  ? 'border-golden-400 bg-slate-800'
+                  : 'border-slate-700 bg-slate-800/50'
               }`}
             >
               {/* Top row: Voice info and selection */}
@@ -346,7 +346,7 @@ function VoiceSelector({ selectedVoice, onSelect, narratorStyle = 'warm', skipAu
                   className="flex-1 min-w-0 text-left"
                 >
                   <div className="flex items-center gap-2">
-                    <span className="text-night-100 font-medium truncate">{voice.name}</span>
+                    <span className="text-slate-100 font-medium truncate">{voice.name}</span>
                     {voice.gender && (
                       <span className={`text-[10px] px-1.5 py-0.5 rounded ${
                         voice.gender === 'female' ? 'bg-pink-500/20 text-pink-400' : 'bg-blue-500/20 text-blue-400'
@@ -365,7 +365,7 @@ function VoiceSelector({ selectedVoice, onSelect, narratorStyle = 'warm', skipAu
                       <Check className="w-4 h-4 text-golden-400 flex-shrink-0" />
                     )}
                   </div>
-                  <div className="text-night-400 text-xs truncate">
+                  <div className="text-slate-400 text-xs truncate">
                     {voice.description || voice.style || ''}
                   </div>
                 </button>
@@ -410,7 +410,7 @@ function VoiceSelector({ selectedVoice, onSelect, narratorStyle = 'warm', skipAu
                   }}
                   title={isExpanded ? 'Hide more styles' : 'Show all 8 styles'}
                   className={`px-2 py-1.5 rounded-lg text-xs transition-all flex items-center gap-1 ${
-                    isExpanded ? 'bg-golden-400/30 text-golden-400' : 'bg-night-700 text-night-400 hover:bg-night-600'
+                    isExpanded ? 'bg-golden-400/30 text-golden-400' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'
                   }`}
                 >
                   {isExpanded ? (
@@ -426,8 +426,8 @@ function VoiceSelector({ selectedVoice, onSelect, narratorStyle = 'warm', skipAu
 
               {/* Expanded: Additional 4 styles */}
               {isExpanded && (
-                <div className="mt-2 pt-2 border-t border-night-700">
-                  <div className="text-night-500 text-[10px] mb-1.5">More styles:</div>
+                <div className="mt-2 pt-2 border-t border-slate-700">
+                  <div className="text-slate-500 text-[10px] mb-1.5">More styles:</div>
                   <div className="flex items-center gap-1.5">
                     {Object.entries(NARRATOR_STYLES)
                       .filter(([styleKey]) => !PRIMARY_MOODS.includes(styleKey))
@@ -466,7 +466,7 @@ function VoiceSelector({ selectedVoice, onSelect, narratorStyle = 'warm', skipAu
       </div>
 
       {/* Voice count */}
-      <div className="text-night-500 text-xs text-center">
+      <div className="text-slate-500 text-xs text-center">
         {displayVoices.length} voices available
       </div>
     </div>

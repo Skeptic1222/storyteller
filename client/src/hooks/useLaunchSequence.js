@@ -2,12 +2,12 @@
  * useLaunchSequence Hook
  * Manages the pre-narration launch sequence including:
  * - Sequential validation stage tracking
- * - Countdown logic with autoplay support
  * - Socket event handling for stage updates
- * - Client-side watchdog for countdown reliability
  * - Retry mechanism for failed stages
  * - Cover regeneration support
  * - HUD data: Agent status, usage tracking, character voices, SFX details, QA checks
+ *
+ * Simplified flow (v2): Generate → Ready → Play (no countdown)
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -42,11 +42,10 @@ const STATUS = {
   ERROR: 'error'
 };
 
-// Countdown phases for visual display
+// Legacy countdown phases (deprecated - kept for backward compatibility)
+// New flow goes directly from ready to playing
 const COUNTDOWN_PHASE = {
-  PRE_CUE: 'pre_cue',      // "All set! Beginning in..."
-  COUNTDOWN: 'countdown',   // 3... 2... 1...
-  GO: 'go',                 // Brief "Go!" or start
+  READY: 'ready',           // Ready to play (replaces countdown)
   COMPLETE: 'complete'
 };
 
@@ -59,27 +58,18 @@ const COUNTDOWN_PHASE = {
  */
 export function useLaunchSequence(socket, sessionId, options = {}) {
   const {
-    countdownDuration = 5, // seconds
-    preCueDuration = 1500, // milliseconds for "All set!" message
-    autoCountdown = true, // start countdown automatically when ready
     initialAutoplay = false, // initial autoplay state from config
     onReady = null, // callback when ready to play
-    onCountdownComplete = null, // callback when countdown finishes
     onError = null // callback on error
   } = options;
 
   // Store callbacks in refs to avoid effect dependencies
   const onReadyRef = useRef(onReady);
-  const onCountdownCompleteRef = useRef(onCountdownComplete);
   const onErrorRef = useRef(onError);
 
   useEffect(() => {
     onReadyRef.current = onReady;
   }, [onReady]);
-
-  useEffect(() => {
-    onCountdownCompleteRef.current = onCountdownComplete;
-  }, [onCountdownComplete]);
 
   useEffect(() => {
     onErrorRef.current = onError;
@@ -100,21 +90,18 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
   const [scene, setScene] = useState(null);
   const [error, setError] = useState(null);
   const [warnings, setWarnings] = useState([]);
+  const [launchProgress, setLaunchProgress] = useState({ percent: 0, message: '', stage: null });
 
-  // Countdown state with phases
-  const [isCountdownActive, setIsCountdownActive] = useState(false);
-  const [countdownPhase, setCountdownPhase] = useState(null);
-  const [countdownValue, setCountdownValue] = useState(countdownDuration);
+  // Ready to play state (simplified - no countdown)
   const [isReadyToPlay, setIsReadyToPlay] = useState(false);
-  const countdownIntervalRef = useRef(null);
-  const preCueTimeoutRef = useRef(null);
 
   // Autoplay state - initialized from config
   const [autoplayEnabled, setAutoplayEnabled] = useState(initialAutoplay);
 
-  // Watchdog state
+  // Refs
   const readyReceivedRef = useRef(false);
-  const watchdogTimeoutRef = useRef(null);
+  // Guard against duplicate start-playback emissions (React StrictMode)
+  const playbackStartedRef = useRef(false);
 
   // Retry state
   const [retryingStage, setRetryingStage] = useState(null);
@@ -131,6 +118,10 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
   // Playback audio generation state (for deferred TTS)
   const [isGeneratingAudio, setIsGeneratingAudio] = useState(false);
   const [audioGenerationStatus, setAudioGenerationStatus] = useState(null);
+
+  // Audio queued state - bridges gap between audio-ready and audio-playing
+  // This keeps the loading indicator visible until audio actually starts
+  const [isAudioQueued, setIsAudioQueued] = useState(false);
 
   // HUD state - Agent status tracking
   const [agents, setAgents] = useState(() => {
@@ -211,9 +202,6 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
     setScene(null);
     setError(null);
     setWarnings([]);
-    setIsCountdownActive(false);
-    setCountdownPhase(null);
-    setCountdownValue(countdownDuration);
     setIsReadyToPlay(false);
     setRetryingStage(null);
     setCanRetryStages({});
@@ -265,93 +253,11 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
     });
     setSafetyReport(null);
     setDetailedProgressLog([]);
+    setLaunchProgress({ percent: 0, message: '', stage: null });
 
     // Clear refs
     readyReceivedRef.current = false;
-
-    // Clear all timers
-    if (countdownIntervalRef.current) {
-      clearInterval(countdownIntervalRef.current);
-      countdownIntervalRef.current = null;
-    }
-    if (preCueTimeoutRef.current) {
-      clearTimeout(preCueTimeoutRef.current);
-      preCueTimeoutRef.current = null;
-    }
-    if (watchdogTimeoutRef.current) {
-      clearTimeout(watchdogTimeoutRef.current);
-      watchdogTimeoutRef.current = null;
-    }
-  }, [countdownDuration]);
-
-  /**
-   * Start the countdown with pre-cue phase
-   * Flow: PRE_CUE (1.5s) -> COUNTDOWN (5s) -> GO (0.5s) -> COMPLETE
-   */
-  const startCountdown = useCallback(() => {
-    console.log('[useLaunchSequence] Starting countdown sequence');
-
-    // Clear any existing timers
-    if (countdownIntervalRef.current) {
-      clearInterval(countdownIntervalRef.current);
-    }
-    if (preCueTimeoutRef.current) {
-      clearTimeout(preCueTimeoutRef.current);
-    }
-
-    setIsCountdownActive(true);
-
-    // Phase 1: Pre-cue message "All set! Beginning in..."
-    setCountdownPhase(COUNTDOWN_PHASE.PRE_CUE);
-    setCountdownValue(countdownDuration);
-
-    preCueTimeoutRef.current = setTimeout(() => {
-      // Phase 2: Start numeric countdown
-      setCountdownPhase(COUNTDOWN_PHASE.COUNTDOWN);
-
-      countdownIntervalRef.current = setInterval(() => {
-        setCountdownValue(prev => {
-          if (prev <= 1) {
-            clearInterval(countdownIntervalRef.current);
-            countdownIntervalRef.current = null;
-
-            // Phase 3: Brief "Go!" moment
-            setCountdownPhase(COUNTDOWN_PHASE.GO);
-
-            // After 500ms, transition to complete
-            setTimeout(() => {
-              setCountdownPhase(COUNTDOWN_PHASE.COMPLETE);
-              setIsCountdownActive(false);
-              setIsReadyToPlay(true);
-
-              // Call the countdown complete callback
-              onCountdownCompleteRef.current?.();
-            }, 500);
-
-            return 0;
-          }
-          return prev - 1;
-        });
-      }, 1000);
-    }, preCueDuration);
-  }, [countdownDuration, preCueDuration]);
-
-  /**
-   * Cancel the countdown
-   */
-  const cancelCountdown = useCallback(() => {
-    console.log('[useLaunchSequence] Cancelling countdown');
-    if (countdownIntervalRef.current) {
-      clearInterval(countdownIntervalRef.current);
-      countdownIntervalRef.current = null;
-    }
-    if (preCueTimeoutRef.current) {
-      clearTimeout(preCueTimeoutRef.current);
-      preCueTimeoutRef.current = null;
-    }
-    setIsCountdownActive(false);
-    setCountdownPhase(null);
-    setIsReadyToPlay(true); // Show play button instead
+    playbackStartedRef.current = false;
   }, []);
 
   /**
@@ -359,7 +265,6 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
    */
   const cancel = useCallback(() => {
     console.log('[Launch] CANCEL | sessionId:', sessionId);
-    cancelCountdown();
 
     if (socket && sessionId) {
       console.log('[Socket:Emit] EVENT: cancel-launch-sequence | session_id:', sessionId);
@@ -367,12 +272,19 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
     }
 
     reset();
-  }, [socket, sessionId, cancelCountdown, reset]);
+  }, [socket, sessionId, reset]);
 
   /**
    * Request playback to start
    */
   const startPlayback = useCallback(() => {
+    // Guard against duplicate emissions (React StrictMode double-invokes effects)
+    if (playbackStartedRef.current) {
+      console.log('[Launch] START_PLAYBACK | skipped - already started');
+      return;
+    }
+    playbackStartedRef.current = true;
+
     console.log('[Launch] START_PLAYBACK | sessionId:', sessionId);
     if (socket && sessionId) {
       console.log('[Socket:Emit] EVENT: start-playback | session_id:', sessionId);
@@ -392,24 +304,6 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
       socket.emit('confirm-ready', { session_id: sessionId });
     }
   }, [socket, sessionId]);
-
-  /**
-   * Setup client-side watchdog for countdown trigger
-   * If countdown doesn't start within timeout, try to start it manually
-   */
-  const setupWatchdog = useCallback(() => {
-    if (watchdogTimeoutRef.current) {
-      clearTimeout(watchdogTimeoutRef.current);
-    }
-
-    watchdogTimeoutRef.current = setTimeout(() => {
-      // If we received ready but countdown hasn't started
-      if (readyReceivedRef.current && !isCountdownActive && !isReadyToPlay && autoCountdown) {
-        console.warn('[useLaunchSequence] Watchdog triggered - forcing countdown start');
-        startCountdown();
-      }
-    }, 1500); // 1.5 second watchdog
-  }, [isCountdownActive, isReadyToPlay, autoCountdown, startCountdown]);
 
   /**
    * Retry a specific failed stage
@@ -539,7 +433,11 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
     // Overall progress update
     const handleProgress = (data) => {
       console.log('[Socket:Recv] EVENT: launch-progress | progress:', data?.progress, '| stage:', data?.stage);
-      // Could update a progress bar here if needed
+      setLaunchProgress({
+        percent: data?.percent ?? 0,
+        message: data?.message || '',
+        stage: data?.stage || null
+      });
     };
 
     // Launch sequence ready - all validations passed
@@ -595,18 +493,9 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
       // Notify parent
       onReadyRef.current?.(data);
 
-      // Start countdown if autoCountdown is enabled
-      if (autoCountdown) {
-        // Small delay to let UI update, then start countdown
-        setTimeout(() => {
-          startCountdown();
-          // Setup client-side watchdog to ensure countdown started
-          setupWatchdog();
-        }, 300);
-      } else {
-        // Skip straight to ready to play
-        setIsReadyToPlay(true);
-      }
+      // Go directly to ready (no countdown - simplified flow)
+      console.log('[Launch] Ready to play - no countdown');
+      setIsReadyToPlay(true);
     };
 
     // Launch sequence error
@@ -839,7 +728,8 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
       setAudioGenerationStatus({
         message: data.message || 'Generating audio...',
         hasAudio: data.hasAudio || false,
-        isDeferred: data.isDeferred !== false
+        isDeferred: data.isDeferred !== false,
+        progress: null
       });
 
       // If audio is deferred (no pre-generated audio), show narrator agent as active
@@ -858,7 +748,7 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
 
     // Audio ready - generation complete
     const handleAudioReady = (data) => {
-      console.log('[Socket:Recv] EVENT: audio-ready (useLaunchSequence) | hiding launch screen but preserving SFX');
+      console.log('[Socket:Recv] EVENT: audio-ready (useLaunchSequence) | audio queued, keeping loading visible until playback');
       setIsGeneratingAudio(false);
       setAudioGenerationStatus(null);
 
@@ -873,15 +763,31 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
         }
       }));
 
-      // CRITICAL FIX: Don't call reset() here - it clears sfxDetails before SFX can play!
-      // Instead, only reset the UI state needed to hide the LaunchScreen
-      // SFX data must be preserved for playback triggers
+      // CRITICAL FIX: Don't hide LaunchScreen yet!
+      // Set isAudioQueued to keep the loading indicator visible
+      // LaunchScreen will hide when isPlaying becomes true (audio actually starts)
+      setIsAudioQueued(true);
+
+      // Reset launch-specific state but keep LaunchScreen visible via isAudioQueued
       setIsActive(false);
       setIsReady(false);
-      setIsCountdownActive(false);
-      setCountdownPhase(null);
       setIsReadyToPlay(false);
       // DO NOT reset: sfxDetails, characterVoices, stats, scene - still needed for playback
+    };
+
+    // Audio generating - progress/status updates during deferred narration generation
+    const handleAudioGenerating = (data) => {
+      const message = data?.message || 'Generating narration...';
+      const progress = Number.isFinite(data?.progress)
+        ? Math.max(0, Math.min(100, data.progress))
+        : null;
+
+      setIsGeneratingAudio(true);
+      setAudioGenerationStatus(prev => ({
+        ...(prev || {}),
+        message,
+        progress
+      }));
     };
 
     // Register event listeners
@@ -909,6 +815,7 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
 
     // Playback audio events (deferred TTS)
     socket.on('playback-starting', handlePlaybackStarting);
+    socket.on('audio-generating', handleAudioGenerating);
     socket.on('audio-ready', handleAudioReady);
 
     // Cleanup
@@ -937,18 +844,10 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
 
       // Playback audio cleanup
       socket.off('playback-starting', handlePlaybackStarting);
+      socket.off('audio-generating', handleAudioGenerating);
       socket.off('audio-ready', handleAudioReady);
     };
-  }, [socket, sessionId, autoCountdown, startCountdown, confirmReady, setupWatchdog, reset, isReady, stageStatuses, retryingStage]);
-
-  // Cleanup countdown on unmount
-  useEffect(() => {
-    return () => {
-      if (countdownIntervalRef.current) {
-        clearInterval(countdownIntervalRef.current);
-      }
-    };
-  }, []);
+  }, [socket, sessionId, confirmReady, reset, isReady, stageStatuses, retryingStage]);
 
   // Computed values
   const allStagesComplete = Object.values(stageStatuses).every(
@@ -993,11 +892,12 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
     error,
     warnings,
 
-    // Countdown state
-    isCountdownActive,
-    countdownPhase,
-    countdownValue,
+    // Ready state (simplified - no countdown)
     isReadyToPlay,
+
+    // Audio queued state (bridges audio-ready to playback-started)
+    isAudioQueued,
+    setIsAudioQueued,
 
     // Autoplay
     autoplayEnabled,
@@ -1024,6 +924,7 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
     coverProgress,
     safetyReport,
     detailedProgressLog,
+    launchProgress,
 
     // Computed
     allStagesComplete,
@@ -1031,8 +932,6 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
     currentStage,
 
     // Actions
-    startCountdown,
-    cancelCountdown,
     cancel,
     startPlayback,
     reset,

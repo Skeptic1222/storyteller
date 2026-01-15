@@ -11,10 +11,22 @@
 // Check if in development mode
 const isDev = import.meta.env.DEV || import.meta.env.MODE === 'development';
 
+const DEBUG_STORAGE_KEY = 'narrimo_debug';
+const LEGACY_DEBUG_STORAGE_KEY = 'storyteller_debug';
+
 // Check for debug override in localStorage
 const isDebugEnabled = () => {
   try {
-    return localStorage.getItem('storyteller_debug') === 'true';
+    const enabled = localStorage.getItem(DEBUG_STORAGE_KEY) === 'true';
+    if (enabled) return true;
+
+    const legacyEnabled = localStorage.getItem(LEGACY_DEBUG_STORAGE_KEY) === 'true';
+    if (legacyEnabled) {
+      localStorage.setItem(DEBUG_STORAGE_KEY, 'true');
+      localStorage.removeItem(LEGACY_DEBUG_STORAGE_KEY);
+      return true;
+    }
+    return false;
   } catch {
     return false;
   }
@@ -79,10 +91,12 @@ export const group = (label, fn) => {
 export const setDebugEnabled = (enabled) => {
   try {
     if (enabled) {
-      localStorage.setItem('storyteller_debug', 'true');
+      localStorage.setItem(DEBUG_STORAGE_KEY, 'true');
+      localStorage.removeItem(LEGACY_DEBUG_STORAGE_KEY);
       console.log('[Logger] Debug mode ENABLED - refresh to apply');
     } else {
-      localStorage.removeItem('storyteller_debug');
+      localStorage.removeItem(DEBUG_STORAGE_KEY);
+      localStorage.removeItem(LEGACY_DEBUG_STORAGE_KEY);
       console.log('[Logger] Debug mode DISABLED - refresh to apply');
     }
   } catch (e) {
@@ -92,6 +106,7 @@ export const setDebugEnabled = (enabled) => {
 
 // Expose debug toggle in browser console for easy access
 if (typeof window !== 'undefined') {
+  window.narrimoDebug = setDebugEnabled;
   window.storytellerDebug = setDebugEnabled;
 }
 

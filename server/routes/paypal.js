@@ -9,16 +9,97 @@ import express from 'express';
 import { pool } from '../database/pool.js';
 import { logger } from '../utils/logger.js';
 import { authenticateToken, requireAuth } from '../middleware/auth.js';
+import { wrapRoutes, ValidationError } from '../middleware/errorHandler.js';
 
 const router = express.Router();
+wrapRoutes(router); // Auto-wrap async handlers for error catching
 
 // PayPal configuration
 const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID;
 const PAYPAL_CLIENT_SECRET = process.env.PAYPAL_CLIENT_SECRET;
+const PAYPAL_WEBHOOK_ID = process.env.PAYPAL_WEBHOOK_ID;
 const PAYPAL_MODE = process.env.PAYPAL_MODE || 'sandbox';
 const PAYPAL_API_BASE = PAYPAL_MODE === 'live'
   ? 'https://api-m.paypal.com'
   : 'https://api-m.sandbox.paypal.com';
+
+/**
+ * Get PayPal OAuth access token
+ * @returns {Promise<string>} Access token
+ */
+async function getPayPalAccessToken() {
+  const auth = Buffer.from(`${PAYPAL_CLIENT_ID}:${PAYPAL_CLIENT_SECRET}`).toString('base64');
+
+  const response = await fetch(`${PAYPAL_API_BASE}/v1/oauth2/token`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Basic ${auth}`,
+      'Content-Type': 'application/x-www-form-urlencoded'
+    },
+    body: 'grant_type=client_credentials'
+  });
+
+  if (!response.ok) {
+    throw new Error(`PayPal auth failed: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return data.access_token;
+}
+
+/**
+ * Verify PayPal webhook signature
+ * SECURITY: This prevents attackers from forging webhook events
+ * @param {object} req - Express request object
+ * @returns {Promise<boolean>} True if signature is valid
+ */
+async function verifyWebhookSignature(req) {
+  if (!PAYPAL_WEBHOOK_ID) {
+    logger.warn('PAYPAL_WEBHOOK_ID not configured - skipping signature verification');
+    return false;
+  }
+
+  try {
+    const accessToken = await getPayPalAccessToken();
+
+    const verifyPayload = {
+      auth_algo: req.headers['paypal-auth-algo'],
+      cert_url: req.headers['paypal-cert-url'],
+      transmission_id: req.headers['paypal-transmission-id'],
+      transmission_sig: req.headers['paypal-transmission-sig'],
+      transmission_time: req.headers['paypal-transmission-time'],
+      webhook_id: PAYPAL_WEBHOOK_ID,
+      webhook_event: req.body
+    };
+
+    const response = await fetch(`${PAYPAL_API_BASE}/v1/notifications/verify-webhook-signature`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(verifyPayload)
+    });
+
+    if (!response.ok) {
+      logger.error('PayPal webhook verification API error:', response.status);
+      return false;
+    }
+
+    const result = await response.json();
+
+    if (result.verification_status !== 'SUCCESS') {
+      logger.warn('PayPal webhook signature verification failed:', result.verification_status);
+      return false;
+    }
+
+    logger.info('PayPal webhook signature verified successfully');
+    return true;
+  } catch (error) {
+    logger.error('PayPal webhook verification error:', error);
+    return false;
+  }
+}
 
 // Plan IDs from environment
 const PLAN_IDS = {
@@ -55,7 +136,7 @@ router.get('/plans', (req, res) => {
     plans: [
       {
         id: 'dreamer',
-        name: 'Dreamer',
+        name: 'Explorer',
         price: 7.99,
         currency: 'USD',
         interval: 'month',
@@ -70,7 +151,7 @@ router.get('/plans', (req, res) => {
       },
       {
         id: 'storyteller',
-        name: 'Storyteller',
+        name: 'Creator',
         price: 14.99,
         currency: 'USD',
         interval: 'month',
@@ -79,8 +160,8 @@ router.get('/plans', (req, res) => {
           '12 stories per month',
           '120 minutes of narration',
           'Premium voices',
-          'Choose Your Adventure',
-          'Picture Book mode',
+          'Interactive branching',
+          'Story Bible access',
           '2 user profiles'
         ],
         limits: { stories: 12, minutes: 120, profiles: 2 },
@@ -88,7 +169,7 @@ router.get('/plans', (req, res) => {
       },
       {
         id: 'family',
-        name: 'Family',
+        name: 'Studio',
         price: 24.99,
         currency: 'USD',
         interval: 'month',
@@ -96,7 +177,7 @@ router.get('/plans', (req, res) => {
           '25 stories per month',
           '250 minutes of narration',
           'All premium features',
-          'D&D Campaign mode',
+          'Co-writing sessions',
           'Custom voice cloning',
           '5 user profiles',
           'Offline downloads'
@@ -143,6 +224,7 @@ router.post('/create-subscription', authenticateToken, requireAuth, async (req, 
 /**
  * POST /api/paypal/webhook
  * Handle PayPal webhook events
+ * SECURITY: Verifies webhook signature before processing
  */
 router.post('/webhook', async (req, res) => {
   if (!isConfigured()) {
@@ -156,8 +238,15 @@ router.post('/webhook', async (req, res) => {
   logger.info(`PayPal webhook received: ${eventType}`);
 
   try {
-    // TODO: Verify webhook signature
-    // TODO: Handle events
+    // SECURITY: Verify webhook signature before processing
+    const isValidSignature = await verifyWebhookSignature(req);
+
+    if (!isValidSignature) {
+      logger.error('PayPal webhook signature verification failed - rejecting event');
+      // Return 200 to prevent PayPal from retrying, but don't process the event
+      // Alternatively, return 401 to signal rejection
+      return res.status(401).json({ error: 'Invalid webhook signature' });
+    }
 
     switch (eventType) {
       case 'BILLING.SUBSCRIPTION.CREATED':

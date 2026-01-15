@@ -19,7 +19,25 @@ export default defineConfig({
   },
   build: {
     outDir: '../public',
-    emptyOutDir: true,
-    sourcemap: true  // Enable source maps for debugging
+    // IMPORTANT: ../public also stores runtime assets (audio, portraits, sfx). Do not wipe it on build.
+    emptyOutDir: false,
+    sourcemap: true,
+    // Increase chunk size warning limit (we're optimizing but some chunks may be large)
+    chunkSizeWarningLimit: 600,
+    rollupOptions: {
+      output: {
+        // Manual chunk splitting for optimal caching and load times
+        manualChunks: {
+          // Core React vendor chunk - cached across all pages
+          'vendor-react': ['react', 'react-dom', 'react-router-dom'],
+
+          // UI icons chunk
+          'vendor-icons': ['lucide-react'],
+
+          // Socket chunk
+          'vendor-socket': ['socket.io-client']
+        }
+      }
+    }
   }
 });

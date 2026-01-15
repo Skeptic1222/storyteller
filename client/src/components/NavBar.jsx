@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useCallback } from 'react';
+﻿import { useState, useEffect, useCallback, useRef } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { Menu, X } from 'lucide-react';
 import UserProfile from './UserProfile';
@@ -11,8 +11,8 @@ function NavBar({ immersive = false, transparent = false }) {
   const location = useLocation();
   const { isAuthenticated } = useAuth();
   const [isVisible, setIsVisible] = useState(true);
-  const [lastScrollY, setLastScrollY] = useState(0);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const lastScrollYRef = useRef(0);
 
   const navItems = isAuthenticated
     ? [
@@ -31,19 +31,19 @@ function NavBar({ immersive = false, transparent = false }) {
 
     if (currentScrollY < scrollThreshold) {
       setIsVisible(true);
-      setLastScrollY(currentScrollY);
+      lastScrollYRef.current = currentScrollY;
       return;
     }
 
-    if (currentScrollY > lastScrollY + 10) {
+    if (currentScrollY > lastScrollYRef.current + 10) {
       setIsVisible(false);
       setIsMobileMenuOpen(false);
-    } else if (currentScrollY < lastScrollY - 10) {
+    } else if (currentScrollY < lastScrollYRef.current - 10) {
       setIsVisible(true);
     }
 
-    setLastScrollY(currentScrollY);
-  }, [lastScrollY]);
+    lastScrollYRef.current = currentScrollY;
+  }, []); // Empty dependency array - function never changes
 
   useEffect(() => {
     window.addEventListener('scroll', handleScroll, { passive: true });

@@ -28,7 +28,7 @@ async function createShareLink(sessionId, options = {}) {
 
   // Verify session exists and get details
   const sessionResult = await pool.query(
-    `SELECT id, title, user_id, status FROM story_sessions WHERE id = $1`,
+    `SELECT id, title, user_id, current_status FROM story_sessions WHERE id = $1`,
     [sessionId]
   );
 
@@ -98,7 +98,8 @@ async function createShareLink(sessionId, options = {}) {
 async function accessSharedStory(shareCode, password = null) {
   // Get share details
   const shareResult = await pool.query(
-    `SELECT ss.*, s.title, s.genre, s.status, s.cover_image_url
+    `SELECT ss.*, s.title, s.cover_image_url, s.current_status,
+            s.config_json->>'genre' as genre
      FROM story_shares ss
      JOIN story_sessions s ON s.id = ss.story_session_id
      WHERE ss.share_code = $1`,
@@ -135,10 +136,15 @@ async function accessSharedStory(shareCode, password = null) {
 
   // Get story content
   const scenesResult = await pool.query(
-    `SELECT id, sequence, branch_key, polished_text, audio_url, illustration_url
+    `SELECT id,
+            sequence_index as sequence,
+            branch_key,
+            polished_text,
+            audio_url,
+            illustration_url
      FROM story_scenes
      WHERE story_session_id = $1
-     ORDER BY sequence`,
+     ORDER BY sequence_index`,
     [share.story_session_id]
   );
 
@@ -166,7 +172,7 @@ async function accessSharedStory(shareCode, password = null) {
     story: {
       sessionId: share.story_session_id,
       title: share.title || outline?.title || 'Untitled Story',
-      genre: share.genre,
+      genre: share.genre || outline?.genre || null,
       coverImage: share.cover_image_url,
       synopsis: outline?.synopsis,
       setting: outline?.setting,
@@ -335,7 +341,7 @@ async function getPublicStories(options = {}) {
     SELECT DISTINCT ON (ss.story_session_id)
       ss.story_session_id as session_id,
       s.title,
-      s.genre,
+      s.config_json->>'genre' as genre,
       s.cover_image_url,
       ss.share_code,
       ss.view_count,
@@ -346,13 +352,13 @@ async function getPublicStories(options = {}) {
     WHERE ss.is_public = true
       AND ss.password_hash IS NULL
       AND (ss.expires_at IS NULL OR ss.expires_at > NOW())
-      AND s.status = 'completed'`;
+      AND s.current_status = 'finished'`;
 
   const params = [];
   let paramIndex = 1;
 
   if (genre) {
-    query += ` AND s.genre = $${paramIndex++}`;
+    query += ` AND s.config_json->>'genre' = $${paramIndex++}`;
     params.push(genre);
   }
 

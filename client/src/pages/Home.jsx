@@ -277,6 +277,21 @@ function Home() {
         sampleRate: 24000
       });
 
+      // Check permission state first to provide better error messages
+      if (navigator.permissions?.query) {
+        try {
+          const permission = await navigator.permissions.query({ name: 'microphone' });
+          if (permission.state === 'denied') {
+            setError('Microphone access denied. Please enable microphone permissions in your browser settings and try again.');
+            setState(STATE.ERROR);
+            return;
+          }
+        } catch (err) {
+          // Permissions API not fully supported, proceed with getUserMedia which will handle it
+          console.warn('[Home] Permissions API error:', err);
+        }
+      }
+
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
@@ -304,8 +319,20 @@ function Home() {
       processor.connect(audioContextRef.current.destination);
       audioProcessorRef.current = { source, processor };
     } catch (err) {
-      setError('Microphone access failed. Please allow microphone access.');
+      // Distinguish between different error types
+      if (err.name === 'NotAllowedError') {
+        setError('Microphone access denied. Please allow microphone access in the permission prompt and try again.');
+      } else if (err.name === 'NotFoundError') {
+        setError('No microphone found. Please connect a microphone device and try again.');
+      } else if (err.name === 'NotSupportedError') {
+        setError('Microphone access is not supported in this browser. Please use a modern browser.');
+      } else if (err.name === 'TypeError') {
+        setError('Microphone access failed. Please ensure you have allowed microphone permissions.');
+      } else {
+        setError(`Microphone error: ${err.message || 'Unknown error'}`);
+      }
       setState(STATE.ERROR);
+      console.error('[Home] Microphone error:', err);
     }
   };
 

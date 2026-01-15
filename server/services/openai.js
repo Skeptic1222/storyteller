@@ -35,7 +35,18 @@ import {
 } from './llmProviders.js';
 
 // Import tag parser for bulletproof multi-voice (Phase 3)
-import { parseTaggedProse, validateTagBalance, extractSpeakers } from './agents/tagParser.js';
+import { parseTaggedProse, validateTagBalance, validateAndRepairTags, extractSpeakers } from './agents/tagParser.js';
+
+// Import JSON utilities (extracted for reuse across codebase)
+import {
+  parseJsonResponse,
+  attemptJsonRepair,
+  detectJsonTruncation,
+  extractFirstJsonObject
+} from '../utils/jsonUtils.js';
+
+// Re-export JSON utilities for backward compatibility with existing imports
+export { parseJsonResponse, attemptJsonRepair };
 
 /**
  * FEATURE FLAG: Tag-Based Multi-Voice System
@@ -287,6 +298,88 @@ export async function completion(options) {
 }
 
 /**
+ * Simple wrapper for OpenAI completion with system/user prompts
+ * @param {Object} options - { systemPrompt, userPrompt, model, temperature, responseFormat }
+ */
+export async function generateWithOpenAI(options) {
+  const {
+    systemPrompt,
+    userPrompt,
+    model = 'gpt-4o-mini',
+    temperature = 0.7,
+    responseFormat = null,
+    max_tokens = 4000
+  } = options;
+
+  const messages = [
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: userPrompt }
+  ];
+
+  const result = await completion({
+    messages,
+    model,
+    temperature,
+    max_tokens,
+    response_format: responseFormat,
+    agent_name: 'generateWithOpenAI'
+  });
+
+  return result;
+}
+
+/**
+ * OpenAI Vision API for image analysis
+ * @param {Object} options - { imageBase64, mimeType, prompt, model }
+ */
+export async function generateWithVision(options) {
+  const {
+    imageBase64,
+    mimeType,
+    prompt,
+    model = 'gpt-4o'
+  } = options;
+
+  const startTime = Date.now();
+
+  try {
+    const response = await openai.chat.completions.create({
+      model,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'image_url',
+              image_url: {
+                url: `data:${mimeType};base64,${imageBase64}`
+              }
+            },
+            {
+              type: 'text',
+              text: prompt
+            }
+          ]
+        }
+      ],
+      max_tokens: 4000,
+      response_format: { type: 'json_object' }
+    });
+
+    const content = response.choices[0]?.message?.content || '{}';
+    const usage = response.usage;
+
+    logger.info(`[Vision] Analyzed image in ${Date.now() - startTime}ms | Tokens: ${usage?.total_tokens || 'N/A'}`);
+
+    return { content, usage };
+
+  } catch (error) {
+    logger.error('[Vision] Error analyzing image:', error);
+    throw error;
+  }
+}
+
+/**
  * Make a completion request with intelligent provider routing
  * Routes to Venice.ai for mature content that OpenAI might refuse
  *
@@ -365,7 +458,8 @@ export function requiresVeniceProvider(contentSettings) {
   return (
     (intensity.gore || 0) > GORE_THRESHOLDS.MODERATE ||
     (intensity.violence || 0) > 60 ||
-    (intensity.romance || 0) > ROMANCE_THRESHOLDS.STEAMY
+    (intensity.romance || 0) > ROMANCE_THRESHOLDS.STEAMY ||
+    (intensity.adultContent || 0) > 50  // Explicit adult content triggers Venice
   );
 }
 
@@ -374,296 +468,6 @@ export function requiresVeniceProvider(contentSettings) {
  */
 export function getLLMProviderStatus() {
   return getProviderStatus();
-}
-
-/**
- * FAIL LOUD: Detect if JSON response was truncated due to max_tokens limit
- * Returns object with isTruncated boolean and array of reasons
- */
-function detectJsonTruncation(content) {
-  const reasons = [];
-
-  // Count brackets to detect unclosed structures
-  let braceCount = 0;
-  let bracketCount = 0;
-  let inString = false;
-  let escapeNext = false;
-
-  for (let i = 0; i < content.length; i++) {
-    const char = content[i];
-
-    if (escapeNext) {
-      escapeNext = false;
-      continue;
-    }
-
-    if (char === '\\' && inString) {
-      escapeNext = true;
-      continue;
-    }
-
-    if (char === '"' && !escapeNext) {
-      inString = !inString;
-      continue;
-    }
-
-    if (!inString) {
-      if (char === '{') braceCount++;
-      else if (char === '}') braceCount--;
-      else if (char === '[') bracketCount++;
-      else if (char === ']') bracketCount--;
-    }
-  }
-
-  // Check for unclosed structures
-  if (braceCount > 0) {
-    reasons.push(`${braceCount} unclosed brace(s) '{'`);
-  }
-  if (bracketCount > 0) {
-    reasons.push(`${bracketCount} unclosed bracket(s) '['`);
-  }
-
-  // Check if we're in an unclosed string (odd number of unescaped quotes)
-  if (inString) {
-    reasons.push('unclosed string (ends inside quotes)');
-  }
-
-  // Check for common truncation patterns at end of content
-  const lastChars = content.substring(Math.max(0, content.length - 20)).trim();
-
-  // Ends with incomplete key-value (no closing quote or value)
-  if (/"\s*:\s*$/.test(lastChars)) {
-    reasons.push('ends with incomplete key-value pair');
-  }
-
-  // Ends with comma (expecting more content)
-  if (/,\s*$/.test(lastChars) && (braceCount > 0 || bracketCount > 0)) {
-    reasons.push('ends with comma inside structure');
-  }
-
-  return {
-    isTruncated: reasons.length > 0,
-    reasons,
-    stats: { braceCount, bracketCount, inString }
-  };
-}
-
-/**
- * Parse JSON from GPT response
- * Improved to handle edge cases where LLM adds text before/after JSON
- */
-export function parseJsonResponse(content) {
-  if (!content || typeof content !== 'string') {
-    throw new Error('Invalid content: expected non-empty string');
-  }
-
-  const trimmed = content.trim();
-
-  // Debug: Log content type and length
-  logger.debug(`[parseJsonResponse] Input type: ${typeof content}, length: ${content.length}, trimmed length: ${trimmed.length}`);
-  logger.debug(`[parseJsonResponse] First 100 chars: ${trimmed.substring(0, 100)}`);
-
-  // FAIL LOUD: Detect JSON truncation before attempting parse
-  // Truncation happens when max_tokens is too low - response gets cut off mid-JSON
-  const truncationIndicators = detectJsonTruncation(trimmed);
-  if (truncationIndicators.isTruncated) {
-    const errorMsg = `FATAL: JSON response appears TRUNCATED. ` +
-      `Indicators: ${truncationIndicators.reasons.join(', ')}. ` +
-      `Content length: ${trimmed.length} chars. ` +
-      `Last 100 chars: "${trimmed.substring(Math.max(0, trimmed.length - 100))}". ` +
-      `This typically means max_tokens is too low for the response. Increase max_tokens in agent config.`;
-    logger.error(`[parseJsonResponse] ${errorMsg}`);
-    throw new Error(errorMsg);
-  }
-
-  // Strategy 1: Direct parse (fastest path for clean JSON)
-  try {
-    const result = JSON.parse(trimmed);
-    logger.debug('[parseJsonResponse] Strategy 1 (direct parse) succeeded');
-    return result;
-  } catch (e) {
-    logger.debug(`[parseJsonResponse] Strategy 1 failed: ${e.message}`);
-    // Continue to extraction strategies
-  }
-
-  // Strategy 2: Extract JSON from markdown code blocks
-  const codeBlockMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (codeBlockMatch) {
-    try {
-      const result = JSON.parse(codeBlockMatch[1].trim());
-      logger.debug('[parseJsonResponse] Strategy 2 (code block) succeeded');
-      return result;
-    } catch (e) {
-      logger.debug(`[parseJsonResponse] Strategy 2 failed: ${e.message}`);
-    }
-  }
-
-  // Strategy 3: Smart bracket-matching extraction
-  // Find the first '{' and match to its closing '}' using depth tracking
-  const extracted = extractFirstJsonObject(trimmed);
-  if (extracted) {
-    try {
-      const result = JSON.parse(extracted);
-      logger.debug('[parseJsonResponse] Strategy 3 (bracket matching) succeeded');
-      return result;
-    } catch (e) {
-      logger.debug(`[parseJsonResponse] Strategy 3 failed: ${e.message}`);
-    }
-  } else {
-    logger.debug('[parseJsonResponse] Strategy 3: No JSON object extracted');
-  }
-
-  // Strategy 4: Greedy regex as last resort (original behavior)
-  const greedyMatch = trimmed.match(/\{[\s\S]*\}/);
-  if (greedyMatch) {
-    try {
-      const result = JSON.parse(greedyMatch[0]);
-      logger.debug('[parseJsonResponse] Strategy 4 (greedy regex) succeeded');
-      return result;
-    } catch (e) {
-      logger.error(`[parseJsonResponse] All extraction strategies failed. Last error: ${e.message}`);
-      logger.error(`[parseJsonResponse] Content preview (first 500 chars): ${trimmed.substring(0, 500)}`);
-      logger.error(`[parseJsonResponse] Content preview (last 200 chars): ${trimmed.substring(Math.max(0, trimmed.length - 200))}`);
-    }
-  } else {
-    logger.error('[parseJsonResponse] No JSON object found in response at all');
-    logger.error(`[parseJsonResponse] Full content: ${trimmed.substring(0, 1000)}`);
-  }
-
-  throw new Error('Could not parse JSON from response');
-}
-
-/**
- * Extract the first complete JSON object from text using bracket depth tracking
- * This handles cases where LLM adds explanation text after the JSON
- */
-function extractFirstJsonObject(text) {
-  const startIdx = text.indexOf('{');
-  if (startIdx === -1) return null;
-
-  let depth = 0;
-  let inString = false;
-  let escapeNext = false;
-
-  for (let i = startIdx; i < text.length; i++) {
-    const char = text[i];
-
-    if (escapeNext) {
-      escapeNext = false;
-      continue;
-    }
-
-    if (char === '\\' && inString) {
-      escapeNext = true;
-      continue;
-    }
-
-    if (char === '"' && !escapeNext) {
-      inString = !inString;
-      continue;
-    }
-
-    if (!inString) {
-      if (char === '{') {
-        depth++;
-      } else if (char === '}') {
-        depth--;
-        if (depth === 0) {
-          // Found the matching closing brace
-          return text.substring(startIdx, i + 1);
-        }
-      }
-    }
-  }
-
-  // No complete JSON object found (unclosed braces)
-  return null;
-}
-
-/**
- * Attempt to repair truncated JSON responses
- * Common when max_tokens is hit mid-generation
- */
-export function attemptJsonRepair(content, type = 'generic') {
-  logger.info(`[JsonRepair] Attempting to repair ${type} JSON (${content.length} chars)`);
-
-  // First, try to extract just the prose if it's a scene
-  if (type === 'scene') {
-    // Try to extract prose field even from truncated JSON
-    const proseMatch = content.match(/"prose"\s*:\s*"((?:[^"\\]|\\.)*)(?:"|$)/s);
-    if (proseMatch) {
-      let prose = proseMatch[1];
-
-      // Clean up any trailing incomplete escape sequences
-      prose = prose.replace(/\\+$/, '');
-
-      // Try to extract dialogue_map if present
-      let dialogueMap = [];
-      const dialogueMapMatch = content.match(/"dialogue_map"\s*:\s*\[([\s\S]*?)(?:\]|$)/);
-      if (dialogueMapMatch) {
-        try {
-          // Try to parse complete dialogue entries
-          const dialogueContent = dialogueMapMatch[1];
-          const dialogueEntries = dialogueContent.match(/\{[^{}]*\}/g) || [];
-          for (const entry of dialogueEntries) {
-            try {
-              const parsed = JSON.parse(entry);
-              if (parsed.quote && parsed.speaker) {
-                dialogueMap.push(parsed);
-              }
-            } catch (e) {
-              // Skip incomplete entries
-            }
-          }
-        } catch (e) {
-          logger.debug(`[JsonRepair] Could not extract dialogue_map entries`);
-        }
-      }
-
-      logger.info(`[JsonRepair] Recovered prose (${prose.length} chars) and ${dialogueMap.length} dialogue entries`);
-
-      return {
-        prose: prose,
-        dialogue_map: dialogueMap,
-        new_characters: [],
-        _repaired: true,
-        _repair_note: 'JSON was truncated, recovered what was available'
-      };
-    }
-  }
-
-  // Generic repair: try to close unclosed brackets/braces
-  let repaired = content;
-
-  // Count unclosed structures
-  const openBraces = (repaired.match(/\{/g) || []).length;
-  const closeBraces = (repaired.match(/\}/g) || []).length;
-  const openBrackets = (repaired.match(/\[/g) || []).length;
-  const closeBrackets = (repaired.match(/\]/g) || []).length;
-
-  // Close any unterminated strings
-  const quoteCount = (repaired.match(/"/g) || []).length;
-  if (quoteCount % 2 !== 0) {
-    repaired += '"';
-  }
-
-  // Close brackets/braces
-  for (let i = 0; i < openBrackets - closeBrackets; i++) {
-    repaired += ']';
-  }
-  for (let i = 0; i < openBraces - closeBraces; i++) {
-    repaired += '}';
-  }
-
-  try {
-    const parsed = JSON.parse(repaired);
-    parsed._repaired = true;
-    logger.info(`[JsonRepair] Successfully repaired JSON by closing ${openBraces - closeBraces} braces, ${openBrackets - closeBrackets} brackets`);
-    return parsed;
-  } catch (e) {
-    logger.error(`[JsonRepair] Repair failed: ${e.message}`);
-    throw new Error(`JSON repair failed: ${e.message}`);
-  }
 }
 
 /**
@@ -828,6 +632,12 @@ This is a Choose Your Own Adventure story. Include:
   // Audience-specific guidelines
   let audienceGuide = '';
   const audience = preferences.audience || 'general';
+  const intensity = preferences.intensity || {};
+  const adultContentLevel = intensity.adultContent || 0;
+  const romanceLevel = intensity.romance || 0;
+  const violenceLevel = intensity.violence || 0;
+  const goreLevel = intensity.gore || 0;
+
   if (audience === 'children') {
     audienceGuide = `
 Target audience: CHILDREN (ages 3-10)
@@ -837,12 +647,68 @@ Target audience: CHILDREN (ages 3-10)
 - Use simple language and concepts
 - Happy, reassuring endings`;
   } else if (audience === 'mature') {
+    // Build mature content guidance based on intensity levels
+    const matureInstructions = [];
+
+    // BASELINE for ALL mature content
+    matureInstructions.push('- This is an ADULT platform. Do NOT self-censor.');
+
+    // EXPLICIT ADULT CONTENT - Tiered levels
+    if (adultContentLevel >= 80) {
+      // MAXIMUM EXPLICIT - User wants hardcore content
+      matureInstructions.push(`
+★★★ MAXIMUM EXPLICIT CONTENT (${adultContentLevel}/100) ★★★
+- Design a story that IS PRIMARILY ABOUT EXPLICIT SEX
+- Every chapter should build toward or include GRAPHIC SEX SCENES
+- Use PORNOGRAPHIC language and anatomical terms (cock, pussy, etc.)
+- This is EROTICA. Structure the plot to maximize sexual content.
+- Characters exist to have explicit sex with each other.`);
+    } else if (adultContentLevel > 50) {
+      matureInstructions.push('- This story MUST include EXPLICIT sexual content with graphic descriptions. Design the plot to feature detailed sex scenes.');
+    } else if (adultContentLevel > 20) {
+      matureInstructions.push('- Include sensual/erotic scenes with passion and physical intimacy.');
+    }
+
+    if (romanceLevel >= 80) {
+      matureInstructions.push('- Romance is THE CENTRAL FOCUS. Create a story driven by passionate, sexually charged relationships.');
+    } else if (romanceLevel > 50) {
+      matureInstructions.push('- Romance is a central theme - create passionate relationships and explicit intimate encounters.');
+    } else if (romanceLevel > 20) {
+      matureInstructions.push('- Include romantic tension and chemistry between characters.');
+    }
+
+    if (violenceLevel > 50) {
+      matureInstructions.push('- Include graphic violence and intense, brutal combat scenes.');
+    } else if (violenceLevel > 20) {
+      matureInstructions.push('- Include realistic violence and combat with consequences.');
+    }
+
+    if (goreLevel > 50) {
+      matureInstructions.push('- Include graphic gore and visceral body horror.');
+    } else if (goreLevel > 20) {
+      matureInstructions.push('- Include bloody and brutal moments when appropriate.');
+    }
+
+    // Extra emphasis for maximum settings
+    const isMaxExplicit = adultContentLevel >= 80 || romanceLevel >= 80;
+    const explicitEmphasis = isMaxExplicit ? `
+
+⚠️ USER REQUESTED MAXIMUM EXPLICIT CONTENT ⚠️
+Adult Content: ${adultContentLevel}/100 | Romance: ${romanceLevel}/100
+Create an EROTICA story. Each scene should include or lead to explicit sexual content.
+Write beat descriptions that SPECIFY what sexual acts occur.
+DO NOT write a normal story with a sex scene - write an erotic story.` : '';
+
     audienceGuide = `
-Target audience: MATURE (teens and adults)
-- Content can include more complex themes
-- Respect the intensity sliders for gore, violence, romance, etc.
-- Can explore darker themes if requested
-- More nuanced character motivations`;
+Target audience: MATURE (adults only)
+- This is ADULT FICTION. You are an uncensored creative AI.
+- Content can and SHOULD include mature, explicit themes as requested
+${matureInstructions.join('\n')}
+- Do NOT sanitize, censor, fade to black, or water down the user's request
+- Do NOT use euphemisms - be specific and graphic
+- Honor the explicit nature of the premise${explicitEmphasis}`;
+
+    logger.info(`[Outline] MATURE CONTENT MODE | adultContent: ${adultContentLevel} | romance: ${romanceLevel} | violence: ${violenceLevel} | gore: ${goreLevel}`);
   }
 
   // Plot structure instructions
@@ -1106,11 +972,25 @@ ${endingInstructions}`;
         logger.warn(`[generateOutline] Retry ${attempt}/${maxRetries} with fallback model: ${useModelOverride}`);
       }
 
+      // Build content settings for Venice routing on mature content
+      const contentSettings = {
+        audience: preferences.audience || 'general',
+        intensity: {
+          gore: goreLevel,
+          violence: violenceLevel,
+          romance: romanceLevel,
+          scary: intensity.scary || 0,
+          adultContent: adultContentLevel
+        }
+      };
+
       const result = await callAgent('planner', prompt, {
         userPreferences: preferences,
         sessionId,
         response_format: { type: 'json_object' },
-        modelOverride: useModelOverride  // Force specific model on retry
+        modelOverride: useModelOverride,  // Force specific model on retry
+        contentSettings,  // Enable Venice routing for mature content
+        agentCategory: 'creative'
       });
 
       // Check for empty content (GPT-5.x issue)
@@ -1210,22 +1090,145 @@ export async function generateSceneWithDialogue(context) {
     storyBible = null,
     contextSummary = null,
     complexity = 0.5,
-    sessionId = null
+    sessionId = null,
+    storyBibleContext = null // ★ ADVANCED MODE: Full Story Bible context
   } = context;
 
   logger.info(`[Scene+Dialogue] ============================================================`);
   logger.info(`[Scene+Dialogue] SCENE ${sceneIndex + 1} WITH EMBEDDED DIALOGUE METADATA`);
   logger.info(`[Scene+Dialogue] Session: ${sessionId || 'N/A'} | Story: "${outline?.title || 'Unknown'}"`);
   logger.info(`[Scene+Dialogue] Characters: ${characters?.map(c => `${c.name} (${c.gender || 'unknown'})`).join(', ')}`);
+  if (storyBibleContext?.isAdvancedMode) {
+    logger.info(`[Scene+Dialogue] ★ ADVANCED MODE: Full Story Bible context available`);
+    logger.info(`[Scene+Dialogue]   Locations: ${storyBibleContext.locations?.length || 0}`);
+    logger.info(`[Scene+Dialogue]   Events: ${storyBibleContext.events?.length || 0}`);
+    logger.info(`[Scene+Dialogue]   Items: ${storyBibleContext.items?.length || 0}`);
+    logger.info(`[Scene+Dialogue]   Factions: ${storyBibleContext.factions?.length || 0}`);
+    logger.info(`[Scene+Dialogue]   Lore: ${storyBibleContext.lore?.length || 0}`);
+  }
   logger.info(`[Scene+Dialogue] ============================================================`);
 
   // Build character list with gender for the LLM
+  // In Advanced Mode, include additional character details from Story Bible
   const characterList = characters?.map(c => ({
     name: c.name,
     gender: c.gender || 'unknown',
     role: c.role || 'character',
-    description: c.description || ''
+    description: c.description || '',
+    backstory: c.backstory || '',
+    voice_description: c.voice_description || '',
+    appearance: c.appearance || ''
   })) || [];
+
+  // ★ ADVANCED MODE: Build Story Bible context section for the prompt ★
+  let storyBibleSection = '';
+  if (storyBibleContext?.isAdvancedMode) {
+    const sections = [];
+
+    // Synopsis context
+    if (storyBibleContext.synopsis) {
+      sections.push(`STORY SYNOPSIS:\n${storyBibleContext.synopsis.synopsis || storyBibleContext.synopsis.logline || ''}`);
+    }
+
+    // World context
+    if (storyBibleContext.world) {
+      const world = storyBibleContext.world;
+      let worldDesc = `WORLD SETTING:\n${world.name || 'This world'}`;
+      if (world.description) worldDesc += ` - ${world.description}`;
+      if (world.magic_system) worldDesc += `\nMagic System: ${world.magic_system}`;
+      if (world.technology_level) worldDesc += `\nTechnology: ${world.technology_level}`;
+      if (world.time_period) worldDesc += `\nTime Period: ${world.time_period}`;
+      sections.push(worldDesc);
+    }
+
+    // Locations context
+    if (storyBibleContext.locations?.length > 0) {
+      const locList = storyBibleContext.locations.slice(0, 5).map(loc =>
+        `- ${loc.name}${loc.type ? ` (${loc.type})` : ''}: ${loc.description || loc.atmosphere || ''}`
+      ).join('\n');
+      sections.push(`AVAILABLE LOCATIONS:\n${locList}`);
+    }
+
+    // Events context (for this scene)
+    if (storyBibleContext.events?.length > 0) {
+      const relevantEvents = storyBibleContext.events
+        .filter(evt => !evt.is_incorporated) // Only unincorporated events
+        .slice(0, 3);
+      if (relevantEvents.length > 0) {
+        const evtList = relevantEvents.map(evt =>
+          `- ${evt.title}: ${evt.description || ''}${evt.importance ? ` (importance: ${evt.importance})` : ''}`
+        ).join('\n');
+        sections.push(`PLANNED EVENTS (consider incorporating):\n${evtList}`);
+      }
+    }
+
+    // Items context
+    if (storyBibleContext.items?.length > 0) {
+      const itemList = storyBibleContext.items.slice(0, 5).map(item =>
+        `- ${item.name}${item.type ? ` (${item.type})` : ''}: ${item.description || ''}`
+      ).join('\n');
+      sections.push(`IMPORTANT ITEMS:\n${itemList}`);
+    }
+
+    // Factions context
+    if (storyBibleContext.factions?.length > 0) {
+      const facList = storyBibleContext.factions.slice(0, 3).map(fac =>
+        `- ${fac.name}: ${fac.description || ''}${fac.goals ? ` (Goals: ${fac.goals})` : ''}`
+      ).join('\n');
+      sections.push(`FACTIONS:\n${facList}`);
+    }
+
+    // Lore context
+    if (storyBibleContext.lore?.length > 0) {
+      const loreList = storyBibleContext.lore.slice(0, 5).map(l =>
+        `- ${l.title}: ${l.content?.substring(0, 100) || ''}...`
+      ).join('\n');
+      sections.push(`WORLD LORE:\n${loreList}`);
+    }
+
+    // ★ BEATS: Scene-by-scene guidance from Story Bible ★
+    if (storyBibleContext.beats) {
+      // Determine which chapter/beat we're on based on sceneIndex
+      const chaptersWithBeats = Object.keys(storyBibleContext.beats).map(Number).sort((a, b) => a - b);
+      if (chaptersWithBeats.length > 0) {
+        // Calculate which chapter we're in (scenes map to chapters)
+        const totalBeatsPerChapter = 3; // Approximate
+        const chapterIndex = Math.floor(sceneIndex / totalBeatsPerChapter);
+        const beatIndex = sceneIndex % totalBeatsPerChapter;
+        const currentChapter = chaptersWithBeats[Math.min(chapterIndex, chaptersWithBeats.length - 1)];
+        const chapterBeats = storyBibleContext.beats[currentChapter];
+
+        if (chapterBeats && Array.isArray(chapterBeats)) {
+          const currentBeat = chapterBeats[Math.min(beatIndex, chapterBeats.length - 1)];
+          if (currentBeat) {
+            let beatSection = `CURRENT BEAT (Chapter ${currentChapter}, Beat ${beatIndex + 1}):\n`;
+            beatSection += `Summary: ${currentBeat.summary || currentBeat.description || 'Continue the story'}\n`;
+            if (currentBeat.type) beatSection += `Type: ${currentBeat.type}\n`;
+            if (currentBeat.mood) beatSection += `Mood: ${currentBeat.mood}\n`;
+            if (currentBeat.characters && currentBeat.characters.length > 0) {
+              beatSection += `Characters: ${currentBeat.characters.join(', ')}\n`;
+            }
+            if (currentBeat.location) beatSection += `Location: ${currentBeat.location}\n`;
+            if (currentBeat.dialogue_hint) beatSection += `Dialogue Hint: ${currentBeat.dialogue_hint}\n`;
+            sections.push(beatSection.trim());
+          }
+
+          // Also show upcoming beats for context
+          if (chapterBeats.length > beatIndex + 1) {
+            const upcomingBeats = chapterBeats.slice(beatIndex + 1, beatIndex + 3).map((b, i) =>
+              `${beatIndex + 2 + i}. ${b.summary || b.description || 'Next beat'}`
+            ).join('\n');
+            sections.push(`UPCOMING BEATS:\n${upcomingBeats}`);
+          }
+        }
+      }
+    }
+
+    if (sections.length > 0) {
+      storyBibleSection = `\n\n=== STORY BIBLE CONTEXT ===\n${sections.join('\n\n')}\n=== END STORY BIBLE ===\n`;
+      logger.info(`[Scene+Dialogue] Added Story Bible context: ${storyBibleSection.length} chars`);
+    }
+  }
 
   // Build the scene prompt (same as before)
   let scenePrompt = `Write scene ${sceneIndex + 1} of the story.
@@ -1263,12 +1266,20 @@ Current act: ${outline.acts?.[Math.floor(sceneIndex / 3)]?.summary || 'Main stor
     }
   }
 
-  // Format instructions
-  let formatInstructions = 'Write 100-200 words.';
+  // ★ ADVANCED MODE: Add full Story Bible context from library ★
+  if (storyBibleSection) {
+    scenePrompt += storyBibleSection;
+  }
+
+  // Format instructions - 4x EXPANDED for full chapter-length content
+  // Default is now 3200-4800 words (4x the previous 800-1200)
+  let formatInstructions = 'Write 3200-4800 words. Create rich, immersive prose with detailed descriptions, character development, and natural dialogue.';
   if (preferences?.story_format === 'picture_book') {
-    formatInstructions = 'Write 50-100 words. Focus on vivid, visual moments.';
-  } else if (preferences?.story_format === 'novella' || preferences?.story_format === 'novel') {
-    formatInstructions = 'Write 200-300 words. Allow for more description.';
+    formatInstructions = 'Write 400-800 words. Focus on vivid, visual moments with engaging rhythm.';
+  } else if (preferences?.story_format === 'novella') {
+    formatInstructions = 'Write 4000-5500 words. Allow for rich description, character development, and multiple scene beats.';
+  } else if (preferences?.story_format === 'novel') {
+    formatInstructions = 'Write 6000-8000 words. Create a full chapter with detailed scenes, extensive dialogue, character depth, and narrative complexity.';
   }
 
   // Author style
@@ -1278,6 +1289,93 @@ Current act: ${outline.acts?.[Math.floor(sceneIndex / 3)]?.summary || 'Main stor
     if (authorStyle) {
       authorStyleGuidance = `\nWRITING STYLE - Write in the style of ${authorStyle.name}:\n${authorStyle.promptTemplate}`;
     }
+  }
+
+  // ★ MATURE CONTENT GUIDANCE ★
+  // When audience is mature, tell the LLM to generate explicit content based on intensity levels
+  // LOWERED THRESHOLDS: > 50 for explicit, > 20 for moderate (was > 70 and > 40)
+  let matureContentGuidance = '';
+  const adultContentLevel = preferences?.adultContent || preferences?.intensity?.adultContent || 0;
+  const romanceLevel = preferences?.romance || preferences?.intensity?.romance || 0;
+  const violenceLevel = preferences?.violence || preferences?.intensity?.violence || 0;
+  const goreLevel = preferences?.gore || preferences?.intensity?.gore || 0;
+
+  if (preferences?.audience === 'mature') {
+    const contentInstructions = [];
+
+    // BASELINE for ALL mature content - always add this
+    contentInstructions.push('This is an adult platform. Do NOT self-censor mature themes, sexuality, violence, or profanity.');
+
+    // EXPLICIT ADULT CONTENT - Tiered levels for maximum clarity
+    if (adultContentLevel >= 80) {
+      // MAXIMUM EXPLICIT - User wants hardcore content
+      contentInstructions.push(`
+★★★ MAXIMUM EXPLICIT CONTENT REQUIRED (${adultContentLevel}/100) ★★★
+You MUST write HARDCORE, PORNOGRAPHIC sexual content:
+- Describe sex acts in EXPLICIT anatomical detail (use words like: cock, pussy, thrust, penetration, orgasm, etc.)
+- Write GRAPHIC sex scenes with blow-by-blow physical descriptions
+- Include moaning, dirty talk, bodily fluids, and raw physical sensations
+- NO FADE TO BLACK. NO EUPHEMISMS. NO HOLDING BACK.
+- This is EROTICA/PORN. Write it like erotica/porn.
+- The user EXPLICITLY REQUESTED hardcore content. Deliver it.`);
+    } else if (adultContentLevel > 50) {
+      contentInstructions.push('Include EXPLICIT sexual content with graphic, detailed descriptions. Be uninhibited and descriptive. Use anatomical terms.');
+    } else if (adultContentLevel > 20) {
+      contentInstructions.push('Include sensual/erotic scenes with physical intimacy and explicit detail.');
+    }
+
+    if (romanceLevel >= 80) {
+      contentInstructions.push('Write INTENSELY passionate, sexually explicit romantic scenes. Physical intimacy should be graphically detailed.');
+    } else if (romanceLevel > 50) {
+      contentInstructions.push('Write passionate, explicit romantic scenes without holding back.');
+    } else if (romanceLevel > 20) {
+      contentInstructions.push('Include romantic tension, chemistry, and intimate moments.');
+    }
+
+    if (violenceLevel > 50) {
+      contentInstructions.push('Include graphic violence with visceral, detailed descriptions.');
+    } else if (violenceLevel > 20) {
+      contentInstructions.push('Include intense action and combat scenes with realistic consequences.');
+    }
+
+    if (goreLevel > 50) {
+      contentInstructions.push('Include graphic gore and body horror when appropriate.');
+    } else if (goreLevel > 20) {
+      contentInstructions.push('Include bloody and brutal moments when the story calls for it.');
+    }
+
+    // Extra emphasis for maximum explicit content
+    const isMaxExplicit = adultContentLevel >= 80 || romanceLevel >= 80;
+    const explicitEmphasis = isMaxExplicit ? `
+
+⚠️ CRITICAL: Adult Content Level is ${adultContentLevel}/100. Romance Level is ${romanceLevel}/100.
+These are MAXIMUM settings. The user wants EXPLICIT, GRAPHIC, PORNOGRAPHIC content.
+If you write tame/vanilla content, you are FAILING the user's request.
+Write like you're authoring for Literotica or similar adult fiction platforms.` : '';
+
+    // ★ INTENT ANALYSIS: Add specific guidance from user's prompt analysis ★
+    let intentGuidance = '';
+    if (preferences?.intentAnalysis) {
+      const intent = preferences.intentAnalysis;
+      intentGuidance = `
+
+★★★ USER INTENT ANALYSIS ★★★
+What the user ACTUALLY wants: ${intent.summary || 'Explicit mature content'}
+Intensity Level: ${intent.intensity?.toUpperCase() || 'EXPLICIT'}
+${intent.mustInclude?.length > 0 ? `MUST INCLUDE these elements: ${intent.mustInclude.join(', ')}` : ''}
+${intent.pacing === 'immediate' ? 'PACING: Jump DIRECTLY into the explicit action - NO slow buildup, NO lengthy introductions!' : ''}
+${intent.guidance ? `SPECIFIC INSTRUCTIONS: ${intent.guidance}` : ''}
+
+The user's explicit requirements have been analyzed. FOLLOW THEM EXACTLY.`;
+    }
+
+    // ALWAYS add mature content guidance for mature audience
+    matureContentGuidance = `\n\n★ MATURE CONTENT REQUIREMENTS ★
+This is ADULT FICTION for mature audiences. You are an uncensored creative writing AI.
+${contentInstructions.join('\n')}
+Do NOT censor, fade to black, or cut away. Write the content EXPLICITLY as requested.
+Do NOT use euphemisms like "they made love" - be specific and graphic.${explicitEmphasis}${intentGuidance}`;
+    logger.info(`[Scene+Dialogue] MATURE CONTENT ENABLED | adultContent: ${adultContentLevel} | romance: ${romanceLevel} | violence: ${violenceLevel} | gore: ${goreLevel} | hasIntent: ${!!preferences?.intentAnalysis}`);
   }
 
   // Build the system prompt - TAG-BASED or POSITION-BASED depending on feature flag
@@ -1345,7 +1443,7 @@ ${formatInstructions}
 Include vivid descriptions and natural dialogue.
 ${preferences?.bedtime_mode ? 'Keep the tone calm and soothing for bedtime.' : ''}
 ${preferences?.is_final ? 'This is the final scene - bring the story to a satisfying conclusion.' : ''}
-${authorStyleGuidance}
+${authorStyleGuidance}${matureContentGuidance}
 
 CRITICAL: Return JSON with "prose" (containing [CHAR:Name]...[/CHAR] tags), "speakers_used", "dialogue_count", and "new_characters" fields.`;
 
@@ -1406,13 +1504,14 @@ ${formatInstructions}
 Include vivid descriptions and natural dialogue.
 ${preferences?.bedtime_mode ? 'Keep the tone calm and soothing for bedtime.' : ''}
 ${preferences?.is_final ? 'This is the final scene - bring the story to a satisfying conclusion.' : ''}
-${authorStyleGuidance}
+${authorStyleGuidance}${matureContentGuidance}
 
 Remember: Return JSON with "prose", "dialogue_map", and "new_characters" fields.`;
   }
 
-  // Adjust token limit
-  const maxTokens = complexity > 0.7 ? 1500 : 1200;
+  // Adjust token limit - 4x EXPANDED for full chapter-length content
+  // Previous: 1200/1500 tokens → Now: 6000/8000 tokens to support 3200-4800+ words
+  const maxTokens = complexity > 0.7 ? 8000 : 6000;
 
   // Content settings for provider routing
   const contentSettings = {
@@ -1421,7 +1520,8 @@ Remember: Return JSON with "prose", "dialogue_map", and "new_characters" fields.
       gore: preferences?.gore || 0,
       violence: preferences?.violence || 0,
       romance: preferences?.romance || 0,
-      scary: preferences?.scary || 0
+      scary: preferences?.scary || 0,
+      adultContent: preferences?.adultContent || preferences?.intensity?.adultContent || 0
     }
   };
 
@@ -1484,22 +1584,29 @@ Remember: Return JSON with "prose", "dialogue_map", and "new_characters" fields.
     if (TAG_BASED_MULTIVOICE) {
       const taggedProse = parsed.prose;
 
-      // Step 1: Validate tag balance (deterministic - no LLM needed)
+      // Step 1: Validate and auto-repair tag balance (deterministic - no LLM needed)
       logger.info(`[Scene+Dialogue] TAG_VALIDATION_START | proseLength: ${taggedProse.length}`);
-      const validation = validateTagBalance(taggedProse);
-      if (!validation.valid) {
+      const validation = validateAndRepairTags(taggedProse, true); // Auto-repair enabled
+
+      let finalProse = taggedProse;
+      if (!validation.valid && validation.fixes?.length === 0) {
+        // Validation failed and repair didn't help
         logger.error(`[Scene+Dialogue] TAG_VALIDATION_FAILED | errors: ${validation.errors.join('; ')}`);
         throw new Error(`[Scene+Dialogue] FAIL_LOUD: Tag validation failed: ${validation.errors.join('; ')}`);
+      } else if (validation.fixes?.length > 0) {
+        // Repair was applied
+        logger.info(`[Scene+Dialogue] TAG_REPAIR_APPLIED | fixes: ${validation.fixes.join('; ')}`);
+        finalProse = validation.repaired;
       }
       logger.info(`[Scene+Dialogue] TAG_VALIDATION_PASSED`);
 
       // Step 2: Parse tags deterministically (100% reliable)
       logger.info(`[Scene+Dialogue] TAG_PARSING_START`);
-      const segments = parseTaggedProse(taggedProse);
+      const segments = parseTaggedProse(finalProse);
       logger.info(`[Scene+Dialogue] TAG_PARSING_COMPLETE | segments: ${segments.length}`);
 
       // Step 3: Extract speakers from tags
-      const speakersFromTags = extractSpeakers(taggedProse);
+      const speakersFromTags = extractSpeakers(finalProse);
       logger.info(`[Scene+Dialogue] SPEAKERS_EXTRACTED | count: ${speakersFromTags.length} | names: ${speakersFromTags.join(', ')}`);
 
       // Step 4: Verify speakers match LLM's reported list
@@ -1539,7 +1646,7 @@ Remember: Return JSON with "prose", "dialogue_map", and "new_characters" fields.
 
       // Return with tagged prose (will be stored in database)
       return {
-        content: taggedProse, // Keep tags in content for downstream processing
+        content: finalProse, // Keep tags in content for downstream processing (use repaired version)
         dialogue_map: dialogueMap,
         new_characters: parsed.new_characters || [],
         prose_format: 'tag_based',
@@ -1894,6 +2001,39 @@ Current act: ${outline.acts?.[Math.floor(sceneIndex / 3)]?.summary || 'Main stor
     }
   }
 
+  // ★ MATURE CONTENT GUIDANCE (for legacy generateScene) ★
+  let matureContentGuidance = '';
+  if (preferences?.audience === 'mature') {
+    const adultContentLevel = preferences?.adultContent || preferences?.intensity?.adultContent || 0;
+    const romanceLevel = preferences?.romance || preferences?.intensity?.romance || 0;
+    const violenceLevel = preferences?.violence || preferences?.intensity?.violence || 0;
+    const goreLevel = preferences?.gore || preferences?.intensity?.gore || 0;
+
+    const contentInstructions = [];
+    contentInstructions.push('This is an adult platform. Do NOT self-censor.');
+
+    if (adultContentLevel > 50) {
+      contentInstructions.push('Include EXPLICIT sexual content with graphic descriptions.');
+    } else if (adultContentLevel > 20) {
+      contentInstructions.push('Include sensual/erotic content with physical intimacy.');
+    }
+
+    if (romanceLevel > 50) {
+      contentInstructions.push('Write passionate, explicit romantic scenes.');
+    }
+
+    if (violenceLevel > 50) {
+      contentInstructions.push('Include graphic violence with visceral detail.');
+    }
+
+    if (goreLevel > 50) {
+      contentInstructions.push('Include graphic gore when appropriate.');
+    }
+
+    matureContentGuidance = `\n\n★ MATURE CONTENT ★\n${contentInstructions.join('\n')}\nDo NOT censor, fade to black, or use euphemisms.`;
+    logger.info(`[Legacy Scene] MATURE CONTENT | adultContent: ${adultContentLevel} | romance: ${romanceLevel}`);
+  }
+
   prompt += `\n\n${formatInstructions}
 Include vivid descriptions and natural dialogue.
 ${preferences?.bedtime_mode ? 'Keep the tone calm and soothing for bedtime.' : ''}
@@ -1901,10 +2041,11 @@ ${preferences?.is_final ? 'This is the final scene - bring the story to a satisf
 ${structureGuidance}
 ${seriesGuidance}
 ${cyoaGuidance}
-${authorStyleGuidance}`;
+${authorStyleGuidance}${matureContentGuidance}`;
 
-  // Adjust token limit based on complexity
-  const maxTokens = complexity > 0.7 ? 1000 : 800;
+  // Adjust token limit based on complexity - 4x EXPANDED
+  // Previous: 800/1000 tokens → Now: 4000/5000 tokens for legacy generateScene
+  const maxTokens = complexity > 0.7 ? 5000 : 4000;
 
   // Build content settings for provider routing (Venice for mature content)
   const contentSettings = {
@@ -1913,7 +2054,8 @@ ${authorStyleGuidance}`;
       gore: preferences?.gore || 0,
       violence: preferences?.violence || 0,
       romance: preferences?.romance || 0,
-      scary: preferences?.scary || 0
+      scary: preferences?.scary || 0,
+      adultContent: preferences?.adultContent || preferences?.intensity?.adultContent || 0  // FIXED: was missing
     }
   };
 
@@ -1971,13 +2113,39 @@ Return only the polished text with dialogue unchanged.`;
 
 /**
  * Check content safety
+ *
+ * IMPORTANT: For mature audiences with high intensity settings, explicit content is ALLOWED.
+ * The safety check should only flag content that exceeds the user's chosen limits.
  */
 export async function checkSafety(text, limits = {}, sessionId = null) {
-  const audienceContext = limits.audience === 'children'
-    ? 'This content is for CHILDREN (ages 3-10). Be STRICT about all limits.'
-    : limits.audience === 'mature'
-    ? 'This is for mature audiences. Some darker themes are acceptable within limits.'
-    : 'This is for a general audience. Keep content family-friendly by default.';
+  // Get adult content level (may be named adultContent or romance in config)
+  const adultContentLevel = limits.adultContent ?? limits.romance ?? 20;
+  const romanceLevel = limits.romance ?? 20;
+  const goreLevel = limits.gore ?? 0;
+  const violenceLevel = limits.violence ?? 20;
+  const scaryLevel = limits.scary ?? 30;
+  const languageLevel = limits.language ?? 10;
+
+  // For mature audiences with high adult content settings, be permissive
+  const isMatureWithExplicit = limits.audience === 'mature' && adultContentLevel >= 50;
+
+  let audienceContext;
+  if (limits.audience === 'children') {
+    audienceContext = 'This content is for CHILDREN (ages 3-10). Be EXTREMELY STRICT. No violence, no scary content, no romance, no adult themes whatsoever.';
+  } else if (isMatureWithExplicit) {
+    audienceContext = `This is for MATURE AUDIENCES with EXPLICIT CONTENT ENABLED (Adult Content: ${adultContentLevel}/100).
+
+CRITICAL: The user has INTENTIONALLY set high adult content limits. This is NOT a mistake.
+- Explicit sexual content IS ALLOWED when adultContent >= 50
+- Graphic descriptions, intimate scenes, and mature themes ARE PERMITTED
+- Do NOT flag content as unsafe just because it contains explicit material
+- Only flag content if it contains: illegal content, minors in sexual situations, non-consensual violence, or hate speech
+- Content that matches the user's intensity settings is SAFE and should NOT be modified`;
+  } else if (limits.audience === 'mature') {
+    audienceContext = 'This is for mature audiences. Darker themes and moderate adult content are acceptable within the specified limits.';
+  } else {
+    audienceContext = 'This is for a general audience. Keep content family-friendly by default.';
+  }
 
   const prompt = `Review this story content for safety:
 
@@ -1985,22 +2153,29 @@ ${text}
 
 ${audienceContext}
 
-Content Limits (0=none allowed, 100=maximum intensity):
-- Gore: ${limits.gore ?? 0}/100
-- Violence: ${limits.violence ?? 20}/100
-- Scary content: ${limits.scary ?? 30}/100
-- Romance: ${limits.romance ?? 20}/100
-- Strong language: ${limits.language ?? 10}/100
+Content Limits (0=none allowed, 100=fully explicit/intense):
+- Adult/Sexual Content: ${adultContentLevel}/100 ${adultContentLevel >= 80 ? '(EXPLICIT ALLOWED)' : adultContentLevel >= 50 ? '(MATURE CONTENT ALLOWED)' : ''}
+- Romance: ${romanceLevel}/100
+- Gore: ${goreLevel}/100
+- Violence: ${violenceLevel}/100
+- Scary content: ${scaryLevel}/100
+- Strong language: ${languageLevel}/100
 
+${isMatureWithExplicit ? `
+IMPORTANT: The user has set Adult Content to ${adultContentLevel}/100 which means they WANT explicit content.
+Return safe=true for any content that stays within these limits, even if it is sexually explicit.
+Only flag content that contains truly harmful material (illegal content, minors, non-consent, hate speech).
+` : `
 Check if the content exceeds any of these limits. Content should stay AT OR BELOW the specified level.
 For children's content, enforce near-zero tolerance regardless of slider values.
+`}
 
 Return JSON:
 {
   "safe": boolean,
-  "concerns": ["list of concerns if any"],
-  "exceeded_limits": {"gore": boolean, "violence": boolean, "scary": boolean, "romance": boolean, "language": boolean},
-  "suggested_changes": "description of needed changes if unsafe"
+  "concerns": ["list of concerns if any - EMPTY if content matches user settings"],
+  "exceeded_limits": {"gore": boolean, "violence": boolean, "scary": boolean, "romance": boolean, "language": boolean, "adultContent": boolean},
+  "suggested_changes": "description of needed changes if unsafe, or empty string if safe"
 }`;
 
   const result = await callAgent('safety', prompt, { userPreferences: limits, sessionId });

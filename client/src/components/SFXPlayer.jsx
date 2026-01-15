@@ -209,12 +209,12 @@ function SFXPlayer({
   }
 
   return (
-    <div className="sfx-player flex items-center gap-2 text-night-400">
+    <div className="sfx-player flex items-center gap-2 text-slate-400">
       {/* Mute toggle */}
       <button
         onClick={() => setIsMuted(!isMuted)}
         className={`p-1.5 rounded-lg transition-colors ${
-          isMuted ? 'bg-red-500/20 text-red-400' : 'hover:bg-night-700'
+          isMuted ? 'bg-red-500/20 text-red-400' : 'hover:bg-slate-700'
         }`}
         title={isMuted ? 'Unmute SFX' : 'Mute SFX'}
       >
@@ -227,7 +227,7 @@ function SFXPlayer({
           {activeSFX.map(sfx => (
             <div
               key={sfx.id}
-              className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-night-700/50 text-xs"
+              className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-700/50 text-xs"
               title={sfx.key}
             >
               {/* Volume indicator */}
@@ -238,7 +238,7 @@ function SFXPlayer({
                   transform: `scaleY(${0.3 + sfx.volume * 0.7})`
                 }}
               />
-              <span className="text-night-400 truncate max-w-[60px]">
+              <span className="text-slate-400 truncate max-w-[60px]">
                 {sfx.key.split('.').pop()}
               </span>
             </div>
@@ -248,7 +248,7 @@ function SFXPlayer({
 
       {/* SFX count when none active */}
       {activeSFX.length === 0 && (
-        <span className="text-xs text-night-500">
+        <span className="text-xs text-slate-500">
           {sfxData.length} SFX queued
         </span>
       )}

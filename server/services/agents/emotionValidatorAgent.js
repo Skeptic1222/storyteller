@@ -28,6 +28,41 @@ const EMOTION_PRESETS = [
   'neutral'      // Default, conversational
 ];
 
+function extractBracketTags(value) {
+  if (!value) return [];
+  const str = String(value).trim();
+  if (!str) return [];
+  return str.match(/\[[^\]]+\]/g) || [];
+}
+
+function normalizeDeliveryToTags(value) {
+  if (!value) return '';
+  const str = String(value).trim();
+  if (!str) return '';
+
+  const tags = extractBracketTags(str);
+  if (tags.length > 0) return tags.join('');
+
+  // If the model returns a plain direction, wrap as a single tag.
+  return `[${str.toLowerCase()}]`;
+}
+
+function mergeDeliveryTags(existing, incoming, maxTags = 4) {
+  const existingTags = extractBracketTags(normalizeDeliveryToTags(existing));
+  const incomingTags = extractBracketTags(normalizeDeliveryToTags(incoming));
+
+  const seen = new Set();
+  const merged = [];
+  for (const tag of [...existingTags, ...incomingTags]) {
+    const key = tag.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(tag);
+    if (merged.length >= maxTags) break;
+  }
+  return merged.join('');
+}
+
 /**
  * Build the system prompt for emotion detection
  */
@@ -61,7 +96,12 @@ IMPORTANT RULES:
 - If no explicit attribution, infer from ALL available context
 - Consider character consistency - a nervous character stays nervous unless story changes them
 - Scene mood affects all characters - a horror scene makes even casual lines feel tense
-- Match intensity to genre - children's stories stay lighter, horror goes darker`;
+- Match intensity to genre - children's stories stay lighter, horror goes darker
+
+ElevenLabs v3 Audio Tags:
+- Also output a short "delivery" field per line as 0-4 bracket tags, e.g. "[breathlessly][long pause]" or "".
+- Keep tags actor-like and minimal; avoid over-tagging.
+- Output ONLY bracket tags in "delivery" (no SSML/XML).`;
 }
 
 /**
@@ -111,12 +151,14 @@ ${segmentList}
 For each dialogue segment [index], respond with a JSON object containing:
 {
   "emotions": [
-    { "index": 0, "speaker": "CharacterName", "emotion": "chosen_emotion", "reasoning": "brief explanation" },
+    { "index": 0, "speaker": "CharacterName", "emotion": "chosen_emotion", "delivery": "[tag][tag]", "reasoning": "brief explanation" },
     ...
   ]
 }
 
-Only include dialogue segments (skip narrator segments). Choose the single most appropriate emotion from the preset list.`;
+Only include dialogue segments (skip narrator segments). Choose the single most appropriate emotion from the preset list.
+
+The "delivery" field should be either "" or a concatenation of bracket tags like "[whispers][nervously]".`;
 }
 
 /**
@@ -178,6 +220,7 @@ export async function detectEmotionsForSegments(segments, context, sessionId = n
       if (EMOTION_PRESETS.includes(e.emotion)) {
         emotionMap.set(e.index, {
           emotion: e.emotion,
+          delivery: normalizeDeliveryToTags(e.delivery),
           reasoning: e.reasoning,
           llmValidated: true
         });
@@ -206,6 +249,7 @@ export async function detectEmotionsForSegments(segments, context, sessionId = n
         logger.debug(`[EmotionValidator] Preserving delivery emotion "${seg.emotion}" for segment ${idx}`);
         return {
           ...seg,
+          delivery: mergeDeliveryTags(seg.delivery, emotionData?.delivery),
           emotionReasoning: emotionData?.reasoning || `Preserved from dialogue tagging: ${seg.emotion}`,
           llmValidated: true  // Mark as validated since we explicitly preserved it
         };
@@ -215,6 +259,7 @@ export async function detectEmotionsForSegments(segments, context, sessionId = n
         return {
           ...seg,
           emotion: emotionData.emotion,
+          delivery: mergeDeliveryTags(seg.delivery, emotionData.delivery),
           emotionReasoning: emotionData.reasoning,
           llmValidated: true
         };

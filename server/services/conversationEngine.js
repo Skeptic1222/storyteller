@@ -9,6 +9,7 @@ import { pool } from '../database/pool.js';
 import { logger } from '../utils/logger.js';
 import { AUTHOR_STYLES, AUTHOR_STYLES_LIST, getAuthorStyle } from './authorStyles.js';
 import smartConfig from './smartConfig.js';
+import { DEFAULT_NARRATOR_VOICE_ID, DM_VOICE_ID, VOICE_IDS } from '../constants/voices.js';
 
 // Narrator style presets with ElevenLabs voice settings
 export const NARRATOR_STYLES = {
@@ -85,9 +86,9 @@ export const LITERARY_STYLES = {
       - "Once upon a time" structure`
   },
   bedtime: {
-    name: 'Bedtime Story',
-    description: 'Soothing, gentle, sleep-inducing narratives',
-    promptTemplate: `Write a calming bedtime story.
+    name: 'Calm Story',
+    description: 'Soothing, gentle, low-intensity narratives',
+    promptTemplate: `Write a calming, low-intensity story.
       - Simple, flowing sentences with gentle tone
       - Soothing vocabulary and repetitive phrases
       - Low-stimulation, peaceful themes
@@ -155,17 +156,19 @@ export const STORY_TYPES = {
 };
 
 // Default voices (deep British/American males as requested)
+// Voice IDs imported from constants/voices.js for consistency
 export const DEFAULT_VOICES = {
-  primary: 'JBFqnCBsd6RMkjVDRZzb',  // George - British, warm, narrative
-  dramatic: 'onwK4e9ZLuTAKqWW03F9', // Daniel - British, formal
-  american: 'nPczCjzI2devNBz1zQrb', // Brian - American, resonant
-  deep: 'N2lVS1w4EtoT3dr4eOWO'      // Callum - Deep, gravelly
+  primary: DEFAULT_NARRATOR_VOICE_ID,  // George - British, warm, narrative
+  dramatic: 'onwK4e9ZLuTAKqWW03F9',    // Daniel - British, formal
+  american: 'nPczCjzI2devNBz1zQrb',    // Brian - American, resonant
+  deep: DM_VOICE_ID                     // Callum - Deep, gravelly (used for DM/campaigns)
 };
 
 // Voice preview samples for different styles
+// Using VOICE_IDS from constants/voices.js where applicable
 export const VOICE_PREVIEWS = {
   george: {
-    id: 'JBFqnCBsd6RMkjVDRZzb',
+    id: VOICE_IDS.GEORGE,
     name: 'George',
     description: 'Deep British male, warm and authoritative',
     sampleText: 'In the heart of the ancient forest, where shadows dance with light, our tale begins.',
@@ -179,7 +182,7 @@ export const VOICE_PREVIEWS = {
     bestFor: ['detective', 'king', 'scifi', 'adventure']
   },
   callum: {
-    id: 'N2lVS1w4EtoT3dr4eOWO',
+    id: VOICE_IDS.CALLUM,
     name: 'Callum',
     description: 'Deep gravelly voice, perfect for dark tales',
     sampleText: 'They say some doors should never be opened. But curiosity has always been my weakness.',
@@ -209,11 +212,12 @@ export const VOICE_PREVIEWS = {
 };
 
 // All available ElevenLabs voices for comprehensive assignment
+// Using VOICE_IDS from constants/voices.js where applicable
 export const ALL_VOICES = {
   // Male voices
-  george: { id: 'JBFqnCBsd6RMkjVDRZzb', name: 'George', gender: 'male', style: 'warm_british', age: 'adult' },
+  george: { id: VOICE_IDS.GEORGE, name: 'George', gender: 'male', style: 'warm_british', age: 'adult' },
   brian: { id: 'nPczCjzI2devNBz1zQrb', name: 'Brian', gender: 'male', style: 'american_deep', age: 'adult' },
-  callum: { id: 'N2lVS1w4EtoT3dr4eOWO', name: 'Callum', gender: 'male', style: 'gravelly_dark', age: 'adult' },
+  callum: { id: VOICE_IDS.CALLUM, name: 'Callum', gender: 'male', style: 'gravelly_dark', age: 'adult' },
   daniel: { id: 'onwK4e9ZLuTAKqWW03F9', name: 'Daniel', gender: 'male', style: 'british_formal', age: 'adult' },
   adam: { id: 'pNInz6obpgDQGcFmaJgB', name: 'Adam', gender: 'male', style: 'deep_resonant', age: 'adult' },
   antoni: { id: 'ErXwobaYiN019PkySvjV', name: 'Antoni', gender: 'male', style: 'warm_elderly', age: 'elderly' },
@@ -438,7 +442,7 @@ This is a versatile storytelling platform - NOT just bedtime stories. You can cr
 - Detective Noir
 - Romance
 - Children's stories
-- Bedtime stories
+- Calm stories (low-intensity)
 - And more!
 
 CURRENT STEP: ${stepName} (step ${step})
@@ -499,7 +503,7 @@ Step 10 (story_length): Ask how long:
 - Epic (~60+ min, ongoing campaign)
 
 Step 11 (intensity): For horror/mature content, ask about intensity (1-10 scale).
-Skip for children's/bedtime stories.
+Skip for children's/calm stories.
 
 Step 12 (multi_voice): Ask if they want different voices for different characters.
 This is great for dialogue-heavy stories!

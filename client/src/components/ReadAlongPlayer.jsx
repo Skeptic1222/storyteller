@@ -238,7 +238,7 @@ function ReadAlongPlayer({
       ref={containerRef}
       className={`
         read-along-container relative
-        ${isFullscreen ? 'fixed inset-0 z-50 bg-night-900' : 'rounded-xl bg-night-800/90'}
+        ${isFullscreen ? 'fixed inset-0 z-50 bg-slate-900' : 'rounded-xl bg-slate-800/90'}
         ${overlayOnCover && coverImageUrl ? '' : ''}
         ${className}
       `}
@@ -249,7 +249,7 @@ function ReadAlongPlayer({
           className="absolute inset-0 bg-cover bg-center"
           style={{ backgroundImage: `url(${coverImageUrl})` }}
         >
-          <div className="absolute inset-0 bg-night-900/80 backdrop-blur-sm" />
+          <div className="absolute inset-0 bg-slate-900/80 backdrop-blur-sm" />
         </div>
       )}
 
@@ -261,12 +261,12 @@ function ReadAlongPlayer({
       />
 
       {/* Controls bar */}
-      <div className="relative z-10 flex items-center justify-between p-4 border-b border-night-700">
+      <div className="relative z-10 flex items-center justify-between p-4 border-b border-slate-700">
         <div className="flex items-center gap-3">
           {/* Play/Pause */}
           <button
             onClick={togglePlayPause}
-            className="p-3 rounded-full bg-golden-500 text-night-900 hover:bg-golden-400 transition-colors"
+            className="p-3 rounded-full bg-golden-500 text-slate-900 hover:bg-golden-400 transition-colors"
           >
             {isPlaying ? (
               <Pause className="w-5 h-5" />
@@ -276,14 +276,14 @@ function ReadAlongPlayer({
           </button>
 
           {/* Time display */}
-          <span className="text-night-300 text-sm font-mono min-w-[80px]">
+          <span className="text-slate-300 text-sm font-mono min-w-[80px]">
             {formatTime(currentTime)} / {formatTime(duration)}
           </span>
 
           {/* Mute toggle */}
           <button
             onClick={toggleMute}
-            className="p-2 rounded-lg hover:bg-night-700 text-night-400 hover:text-night-200 transition-colors"
+            className="p-2 rounded-lg hover:bg-slate-700 text-slate-400 hover:text-slate-200 transition-colors"
           >
             {isMuted ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}
           </button>
@@ -294,7 +294,7 @@ function ReadAlongPlayer({
           <button
             onClick={() => setShowText(!showText)}
             className={`p-2 rounded-lg transition-colors ${
-              showText ? 'bg-amber-500/20 text-amber-400' : 'bg-night-700 text-night-400'
+              showText ? 'bg-amber-500/20 text-amber-400' : 'bg-slate-700 text-slate-400'
             }`}
             title={showText ? 'Hide text' : 'Show text'}
           >
@@ -306,7 +306,7 @@ function ReadAlongPlayer({
             <button
               onClick={() => setOverlayOnCover(!overlayOnCover)}
               className={`p-2 rounded-lg transition-colors ${
-                overlayOnCover ? 'bg-amber-500/20 text-amber-400' : 'bg-night-700 text-night-400'
+                overlayOnCover ? 'bg-amber-500/20 text-amber-400' : 'bg-slate-700 text-slate-400'
               }`}
               title="Overlay on cover art"
             >
@@ -317,7 +317,7 @@ function ReadAlongPlayer({
           {/* Fullscreen */}
           <button
             onClick={toggleFullscreen}
-            className="p-2 rounded-lg bg-night-700 text-night-400 hover:text-night-200 transition-colors"
+            className="p-2 rounded-lg bg-slate-700 text-slate-400 hover:text-slate-200 transition-colors"
             title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
           >
             {isFullscreen ? <Minimize className="w-5 h-5" /> : <Maximize className="w-5 h-5" />}
@@ -327,19 +327,19 @@ function ReadAlongPlayer({
 
       {/* Book-style title and synopsis header */}
       {(title || synopsis) && (
-        <div className="relative z-10 px-4 py-3 border-b border-night-700/50 bg-night-800/30">
+        <div className="relative z-10 px-4 py-3 border-b border-slate-700/50 bg-slate-800/30">
           {title && (
             <h2 className={`font-serif text-golden-400 font-bold ${isFullscreen ? 'text-2xl' : 'text-lg'}`}>
               {title}
             </h2>
           )}
           {sceneNumber > 0 && (
-            <p className="text-night-500 text-xs mt-1">
+            <p className="text-slate-500 text-xs mt-1">
               Scene {sceneNumber}{totalScenes > 0 ? ` of ${totalScenes}` : ''}
             </p>
           )}
           {synopsis && (
-            <p className={`text-night-400 mt-2 leading-relaxed ${isFullscreen ? 'text-base' : 'text-sm'}`}>
+            <p className={`text-slate-400 mt-2 leading-relaxed ${isFullscreen ? 'text-base' : 'text-sm'}`}>
               {synopsis}
             </p>
           )}
@@ -348,7 +348,7 @@ function ReadAlongPlayer({
 
       {/* Progress bar */}
       <div
-        className="relative z-10 h-1 bg-night-700 cursor-pointer"
+        className="relative z-10 h-1 bg-slate-700 cursor-pointer"
         onClick={handleSeek}
       >
         <div
@@ -382,10 +382,10 @@ function ReadAlongPlayer({
                   inline-block px-1 py-0.5 mx-0.5 rounded cursor-pointer
                   transition-all duration-150 ease-out
                   ${idx === currentWordIndex
-                    ? 'bg-golden-400 text-night-900 scale-110 font-semibold shadow-lg shadow-golden-400/40'
+                    ? 'bg-golden-400 text-slate-900 scale-110 font-semibold shadow-lg shadow-golden-400/40'
                     : idx < currentWordIndex
-                      ? 'text-night-500'
-                      : 'text-night-200 hover:bg-night-700'
+                      ? 'text-slate-500'
+                      : 'text-slate-200 hover:bg-slate-700'
                   }
                 `}
               >
@@ -410,10 +410,10 @@ function ReadAlongPlayer({
       {/* No word timings message */}
       {showText && words.length === 0 && segment?.scene_text && (
         <div className="relative z-10 p-6">
-          <p className="text-night-200 text-lg leading-relaxed">
+          <p className="text-slate-200 text-lg leading-relaxed">
             {segment.scene_text}
           </p>
-          <p className="text-night-500 text-sm mt-4">
+          <p className="text-slate-500 text-sm mt-4">
             Word-by-word highlighting not available for this segment.
           </p>
         </div>
@@ -421,7 +421,7 @@ function ReadAlongPlayer({
 
       {/* Reading mode label */}
       <div className="absolute bottom-4 left-4 z-10">
-        <span className="text-night-500 text-xs bg-night-800/80 px-2 py-1 rounded">
+        <span className="text-slate-500 text-xs bg-slate-800/80 px-2 py-1 rounded">
           Read Along Mode
         </span>
       </div>

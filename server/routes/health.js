@@ -8,8 +8,30 @@ import { ElevenLabsService } from '../services/elevenlabs.js';
 import { logger } from '../utils/logger.js';
 import { getFullConfiguration, compareTierCosts } from '../services/modelSelection.js';
 import { getTTSConfig } from '../services/ttsGating.js';
+import { cache } from '../services/cache.js';
+import { authenticateToken, requireAuth, requireAdmin } from '../middleware/auth.js';
 
 const router = Router();
+
+/**
+ * Liveness probe - is the process alive?
+ */
+router.get('/live', (req, res) => {
+  res.status(200).json({ status: 'alive', timestamp: new Date().toISOString() });
+});
+
+/**
+ * Readiness probe - is the service ready to accept traffic?
+ */
+router.get('/ready', async (req, res) => {
+  try {
+    await pool.query('SELECT 1');
+    res.status(200).json({ status: 'ready' });
+  } catch (err) {
+    logger.error('[Health] Readiness check failed:', err.message);
+    res.status(503).json({ status: 'not ready', reason: 'database unavailable' });
+  }
+});
 
 router.get('/', async (req, res) => {
   const health = {
@@ -48,6 +70,14 @@ router.get('/', async (req, res) => {
   health.services.whisper = {
     url: process.env.WHISPER_SERVICE_URL || 'http://localhost:3003',
     status: 'configured'
+  };
+
+  // Check cache
+  const cacheStats = cache.getStats();
+  health.services.cache = {
+    status: cacheStats.isRedisConnected ? 'redis' : 'memory',
+    backend: cacheStats.backend,
+    memoryCacheSize: cacheStats.memoryCacheSize
   };
 
   const statusCode = health.status === 'ok' ? 200 : 503;
@@ -96,7 +126,7 @@ router.get('/detailed', async (req, res) => {
  * Generate a 20-second demo with multiple narrators and SFX markers
  * This proves the multi-voice and SFX systems are working
  */
-router.get('/test-multivoice', async (req, res) => {
+router.get('/test-multivoice', authenticateToken, requireAuth, requireAdmin, async (req, res) => {
   logger.info('[TestMultiVoice] Starting multi-voice + SFX demonstration');
 
   try {
@@ -194,7 +224,7 @@ router.get('/test-multivoice', async (req, res) => {
  * Show current AI model configuration and tier settings
  * Useful for debugging and admin visibility into model selection
  */
-router.get('/models', async (req, res) => {
+router.get('/models', authenticateToken, requireAuth, requireAdmin, async (req, res) => {
   try {
     const config = getFullConfiguration();
     const costs = compareTierCosts();
@@ -231,7 +261,7 @@ router.get('/models', async (req, res) => {
  * Show TTS gating configuration and usage stats
  * Section 3 of Storyteller Gospel - TTS/ElevenLabs gating
  */
-router.get('/tts', async (req, res) => {
+router.get('/tts', authenticateToken, requireAuth, requireAdmin, async (req, res) => {
   try {
     const ttsConfig = getTTSConfig();
 

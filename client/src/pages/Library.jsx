@@ -92,6 +92,12 @@ export default function Library() {
 
   const handleExport = (storyId, e) => {
     e.stopPropagation();
+    // Validate that story has recording before navigating
+    const story = stories.find(s => s.id === storyId);
+    if (!story || (!story.recording_id && !story.current_recording_id)) {
+      alert('This story does not have a recording available for export.');
+      return;
+    }
     navigate(`/reader/${storyId}`, { state: { openExport: true } });
   };
 

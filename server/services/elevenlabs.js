@@ -16,6 +16,10 @@ import { withRetry } from '../utils/apiRetry.js';
 import * as usageTracker from './usageTracker.js';
 import * as ttsGating from './ttsGating.js';
 import { detectEmotionsForSegments } from './agents/emotionValidatorAgent.js';
+import { getNarratorDeliveryDirectives } from './agents/narratorDeliveryAgent.js';
+import { assembleMultiVoiceAudio, ASSEMBLY_PRESETS, checkFFmpegAvailable } from './audioAssembler.js';
+import { DEFAULT_NARRATOR_VOICE_ID } from '../constants/voices.js';
+import { cache } from './cache.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -36,7 +40,7 @@ export const RECOMMENDED_VOICES = {
     { voice_id: 'yoZ06aMxZJJ28mfd3POQ', name: 'Sam', style: 'raspy', gender: 'male', description: 'Raspy American, great for mystery' }
   ],
   female_narrators: [
-    { voice_id: 'EXAVITQu4vr4xnSDxMaL', name: 'Bella', style: 'soft', gender: 'female', description: 'Soft American female, perfect for bedtime' },
+    { voice_id: 'EXAVITQu4vr4xnSDxMaL', name: 'Bella', style: 'soft', gender: 'female', description: 'Soft American female, ideal for calm stories' },
     { voice_id: 'XB0fDUnXU5powFXDhCwa', name: 'Charlotte', style: 'seductive', gender: 'female', description: 'Swedish seductive voice' },
     { voice_id: 'pFZP5JQG7iQjIQuC4Bku', name: 'Lily', style: 'British', gender: 'female', description: 'British warm narrator' },
     { voice_id: 'jBpfuIE2acCO8z3wKNLl', name: 'Gigi', style: 'young', gender: 'female', description: 'Young American female, great for YA' },
@@ -265,19 +269,37 @@ export const EMOTION_TO_AUDIO_TAGS = {
 export function wrapWithAudioTags(text, emotion, delivery = null) {
   if (!text) return text;
 
-  // Get base tags from emotion mapping
-  let tags = EMOTION_TO_AUDIO_TAGS[emotion] || '';
+  const baseEmotion = (emotion || 'neutral').toString().toLowerCase().trim();
 
-  // Add custom delivery modifier if provided and not already in tags
-  if (delivery && !tags.includes(delivery.toLowerCase())) {
-    // Convert delivery to tag format
-    const deliveryTag = `[${delivery.toLowerCase()}]`;
-    tags = tags ? `${tags}${deliveryTag}` : deliveryTag;
-  }
+  // Get base tags from emotion mapping
+  const baseTags = EMOTION_TO_AUDIO_TAGS[baseEmotion] || '';
+
+  const extractTags = (value) => {
+    if (!value) return [];
+    const str = String(value).trim();
+    if (!str) return [];
+
+    // If already bracket tags (supports multiple tags in one string), keep them.
+    const matches = str.match(/\[[^\]]+\]/g);
+    if (matches && matches.length > 0) return matches;
+
+    // Otherwise treat as a single delivery direction and wrap it.
+    return [`[${str.toLowerCase()}]`];
+  };
+
+  // Merge tags (de-dupe case-insensitive) so we don't double-apply directions.
+  const merged = [...extractTags(baseTags), ...extractTags(delivery)];
+  const seen = new Set();
+  const tags = merged.filter(tag => {
+    const key = tag.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).join('');
 
   // Log Audio Tag wrapping for debugging
   if (tags) {
-    logger.debug(`[AudioTags] WRAP | emotion: ${emotion} | delivery: ${delivery || 'none'} | tags: "${tags}" | text: "${text.substring(0, 40)}..."`);
+    logger.debug(`[AudioTags] WRAP | emotion: ${baseEmotion} | delivery: ${delivery || 'none'} | tags: "${tags}" | text: "${text.substring(0, 40)}..."`);
   }
 
   // Return text with tags prepended
@@ -746,8 +768,8 @@ if (!existsSync(AUDIO_CACHE_DIR)) {
 export class ElevenLabsService {
   constructor() {
     this.apiKey = process.env.ELEVENLABS_API_KEY;
-    // Default to George (deep British narrator) or Brian (deep American)
-    this.defaultVoiceId = process.env.DEFAULT_VOICE_ID || 'JBFqnCBsd6RMkjVDRZzb';
+    // Default to George (deep British narrator) - imported from constants/voices.js
+    this.defaultVoiceId = process.env.DEFAULT_VOICE_ID || DEFAULT_NARRATOR_VOICE_ID;
 
     if (!this.apiKey) {
       logger.warn('ELEVENLABS_API_KEY not configured - TTS will not work');
@@ -756,16 +778,26 @@ export class ElevenLabsService {
 
   /**
    * Get list of available voices from ElevenLabs API
+   * Results are cached for 24 hours to reduce API calls
    */
   async getVoices() {
     try {
+      // Check cache first (24 hour TTL)
+      const cached = await cache.getVoicesList();
+      if (cached) {
+        logger.debug('[ElevenLabs] Returning cached voice list');
+        return cached;
+      }
+
+      // Fetch from API
+      logger.info('[ElevenLabs] Fetching voice list from API');
       const response = await axios.get(`${ELEVENLABS_API_URL}/voices`, {
         headers: {
           'xi-api-key': this.apiKey
         }
       });
 
-      return response.data.voices.map(voice => ({
+      const voices = response.data.voices.map(voice => ({
         voice_id: voice.voice_id,
         name: voice.name,
         category: voice.category,
@@ -774,6 +806,12 @@ export class ElevenLabsService {
         preview_url: voice.preview_url,
         fine_tuning: voice.fine_tuning
       }));
+
+      // Cache the result
+      await cache.setVoicesList(voices);
+      logger.info(`[ElevenLabs] Cached ${voices.length} voices`);
+
+      return voices;
 
     } catch (error) {
       logger.error('Error fetching ElevenLabs voices:', error.response?.data || error.message);
@@ -1162,6 +1200,7 @@ export class ElevenLabsService {
     }
 
     const { sessionId } = voiceSettings; // Extract sessionId for usage tracking
+    const onProgress = typeof voiceSettings.onProgress === 'function' ? voiceSettings.onProgress : null;
 
     // If only one segment, use TTS with timestamps for karaoke
     if (segments.length === 1) {
@@ -1185,6 +1224,19 @@ export class ElevenLabsService {
       };
     }
 
+    if (onProgress) {
+      try {
+        onProgress({
+          phase: 'start',
+          message: 'Directing full-cast performances...',
+          current: 0,
+          total: segments.length
+        });
+      } catch (err) {
+        logger.debug(`[MultiVoice] Progress callback failed (start): ${err.message}`);
+      }
+    }
+
     // Count segment types for INPUT summary
     const narratorCount = segments.filter(s => s.speaker === 'narrator').length;
     const dialogueCount = segments.filter(s => s.speaker !== 'narrator').length;
@@ -1198,6 +1250,19 @@ export class ElevenLabsService {
     let emotionEnhancedSegments = segments;
     if (storyContext) {
       try {
+        if (onProgress) {
+          try {
+            onProgress({
+              phase: 'emotion',
+              message: 'Analyzing dialogue emotion and delivery...',
+              current: 0,
+              total: segments.length
+            });
+          } catch (err) {
+            logger.debug(`[MultiVoice] Progress callback failed (emotion): ${err.message}`);
+          }
+        }
+
         logger.info(`[MultiVoice] Running LLM emotion detection with story context...`);
         logger.info(`[MultiVoice]   Genre: ${storyContext.genre || 'unknown'}, Mood: ${storyContext.mood || 'unknown'}`);
         emotionEnhancedSegments = await detectEmotionsForSegments(segments, storyContext, sessionId);
@@ -1212,6 +1277,40 @@ export class ElevenLabsService {
       }
     } else {
       logger.info(`[MultiVoice] No story context provided, using regex fallback for emotion detection`);
+    }
+
+    // Narrator delivery (v3 Audio Tags) - one LLM call per scene, cached.
+    // Improves pacing/intent/prosody without brittle keyword heuristics.
+    let narratorDirectives = null;
+    const tagsModelId = voiceSettings.model_id || QUALITY_TIER_MODELS.premium; // eleven_v3
+    if (storyContext && sessionId && modelSupportsAudioTags(tagsModelId)) {
+      if (onProgress) {
+        try {
+          onProgress({
+            phase: 'narrator_direction',
+            message: 'Directing narrator delivery...',
+            current: 0,
+            total: segments.length
+          });
+        } catch (err) {
+          logger.debug(`[MultiVoice] Progress callback failed (narrator): ${err.message}`);
+        }
+      }
+
+      const narratorSample = emotionEnhancedSegments
+        .filter(s => s.speaker === 'narrator')
+        .map(s => s.text)
+        .join('\n\n')
+        .trim();
+
+      if (narratorSample) {
+        narratorDirectives = await getNarratorDeliveryDirectives({
+          sessionId,
+          sceneText: narratorSample,
+          context: storyContext
+        });
+        logger.info(`[NarratorDelivery] scene | emotion=${narratorDirectives.emotion} | delivery="${narratorDirectives.delivery || 'none'}"`);
+      }
     }
 
     // Pre-log all voice assignments for this multi-voice generation
@@ -1252,6 +1351,22 @@ export class ElevenLabsService {
       };
 
       try {
+        if (onProgress) {
+          try {
+            const total = emotionEnhancedSegments.length;
+            const current = segIdx + 1;
+            const speakerLabel = segment.speaker === 'narrator' ? 'Narrator' : segment.speaker;
+            onProgress({
+              phase: 'tts_segment',
+              message: `Synthesizing ${speakerLabel} (${current}/${total})...`,
+              current,
+              total
+            });
+          } catch (err) {
+            logger.debug(`[MultiVoice] Progress callback failed (segment ${segIdx + 1}): ${err.message}`);
+          }
+        }
+
         const voiceId = segment.voice_id || this.defaultVoiceId;
         const voiceName = await getVoiceNameById(voiceId);
         segmentInfo.voiceId = voiceId;
@@ -1275,13 +1390,16 @@ export class ElevenLabsService {
 
         let segmentSettings;
         if (segment.speaker === 'narrator') {
-          // Narrator uses calm, consistent settings
+          // Narrator: apply scene-level delivery direction for v3 Audio Tags (if available).
+          const narratorOverride = narratorDirectives?.voiceSettingsOverride || {};
           segmentSettings = {
             ...voiceSettings,
-            stability: voiceSettings.stability || 0.7,
-            style: voiceSettings.style || 0.2,
+            stability: narratorOverride.stability ?? voiceSettings.stability ?? 0.65,
+            style: narratorOverride.style ?? voiceSettings.style ?? 0.25,
             sessionId,
-            speaker: segment.speaker
+            speaker: segment.speaker,
+            detectedEmotion: narratorDirectives?.emotion || voiceSettings.detectedEmotion,
+            delivery: narratorDirectives?.delivery || voiceSettings.delivery
           };
         } else {
           // Character dialogue - apply emotion preset + Audio Tags (v3)
@@ -1385,10 +1503,51 @@ export class ElevenLabsService {
       throw new Error('Failed to generate any audio segments');
     }
 
-    // Combine audio buffers
-    // Note: For proper audio concatenation, we'd need an audio processing library
-    // For now, simple buffer concatenation works for MP3s with same settings
-    const combinedBuffer = Buffer.concat(audioBuffers);
+    // Combine audio buffers using audioAssembler with FFmpeg crossfade
+    // This eliminates clicking/popping at segment boundaries
+    let combinedBuffer;
+    const hasFFmpeg = await checkFFmpegAvailable();
+
+    if (onProgress) {
+      try {
+        onProgress({
+          phase: 'assemble',
+          message: 'Assembling audio...',
+          current: audioBuffers.length,
+          total: audioBuffers.length
+        });
+      } catch (err) {
+        logger.debug(`[MultiVoice] Progress callback failed (assemble): ${err.message}`);
+      }
+    }
+
+    if (hasFFmpeg && audioBuffers.length > 1) {
+      // Build segment metadata for professional assembly with crossfade
+      const assemblySegments = audioBuffers.map((audio, idx) => ({
+        audio,
+        speaker: emotionEnhancedSegments[idx]?.speaker || 'narrator',
+        type: emotionEnhancedSegments[idx]?.speaker === 'narrator' ? 'narrator' : 'character',
+        duration: segmentResults[idx]?.durationMs || 0
+      }));
+
+      logger.info(`[MultiVoice] Using FFmpeg crossfade assembly for ${assemblySegments.length} segments`);
+
+      try {
+        const assemblyResult = await assembleMultiVoiceAudio(assemblySegments, {
+          ...ASSEMBLY_PRESETS.natural,
+          outputFormat: 'mp3'
+        });
+        combinedBuffer = assemblyResult.audio;
+        logger.info(`[MultiVoice] FFmpeg assembly complete: ${combinedBuffer.length} bytes`);
+      } catch (assemblyError) {
+        logger.warn(`[MultiVoice] FFmpeg assembly failed, falling back to simple concat: ${assemblyError.message}`);
+        combinedBuffer = Buffer.concat(audioBuffers);
+      }
+    } else {
+      // Fallback to simple concatenation (single segment or no FFmpeg)
+      logger.info(`[MultiVoice] Using simple buffer concatenation (segments: ${audioBuffers.length}, ffmpeg: ${hasFFmpeg})`);
+      combinedBuffer = Buffer.concat(audioBuffers);
+    }
 
     // Build combined word timings object
     const combinedWordTimings = {
@@ -1436,11 +1595,11 @@ export class ElevenLabsService {
    */
   prepareSegmentsWithVoices(segments, characterVoices, narratorVoiceId) {
     // CRITICAL: Ensure narrator voice is never null - breaks character voice comparison logic
-    const DEFAULT_NARRATOR_ID = 'JBFqnCBsd6RMkjVDRZzb'; // George - warm British narrator
-    const safeNarratorVoiceId = narratorVoiceId || DEFAULT_NARRATOR_ID;
+    // Voice ID imported from constants/voices.js
+    const safeNarratorVoiceId = narratorVoiceId || DEFAULT_NARRATOR_VOICE_ID;
 
     if (!narratorVoiceId) {
-      logger.warn(`[MultiVoice] WARNING: narratorVoiceId was null/undefined! Using default: ${DEFAULT_NARRATOR_ID}`);
+      logger.warn(`[MultiVoice] WARNING: narratorVoiceId was null/undefined! Using default: ${DEFAULT_NARRATOR_VOICE_ID}`);
     }
 
     // Log character voices for debugging multi-narrator issues
@@ -1579,10 +1738,11 @@ export class ElevenLabsService {
     // Determine model - v3 is new default for premium quality
     const modelId = options.model_id || QUALITY_TIER_MODELS.premium; // eleven_v3
 
-    // Apply Audio Tags if using v3 and emotion is detected
+    // Apply Audio Tags if using v3 and emotion/delivery is provided
     let processedText = text;
-    if (modelSupportsAudioTags(modelId) && detectedEmotion && detectedEmotion !== 'neutral') {
-      processedText = wrapWithAudioTags(text, detectedEmotion, delivery);
+    const hasDelivery = typeof delivery === 'string' ? delivery.trim().length > 0 : !!delivery;
+    if (modelSupportsAudioTags(modelId) && (hasDelivery || (detectedEmotion && detectedEmotion !== 'neutral'))) {
+      processedText = wrapWithAudioTags(text, detectedEmotion || 'neutral', delivery);
       logger.info(`[ElevenLabs] Applied Audio Tags: "${processedText.substring(0, 60)}..."`);
     }
 
@@ -1701,6 +1861,11 @@ export class ElevenLabsService {
     const charStartTimes = alignment.character_start_times_seconds.map(t => Math.round(t * 1000));
     const charEndTimes = alignment.character_end_times_seconds.map(t => Math.round(t * 1000));
 
+    // Prosody tag pattern - matches [word] or [multiple words] patterns
+    // These are ElevenLabs Audio Tags like [excitedly], [whispers], [angrily], etc.
+    const prosodyTagPattern = /^\[[a-zA-Z][a-zA-Z\s\-']*\]$/;
+    const embeddedTagPattern = /\[[a-zA-Z][a-zA-Z\s\-']*\]/g;
+
     const words = [];
     let currentWord = '';
     let wordStartTime = 0;
@@ -1723,7 +1888,16 @@ export class ElevenLabsService {
       const isWordBoundary = char === ' ' || char === '\n' || char === '\t' || i === chars.length - 1;
 
       if (isWordBoundary) {
-        const trimmedWord = currentWord.trim();
+        let trimmedWord = currentWord.trim();
+
+        // Skip if the entire word is a prosody tag like [excitedly]
+        if (prosodyTagPattern.test(trimmedWord)) {
+          currentWord = '';
+          continue;
+        }
+
+        // Remove any embedded prosody tags from the word (e.g., "[excitedly]What" → "What")
+        trimmedWord = trimmedWord.replace(embeddedTagPattern, '').trim();
 
         if (trimmedWord) {
           // Clean punctuation but keep the word

@@ -148,7 +148,7 @@ function SFXLibraryBrowser({ onSelect, showPreview = true }) {
   if (loading) {
     return (
       <div className="flex items-center justify-center p-8">
-        <Loader className="w-6 h-6 text-night-400 animate-spin" />
+        <Loader className="w-6 h-6 text-slate-400 animate-spin" />
       </div>
     );
   }
@@ -159,22 +159,22 @@ function SFXLibraryBrowser({ onSelect, showPreview = true }) {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Waves className="w-5 h-5 text-golden-400" />
-          <span className="text-night-200 font-medium">SFX Library</span>
+          <span className="text-slate-200 font-medium">SFX Library</span>
         </div>
-        <div className="text-night-500 text-xs">
+        <div className="text-slate-500 text-xs">
           {library.stats?.libraryCount || 0} effects • {library.stats?.totalCached || 0} cached
         </div>
       </div>
 
       {/* Search bar */}
       <div className="relative">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-night-500" />
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
         <input
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search sound effects..."
-          className="w-full pl-10 pr-4 py-2 bg-night-800 border border-night-700 rounded-lg text-night-200 placeholder-night-500 focus:border-golden-400 focus:outline-none"
+          className="w-full pl-10 pr-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-slate-200 placeholder-slate-500 focus:border-golden-400 focus:outline-none"
         />
       </div>
 
@@ -184,21 +184,21 @@ function SFXLibraryBrowser({ onSelect, showPreview = true }) {
           onClick={() => setSelectedCategory('all')}
           className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all ${
             selectedCategory === 'all'
-              ? 'bg-golden-400 text-night-900'
-              : 'bg-night-700 text-night-300 hover:bg-night-600'
+              ? 'bg-golden-400 text-slate-900'
+              : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
           }`}
         >
           All
         </button>
         {(library.categories || []).map(cat => {
-          const style = CATEGORY_STYLES[cat] || { icon: '🔊', color: 'bg-night-700 text-night-300' };
+          const style = CATEGORY_STYLES[cat] || { icon: '🔊', color: 'bg-slate-700 text-slate-300' };
           return (
             <button
               key={cat}
               onClick={() => setSelectedCategory(cat)}
               className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all flex items-center gap-1 ${
                 selectedCategory === cat
-                  ? 'bg-golden-400 text-night-900'
+                  ? 'bg-golden-400 text-slate-900'
                   : `${style.color} hover:opacity-80`
               }`}
             >
@@ -212,11 +212,11 @@ function SFXLibraryBrowser({ onSelect, showPreview = true }) {
       {/* SFX list grouped by category */}
       <div className="space-y-3 max-h-96 overflow-y-auto">
         {Object.entries(groupedLibrary).map(([category, sfxList]) => {
-          const style = CATEGORY_STYLES[category] || { icon: '🔊', color: 'bg-night-700', label: category };
+          const style = CATEGORY_STYLES[category] || { icon: '🔊', color: 'bg-slate-700', label: category };
           const isExpanded = expandedCategories.has(category);
 
           return (
-            <div key={category} className="rounded-lg border border-night-700 overflow-hidden">
+            <div key={category} className="rounded-lg border border-slate-700 overflow-hidden">
               {/* Category header */}
               <button
                 onClick={() => toggleCategory(category)}
@@ -232,35 +232,35 @@ function SFXLibraryBrowser({ onSelect, showPreview = true }) {
 
               {/* SFX items */}
               {isExpanded && (
-                <div className="bg-night-900/50 divide-y divide-night-800">
+                <div className="bg-slate-900/50 divide-y divide-slate-800">
                   {sfxList.map((sfx) => (
                     <div
                       key={sfx.sfx_key}
-                      className="flex items-center gap-3 p-3 hover:bg-night-800/50 transition-all"
+                      className="flex items-center gap-3 p-3 hover:bg-slate-800/50 transition-all"
                     >
                       {/* Preview button */}
                       {showPreview && (
                         <button
                           onClick={() => previewSfx(sfx)}
                           disabled={previewLoading === sfx.sfx_key}
-                          className="w-8 h-8 flex-shrink-0 rounded-full bg-night-700 flex items-center justify-center hover:bg-night-600 transition-all disabled:opacity-50"
+                          className="w-8 h-8 flex-shrink-0 rounded-full bg-slate-700 flex items-center justify-center hover:bg-slate-600 transition-all disabled:opacity-50"
                         >
                           {previewLoading === sfx.sfx_key ? (
                             <Loader className="w-4 h-4 text-golden-400 animate-spin" />
                           ) : playingId === sfx.sfx_key ? (
                             <Pause className="w-4 h-4 text-golden-400" />
                           ) : (
-                            <Play className="w-4 h-4 text-night-300 ml-0.5" />
+                            <Play className="w-4 h-4 text-slate-300 ml-0.5" />
                           )}
                         </button>
                       )}
 
                       {/* SFX info */}
                       <div className="flex-1 min-w-0">
-                        <div className="text-night-200 text-sm font-medium capitalize truncate">
+                        <div className="text-slate-200 text-sm font-medium capitalize truncate">
                           {sfx.name}
                         </div>
-                        <div className="text-night-500 text-xs truncate">
+                        <div className="text-slate-500 text-xs truncate">
                           {sfx.duration ? `${sfx.duration}s` : ''} {sfx.loop ? '• Loop' : '• One-shot'}
                         </div>
                       </div>
@@ -284,7 +284,7 @@ function SFXLibraryBrowser({ onSelect, showPreview = true }) {
 
         {/* Cached/Generated SFX section */}
         {(library.cachedSfx?.length > 0) && (
-          <div className="rounded-lg border border-night-700 overflow-hidden">
+          <div className="rounded-lg border border-slate-700 overflow-hidden">
             <button
               onClick={() => toggleCategory('cached')}
               className={`w-full flex items-center justify-between p-3 ${CATEGORY_STYLES.cached.color} hover:opacity-90 transition-all`}
@@ -298,33 +298,33 @@ function SFXLibraryBrowser({ onSelect, showPreview = true }) {
             </button>
 
             {expandedCategories.has('cached') && (
-              <div className="bg-night-900/50 divide-y divide-night-800">
+              <div className="bg-slate-900/50 divide-y divide-slate-800">
                 {library.cachedSfx.map((sfx) => (
                   <div
                     key={sfx.sfx_key}
-                    className="flex items-center gap-3 p-3 hover:bg-night-800/50 transition-all"
+                    className="flex items-center gap-3 p-3 hover:bg-slate-800/50 transition-all"
                   >
                     {showPreview && (
                       <button
                         onClick={() => previewSfx(sfx)}
                         disabled={previewLoading === sfx.sfx_key}
-                        className="w-8 h-8 flex-shrink-0 rounded-full bg-night-700 flex items-center justify-center hover:bg-night-600 transition-all disabled:opacity-50"
+                        className="w-8 h-8 flex-shrink-0 rounded-full bg-slate-700 flex items-center justify-center hover:bg-slate-600 transition-all disabled:opacity-50"
                       >
                         {previewLoading === sfx.sfx_key ? (
                           <Loader className="w-4 h-4 text-golden-400 animate-spin" />
                         ) : playingId === sfx.sfx_key ? (
                           <Pause className="w-4 h-4 text-golden-400" />
                         ) : (
-                          <Play className="w-4 h-4 text-night-300 ml-0.5" />
+                          <Play className="w-4 h-4 text-slate-300 ml-0.5" />
                         )}
                       </button>
                     )}
 
                     <div className="flex-1 min-w-0">
-                      <div className="text-night-200 text-sm font-medium truncate">
+                      <div className="text-slate-200 text-sm font-medium truncate">
                         {sfx.name}
                       </div>
-                      <div className="text-night-500 text-xs truncate">
+                      <div className="text-slate-500 text-xs truncate">
                         {sfx.access_count} plays • {sfx.duration ? `${sfx.duration}s` : 'Variable'}
                       </div>
                     </div>
@@ -346,7 +346,7 @@ function SFXLibraryBrowser({ onSelect, showPreview = true }) {
 
         {/* Empty state */}
         {Object.keys(groupedLibrary).length === 0 && library.cachedSfx?.length === 0 && (
-          <div className="text-center py-8 text-night-500">
+          <div className="text-center py-8 text-slate-500">
             <Waves className="w-12 h-12 mx-auto mb-3 opacity-30" />
             <p>No sound effects found</p>
             {search && <p className="text-xs mt-1">Try a different search term</p>}

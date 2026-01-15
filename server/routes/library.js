@@ -6,8 +6,19 @@
 import { Router } from 'express';
 import { pool } from '../database/pool.js';
 import { logger } from '../utils/logger.js';
+import { wrapRoutes } from '../middleware/errorHandler.js';
+import { cache } from '../services/cache.js';
+import { authenticateToken, requireAuth, optionalAuth } from '../middleware/auth.js';
+
+// Cache TTLs for library endpoints
+const CACHE_TTL = {
+  LIBRARY_LIST: 60,    // 1 minute - user's library changes frequently
+  STORY_DETAIL: 300,   // 5 minutes - story details rarely change during read
+  STORY_COUNT: 120     // 2 minutes - aggregate counts
+};
 
 const router = Router();
+wrapRoutes(router); // Auto-wrap async handlers for error catching
 
 /**
  * HTML escape helper to prevent XSS attacks
@@ -47,33 +58,67 @@ function sanitizeFilename(filename) {
 /**
  * GET /api/library
  * Get user's story library with progress
+ * SECURITY: Requires authentication - uses req.user.id, not query params
  */
-router.get('/', async (req, res) => {
+router.get('/', authenticateToken, requireAuth, async (req, res) => {
   try {
-    const userId = req.query.user_id || '00000000-0000-0000-0000-000000000001';
+    // SECURITY FIX: Use authenticated user ID, not from query params (IDOR prevention)
+    const userId = req.user.id;
     const filter = req.query.filter || 'all'; // all, in_progress, completed, favorites
+    const category = req.query.category || 'all';
+
+    // PERFORMANCE: Check cache first
+    const cacheKey = `library:${userId}:${filter}:${category}`;
+    const cached = await cache.get(cacheKey);
+    if (cached) {
+      logger.debug(`[Library] Cache HIT for ${cacheKey}`);
+      return res.json(cached);
+    }
 
     // FIX: Always exclude abandoned stories (unless specifically showing all)
     // Abandoned stories are partial/cancelled sessions that shouldn't appear in library
-    let whereClause = "WHERE s.user_id = $1 AND s.current_status != 'abandoned'";
+    let whereClause = "WHERE s.user_id = $1 AND s.current_status IS DISTINCT FROM 'abandoned'";
     if (filter === 'in_progress') {
-      whereClause += " AND s.current_status NOT IN ('finished')";
+      whereClause += " AND COALESCE(s.current_status, 'planning') NOT IN ('finished')";
     } else if (filter === 'completed') {
       whereClause += " AND s.current_status = 'finished'";
     } else if (filter === 'favorites') {
       whereClause += ' AND s.is_favorite = true';
     }
 
-    logger.info(`[Library] Fetching stories for user ${userId} with filter ${filter}`);
+    logger.info(`[Library] Cache MISS for ${cacheKey} - fetching from DB`);
 
+    // OPTIMIZED: Use CTEs instead of correlated subqueries to fix N+1 pattern
+    // This runs the subqueries once and JOINs the results instead of per-row
     const result = await pool.query(`
+      WITH first_scenes AS (
+        -- Get first scene for each session (runs once, not per row)
+        SELECT DISTINCT ON (story_session_id)
+          story_session_id,
+          polished_text as first_scene_preview
+        FROM story_scenes
+        ORDER BY story_session_id, sequence_index
+      ),
+      bookmark_counts AS (
+        -- Count non-auto bookmarks per session (runs once, not per row)
+        SELECT story_session_id, COUNT(*) as bookmark_count
+        FROM bookmarks
+        WHERE NOT is_auto_bookmark
+        GROUP BY story_session_id
+      ),
+      actual_scene_counts AS (
+        -- Count actual scenes per session (fixes sync issues with total_scenes counter)
+        SELECT story_session_id, COUNT(*) as scene_count
+        FROM story_scenes
+        GROUP BY story_session_id
+      )
       SELECT
         s.id,
         s.title,
         s.mode,
         s.cyoa_enabled,
         s.current_status,
-        s.total_scenes,
+        COALESCE(scene_counts.scene_count, 0) as total_scenes,
         s.current_scene_index,
         s.is_favorite,
         s.cover_image_url,
@@ -85,29 +130,33 @@ router.get('/', async (req, res) => {
         s.total_reading_time_seconds,
         s.config_json,
         o.themes,
-        COALESCE(
-          (SELECT polished_text FROM story_scenes
-           WHERE story_session_id = s.id
-           ORDER BY sequence_index LIMIT 1),
-          ''
-        ) as first_scene_preview,
-        (SELECT COUNT(*) FROM bookmarks WHERE story_session_id = s.id AND NOT is_auto_bookmark) as bookmark_count,
+        COALESCE(fs.first_scene_preview, '') as first_scene_preview,
+        COALESCE(bc.bookmark_count, 0) as bookmark_count,
         CASE
-          WHEN s.total_scenes > 0 THEN
-            ROUND((COALESCE(s.current_scene_index, 0)::NUMERIC / s.total_scenes) * 100)
+          WHEN COALESCE(scene_counts.scene_count, 0) > 0 THEN
+            ROUND((COALESCE(s.current_scene_index, 0)::NUMERIC / scene_counts.scene_count) * 100)
           ELSE 0
         END as progress_percent
       FROM story_sessions s
       LEFT JOIN story_outlines o ON o.story_session_id = s.id
+      LEFT JOIN first_scenes fs ON fs.story_session_id = s.id
+      LEFT JOIN bookmark_counts bc ON bc.story_session_id = s.id
+      LEFT JOIN actual_scene_counts scene_counts ON scene_counts.story_session_id = s.id
       ${whereClause}
-      ORDER BY s.last_activity_at DESC
+      ORDER BY COALESCE(s.last_activity_at, s.started_at) DESC
     `, [userId]);
 
-    res.json({
+    const response = {
       stories: result.rows,
       count: result.rows.length,
-      filter
-    });
+      filter,
+      category
+    };
+
+    // PERFORMANCE: Cache the response
+    await cache.set(cacheKey, response, CACHE_TTL.LIBRARY_LIST);
+
+    res.json(response);
 
   } catch (error) {
     logger.error('Error fetching library:', error);
@@ -118,71 +167,111 @@ router.get('/', async (req, res) => {
 /**
  * GET /api/library/:storyId
  * Get full story details for reading
+ * Prioritizes recording_segments for audio URLs when available (permanent storage)
  */
 router.get('/:storyId', async (req, res) => {
   try {
     const { storyId } = req.params;
 
-    // Get story session
-    const session = await pool.query(`
-      SELECT s.*, o.outline_json, o.themes
-      FROM story_sessions s
-      LEFT JOIN story_outlines o ON o.story_session_id = s.id
-      WHERE s.id = $1
-    `, [storyId]);
+    // PERFORMANCE: Check cache first
+    const cacheKey = `story:${storyId}`;
+    const cached = await cache.get(cacheKey);
+    if (cached) {
+      logger.debug(`[Library] Cache HIT for ${cacheKey}`);
+      return res.json(cached);
+    }
+
+    // OPTIMIZED: Parallelize independent queries
+    // Phase 1: Get session + recording in parallel (recording needed for scenes query)
+    const [session, recording] = await Promise.all([
+      pool.query(`
+        SELECT s.*, o.outline_json, o.themes
+        FROM story_sessions s
+        LEFT JOIN story_outlines o ON o.story_session_id = s.id
+        WHERE s.id = $1
+      `, [storyId]),
+      pool.query(`
+        SELECT r.id, r.is_complete, r.scene_count
+        FROM story_recordings r
+        WHERE r.story_session_id = $1
+        ORDER BY r.created_at DESC
+        LIMIT 1
+      `, [storyId])
+    ]);
 
     if (session.rows.length === 0) {
       return res.status(404).json({ error: 'Story not found' });
     }
 
-    // Get all scenes
-    const scenes = await pool.query(`
-      SELECT
-        sc.id,
-        sc.sequence_index,
-        sc.branch_key,
-        sc.polished_text,
-        sc.summary,
-        sc.audio_url,
-        sc.audio_duration_seconds,
-        sc.mood,
-        sc.word_count,
-        (SELECT json_agg(json_build_object(
-          'id', c.id,
-          'key', c.choice_key,
-          'text', c.choice_text,
-          'selected', c.was_selected
-        )) FROM story_choices c WHERE c.scene_id = sc.id) as choices
-      FROM story_scenes sc
-      WHERE sc.story_session_id = $1
-      ORDER BY sc.sequence_index
-    `, [storyId]);
+    const hasRecording = recording.rows.length > 0;
+    const recordingId = hasRecording ? recording.rows[0].id : null;
 
-    // Get characters
-    const characters = await pool.query(`
-      SELECT c.*, cva.elevenlabs_voice_id as assigned_voice_id
-      FROM characters c
-      LEFT JOIN character_voice_assignments cva ON cva.character_id = c.id
-      WHERE c.story_session_id = $1
-    `, [storyId]);
+    // Phase 2: Get scenes, characters, bookmarks in parallel (all independent)
+    const [scenes, characters, bookmarks] = await Promise.all([
+      // Scenes query - joins with recording_segments if available
+      pool.query(`
+        SELECT
+          sc.id,
+          sc.sequence_index,
+          sc.branch_key,
+          sc.polished_text,
+          sc.summary,
+          COALESCE(rs.audio_url, sc.audio_url) as audio_url,
+          COALESCE(rs.duration_seconds, sc.audio_duration_seconds) as audio_duration_seconds,
+          COALESCE(rs.word_timings, sc.word_timings) as word_timings,
+          sc.mood,
+          sc.word_count,
+          rs.sfx_data,
+          (SELECT json_agg(json_build_object(
+            'id', c.id,
+            'key', c.choice_key,
+            'text', c.choice_text,
+            'selected', c.was_selected
+          )) FROM story_choices c WHERE c.scene_id = sc.id) as choices
+        FROM story_scenes sc
+        LEFT JOIN recording_segments rs ON rs.scene_id = sc.id AND rs.recording_id = $2
+        WHERE sc.story_session_id = $1
+        ORDER BY sc.sequence_index
+      `, [storyId, recordingId]),
+      // Characters query
+      pool.query(`
+        SELECT c.*, cva.elevenlabs_voice_id as assigned_voice_id
+        FROM characters c
+        LEFT JOIN character_voice_assignments cva ON cva.character_id = c.id
+        WHERE c.story_session_id = $1
+      `, [storyId]),
+      // Bookmarks query
+      pool.query(`
+        SELECT b.*, sc.sequence_index as scene_index
+        FROM bookmarks b
+        LEFT JOIN story_scenes sc ON sc.id = b.scene_id
+        WHERE b.story_session_id = $1
+        ORDER BY sc.sequence_index, b.text_position
+      `, [storyId])
+    ]);
 
-    // Get bookmarks
-    const bookmarks = await pool.query(`
-      SELECT b.*, sc.sequence_index as scene_index
-      FROM bookmarks b
-      LEFT JOIN story_scenes sc ON sc.id = b.scene_id
-      WHERE b.story_session_id = $1
-      ORDER BY sc.sequence_index, b.text_position
-    `, [storyId]);
+    // Include recording metadata
+    const recordingInfo = hasRecording ? {
+      hasRecording: true,
+      recordingId: recording.rows[0].id,
+      isComplete: recording.rows[0].is_complete,
+      sceneCount: recording.rows[0].scene_count
+    } : { hasRecording: false };
 
-    res.json({
+    const response = {
       story: session.rows[0],
       scenes: scenes.rows,
       characters: characters.rows,
       bookmarks: bookmarks.rows,
+      recording: recordingInfo,
       total_duration: scenes.rows.reduce((sum, s) => sum + (s.audio_duration_seconds || 0), 0),
       total_words: scenes.rows.reduce((sum, s) => sum + (s.word_count || 0), 0)
-    });
+    };
+
+    // PERFORMANCE: Cache the response
+    await cache.set(cacheKey, response, CACHE_TTL.STORY_DETAIL);
+
+    res.json(response);
 
   } catch (error) {
     logger.error('Error fetching story:', error);
@@ -193,29 +282,34 @@ router.get('/:storyId', async (req, res) => {
 /**
  * POST /api/library/:storyId/progress
  * Update reading progress
+ * SECURITY: Requires authentication - uses req.user.id
  */
-router.post('/:storyId/progress', async (req, res) => {
+router.post('/:storyId/progress', authenticateToken, requireAuth, async (req, res) => {
   try {
     const { storyId } = req.params;
     const { scene_id, scene_index, audio_position, reading_time } = req.body;
-    const userId = req.body.user_id || '00000000-0000-0000-0000-000000000001';
+    // SECURITY FIX: Use authenticated user ID, not from body (IDOR prevention)
+    const userId = req.user.id;
 
     // Update session - always works even without scene_id
-    await pool.query(`
+    const updateResult = await pool.query(`
       UPDATE story_sessions
       SET current_scene_index = COALESCE($1, current_scene_index),
           last_read_scene_id = COALESCE($2, last_read_scene_id),
           last_read_at = NOW(),
           total_reading_time_seconds = COALESCE(total_reading_time_seconds, 0) + COALESCE($3, 0),
           last_activity_at = NOW()
-      WHERE id = $4
-    `, [scene_index, scene_id, reading_time || 0, storyId]);
+      WHERE id = $4 AND user_id = $5
+      RETURNING id
+    `, [scene_index, scene_id, reading_time || 0, storyId, userId]);
 
-    // Only create/update auto-bookmark if we have a scene_id AND a real authenticated user
-    // Anonymous users (default UUID) don't exist in users table, so skip bookmark creation for them
-    const isAnonymousUser = userId === '00000000-0000-0000-0000-000000000001';
+    if (updateResult.rowCount === 0) {
+      return res.status(404).json({ error: 'Story not found' });
+    }
 
-    if (scene_id && !isAnonymousUser) {
+    // Only create/update auto-bookmark if we have a scene_id
+    // SECURITY: Now that auth is required, all users are authenticated
+    if (scene_id) {
       try {
         // First try to update existing auto-bookmark for this session
         const updateResult = await pool.query(`
@@ -247,6 +341,8 @@ router.post('/:storyId/progress', async (req, res) => {
       }
     }
 
+    await cache.delPattern(`library:${userId}:*`);
+
     res.json({ message: 'Progress saved' });
 
   } catch (error) {
@@ -258,18 +354,30 @@ router.post('/:storyId/progress', async (req, res) => {
 /**
  * POST /api/library/:storyId/bookmark
  * Create a bookmark
+ * SECURITY: Requires authentication - uses req.user.id
  */
-router.post('/:storyId/bookmark', async (req, res) => {
+router.post('/:storyId/bookmark', authenticateToken, requireAuth, async (req, res) => {
   try {
     const { storyId } = req.params;
     const { scene_id, name, note, color, text_position, audio_position } = req.body;
-    const userId = req.body.user_id || '00000000-0000-0000-0000-000000000001';
+    // SECURITY FIX: Use authenticated user ID, not from body (IDOR prevention)
+    const userId = req.user.id;
 
     const result = await pool.query(`
+      WITH target AS (
+        SELECT id FROM story_sessions WHERE id = $2 AND user_id = $1
+      )
       INSERT INTO bookmarks (user_id, story_session_id, scene_id, name, note, color, text_position, audio_position_seconds)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      SELECT $1, target.id, $3, $4, $5, $6, $7, $8
+      FROM target
       RETURNING *
     `, [userId, storyId, scene_id, name || 'Bookmark', note, color || 'gold', text_position || 0, audio_position || 0]);
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Story not found' });
+    }
+
+    await cache.delPattern(`library:${userId}:*`);
 
     res.status(201).json({ bookmark: result.rows[0] });
 
@@ -283,11 +391,21 @@ router.post('/:storyId/bookmark', async (req, res) => {
  * DELETE /api/library/:storyId/bookmark/:bookmarkId
  * Delete a bookmark
  */
-router.delete('/:storyId/bookmark/:bookmarkId', async (req, res) => {
+router.delete('/:storyId/bookmark/:bookmarkId', authenticateToken, requireAuth, async (req, res) => {
   try {
-    const { bookmarkId } = req.params;
+    const { storyId, bookmarkId } = req.params;
+    const userId = req.user.id;
 
-    await pool.query('DELETE FROM bookmarks WHERE id = $1', [bookmarkId]);
+    const result = await pool.query(
+      'DELETE FROM bookmarks WHERE id = $1 AND user_id = $2 AND story_session_id = $3 RETURNING id',
+      [bookmarkId, userId, storyId]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Bookmark not found' });
+    }
+
+    await cache.delPattern(`library:${userId}:*`);
 
     res.json({ message: 'Bookmark deleted' });
 
@@ -301,16 +419,23 @@ router.delete('/:storyId/bookmark/:bookmarkId', async (req, res) => {
  * POST /api/library/:storyId/favorite
  * Toggle favorite status
  */
-router.post('/:storyId/favorite', async (req, res) => {
+router.post('/:storyId/favorite', authenticateToken, requireAuth, async (req, res) => {
   try {
     const { storyId } = req.params;
+    const userId = req.user.id;
 
     const result = await pool.query(`
       UPDATE story_sessions
       SET is_favorite = NOT is_favorite
-      WHERE id = $1
+      WHERE id = $1 AND user_id = $2
       RETURNING is_favorite
-    `, [storyId]);
+    `, [storyId, userId]);
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Story not found' });
+    }
+
+    await cache.delPattern(`library:${userId}:*`);
 
     res.json({ is_favorite: result.rows[0]?.is_favorite });
 
@@ -321,12 +446,14 @@ router.post('/:storyId/favorite', async (req, res) => {
 });
 
 /**
- * GET /api/library/preferences/:userId
- * Get reading preferences
+ * GET /api/library/preferences
+ * Get reading preferences for authenticated user
+ * SECURITY: Uses req.user.id instead of URL parameter
  */
-router.get('/preferences/:userId', async (req, res) => {
+router.get('/preferences', authenticateToken, requireAuth, async (req, res) => {
   try {
-    const { userId } = req.params;
+    // SECURITY FIX: Use authenticated user ID, not from params (IDOR prevention)
+    const userId = req.user.id;
 
     let result = await pool.query(
       'SELECT * FROM reading_preferences WHERE user_id = $1',
@@ -351,12 +478,14 @@ router.get('/preferences/:userId', async (req, res) => {
 });
 
 /**
- * PUT /api/library/preferences/:userId
- * Update reading preferences
+ * PUT /api/library/preferences
+ * Update reading preferences for authenticated user
+ * SECURITY: Uses req.user.id instead of URL parameter
  */
-router.put('/preferences/:userId', async (req, res) => {
+router.put('/preferences', authenticateToken, requireAuth, async (req, res) => {
   try {
-    const { userId } = req.params;
+    // SECURITY FIX: Use authenticated user ID, not from params (IDOR prevention)
+    const userId = req.user.id;
     const {
       font_size, font_family, line_height, theme,
       playback_speed, auto_play_next_scene, sync_highlight,
@@ -481,10 +610,26 @@ THE END
 /**
  * DELETE /api/library/:storyId
  * Delete a story from library
+ * SECURITY: Requires authentication and verifies story ownership
  */
-router.delete('/:storyId', async (req, res) => {
+router.delete('/:storyId', authenticateToken, requireAuth, async (req, res) => {
   try {
     const { storyId } = req.params;
+    const userId = req.user.id;
+
+    // SECURITY: Verify story belongs to authenticated user before deletion
+    const ownerCheck = await pool.query(
+      'SELECT user_id FROM story_sessions WHERE id = $1',
+      [storyId]
+    );
+
+    if (ownerCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Story not found' });
+    }
+
+    if (ownerCheck.rows[0].user_id !== userId && !req.user.is_admin) {
+      return res.status(403).json({ error: 'Not authorized to delete this story' });
+    }
 
     // Soft delete by marking as abandoned, or hard delete
     const hardDelete = req.query.hard === 'true';
@@ -497,6 +642,8 @@ router.delete('/:storyId', async (req, res) => {
         [storyId]
       );
     }
+
+    await cache.delPattern(`library:${userId}:*`);
 
     res.json({ message: 'Story deleted' });
 

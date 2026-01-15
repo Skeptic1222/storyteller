@@ -127,6 +127,15 @@ export const AUTHOR_STYLES_BY_CATEGORY = {
 export const AUTHOR_STYLES = Object.values(AUTHOR_STYLES_BY_CATEGORY).flatMap(cat => cat.authors);
 
 /**
+ * Map of author IDs to display names (for Story.jsx and other display contexts)
+ * @example AUTHOR_NAMES['tolkien'] // 'J.R.R. Tolkien'
+ */
+export const AUTHOR_NAMES = AUTHOR_STYLES.reduce((acc, author) => {
+  acc[author.id] = author.name;
+  return acc;
+}, { modern: 'Modern Style' });
+
+/**
  * Find author by ID
  * @param {string} authorId - Author ID to find
  * @returns {Object|undefined} Author object or undefined

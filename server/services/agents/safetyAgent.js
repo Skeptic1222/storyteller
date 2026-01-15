@@ -11,8 +11,9 @@
  */
 
 import { logger } from '../../utils/logger.js';
-import { callAgent } from '../openai.js';
+import { callAgent, parseJsonResponse } from '../openai.js';
 import { getUtilityModel } from '../modelSelection.js';
+import { calculateEffectiveLimits, getAudienceContext } from '../../utils/audienceLimits.js';
 
 /**
  * Create empty safety report structure
@@ -66,7 +67,7 @@ export class SafetyAgent {
 CONTENT:
 ${text}
 
-AUDIENCE CONTEXT: ${audience === 'children' ? 'Children (ages 3-10)' : audience === 'mature' ? 'Mature audiences' : 'General/family audience'}
+AUDIENCE CONTEXT: ${getAudienceContext(audience)}
 
 Rate each category from 0 (none) to 100 (extreme):
 
@@ -88,7 +89,7 @@ Return JSON only:
 
     try {
       const result = await callAgent('safety', prompt, { sessionId: null });
-      const parsed = this.parseJsonResponse(result.content);
+      const parsed = parseJsonResponse(result.content);
 
       return {
         violence: Math.min(100, Math.max(0, parsed.violence || 0)),
@@ -177,7 +178,7 @@ Return JSON:
 
     try {
       const result = await callAgent('safety', prompt, { sessionId: null });
-      const parsed = this.parseJsonResponse(result.content);
+      const parsed = parseJsonResponse(result.content);
 
       return {
         adjustedText: parsed.adjusted_text || text,
@@ -192,6 +193,10 @@ Return JSON:
   /**
    * Full safety check and adjustment pipeline
    * Returns detailed report for HUD display
+   *
+   * IMPORTANT: For mature audiences with high intensity settings (adultContent >= 50),
+   * skip most safety adjustments. Only check for truly harmful content.
+   *
    * @param {string} text - Content to check
    * @param {object} limits - Target intensity limits
    * @param {string} audience - Audience type
@@ -202,15 +207,34 @@ Return JSON:
     const report = createSafetyReport();
     report.audience = audience;
 
-    // Apply audience-based limit adjustments
-    const audienceMultiplier = audience === 'children' ? 0 : audience === 'mature' ? 1.5 : 1;
-    const effectiveLimits = {
-      violence: Math.min((limits.violence ?? 20) * audienceMultiplier, audience === 'children' ? 10 : 100),
-      gore: Math.min((limits.gore ?? 0) * audienceMultiplier, audience === 'children' ? 0 : 100),
-      scary: Math.min((limits.scary ?? 30) * audienceMultiplier, audience === 'children' ? 10 : 100),
-      romance: Math.min((limits.romance ?? 20) * audienceMultiplier, audience === 'children' ? 0 : 100),
-      language: Math.min((limits.language ?? 10) * audienceMultiplier, audience === 'children' ? 0 : 100)
-    };
+    // Check for mature audience with high adult content - skip most safety checks
+    const adultContentLevel = limits.adultContent ?? limits.romance ?? 0;
+    const isMatureWithExplicit = audience === 'mature' && adultContentLevel >= 50;
+
+    if (isMatureWithExplicit) {
+      // For mature audiences with explicit content enabled, don't modify the text
+      // Only log for monitoring purposes
+      logger.info(`[SafetyAgent] SKIPPING adjustments for mature content (adultContent: ${adultContentLevel}/100)`);
+
+      // Set target levels to maximum (100) since explicit content is allowed
+      report.targetLevels = {
+        violence: limits.violence ?? 100,
+        gore: limits.gore ?? 100,
+        scary: limits.scary ?? 100,
+        romance: 100, // Maximum allowed
+        language: limits.language ?? 100
+      };
+
+      report.wasAdjusted = false;
+      report.summary = 'Mature content - explicit material permitted per user settings';
+      report.originalScores = { violence: 0, gore: 0, scary: 0, romance: 0, language: 0 }; // Skip analysis
+      report.adjustedScores = { ...report.originalScores };
+
+      return { report, adjustedText: text };
+    }
+
+    // Apply audience-based limit adjustments (uses audienceLimits.js)
+    const effectiveLimits = calculateEffectiveLimits(limits, audience);
     report.targetLevels = { ...effectiveLimits };
 
     logger.info(`[SafetyAgent] Checking content for session ${sessionId}, audience: ${audience}`);
@@ -314,21 +338,7 @@ Return JSON:
       audience: report.audience
     };
   }
-
-  /**
-   * Parse JSON from LLM response
-   */
-  parseJsonResponse(content) {
-    try {
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        return JSON.parse(jsonMatch[0]);
-      }
-    } catch (e) {
-      logger.warn('[SafetyAgent] JSON parse error:', e.message);
-    }
-    return {};
-  }
+  // NOTE: Using shared parseJsonResponse from openai.js instead of internal method
 }
 
 export default SafetyAgent;

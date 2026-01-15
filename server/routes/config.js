@@ -4,31 +4,19 @@
  */
 
 import { Router } from 'express';
-import rateLimit from 'express-rate-limit';
 import { pool } from '../database/pool.js';
 import { logger } from '../utils/logger.js';
 import { completion, parseJsonResponse } from '../services/openai.js';
 import { getUtilityModel } from '../services/modelSelection.js';
 import smartConfig from '../services/smartConfig.js';
+import { wrapRoutes, ValidationError } from '../middleware/errorHandler.js';
+import { authenticateToken, requireAuth, requireAdmin } from '../middleware/auth.js';
+import { schemas, validateBody } from '../middleware/validation.js';
+import { rateLimiters } from '../middleware/rateLimiter.js';
 
 const router = Router();
-
-// Rate limiter for AI-intensive endpoints (smart-interpret uses OpenAI)
-const aiRateLimiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minute
-  max: 10, // 10 requests per minute
-  message: { error: 'Too many AI requests, please wait a moment before trying again' },
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: (req) => {
-    const forwarded = req.headers['x-forwarded-for'];
-    let ip = forwarded ? forwarded.split(',')[0].trim() : req.ip || 'unknown';
-    // Strip port if present (IIS sometimes sends IP:port format)
-    return ip.split(':')[0] || ip;
-  },
-  // Skip validation since we have custom key generator (IIS proxy sends IP:port)
-  validate: { xForwardedForHeader: false, trustProxy: false }
-});
+wrapRoutes(router); // Auto-wrap async handlers for error catching
+router.use(authenticateToken);
 
 // Input sanitization helper
 function sanitizePremise(text) {
@@ -66,7 +54,7 @@ const DEFAULT_CONFIG = {
     scary: 30
   },
   preferences: {
-    bedtime_mode: true,
+    bedtime_mode: false,
     cyoa_enabled: false,
     story_length: 'medium', // short, medium, long
     narrator_style: 'warm' // warm, dramatic, neutral
@@ -90,9 +78,9 @@ router.get('/defaults', (req, res) => {
  * GET /api/config/preferences/:userId
  * Get user's saved preferences
  */
-router.get('/preferences/:userId', async (req, res) => {
+router.get('/preferences/:userId', requireAuth, async (req, res) => {
   try {
-    const { userId } = req.params;
+    const userId = req.user.id;
 
     const result = await pool.query(
       'SELECT long_term_preferences FROM users WHERE id = $1',
@@ -132,13 +120,10 @@ router.get('/preferences/:userId', async (req, res) => {
  * POST /api/config/preferences
  * Save user preferences
  */
-router.post('/preferences', async (req, res) => {
+router.post('/preferences', requireAuth, async (req, res) => {
   try {
-    const { user_id, preferences } = req.body;
-
-    if (!user_id) {
-      return res.status(400).json({ error: 'user_id is required' });
-    }
+    const { preferences } = req.body;
+    const user_id = req.user.id;
 
     // Validate intensity levels
     if (preferences.intensity) {
@@ -177,9 +162,9 @@ router.post('/preferences', async (req, res) => {
  * GET /api/config/auto-select/:userId
  * Get user's auto-select preferences (which sections AI should configure automatically)
  */
-router.get('/auto-select/:userId', async (req, res) => {
+router.get('/auto-select/:userId', requireAuth, async (req, res) => {
   try {
-    const { userId } = req.params;
+    const userId = req.user.id;
 
     const result = await pool.query(
       'SELECT long_term_preferences FROM users WHERE id = $1',
@@ -227,13 +212,10 @@ router.get('/auto-select/:userId', async (req, res) => {
  * POST /api/config/auto-select
  * Save user's auto-select preferences
  */
-router.post('/auto-select', async (req, res) => {
+router.post('/auto-select', requireAuth, async (req, res) => {
   try {
-    const { user_id, auto_select } = req.body;
-
-    if (!user_id) {
-      return res.status(400).json({ success: false, error: 'user_id is required' });
-    }
+    const { auto_select } = req.body;
+    const user_id = req.user.id;
 
     if (!auto_select || typeof auto_select !== 'object') {
       return res.status(400).json({ success: false, error: 'auto_select object is required' });
@@ -302,7 +284,7 @@ router.get('/narrator-styles', (req, res) => {
  * GET /api/config/agent-prompts
  * Get agent prompts (admin only)
  */
-router.get('/agent-prompts', async (req, res) => {
+router.get('/agent-prompts', requireAuth, requireAdmin, async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT agent_name, description, model, temperature, max_tokens, is_active, version, updated_at
@@ -322,7 +304,7 @@ router.get('/agent-prompts', async (req, res) => {
  * POST /api/config/interpret
  * Use AI to interpret voice prompt and suggest config changes
  */
-router.post('/interpret', async (req, res) => {
+router.post('/interpret', requireAuth, async (req, res) => {
   try {
     const { prompt, current_config } = req.body;
 
@@ -387,39 +369,33 @@ Keep suggestions friendly and engaging.`;
  * Use Smart Config engine to interpret premise text and suggest configuration
  * This is the primary endpoint for AI-driven auto-configuration
  */
-router.post('/smart-interpret', aiRateLimiter, async (req, res) => {
-  try {
-    const { premise, current_config } = req.body;
+router.post('/smart-interpret', requireAuth, rateLimiters.ai, async (req, res) => {
+  const { premise, current_config } = req.body;
 
-    if (!premise) {
-      return res.status(400).json({ error: 'premise is required' });
-    }
+  if (!premise || typeof premise !== 'string') {
+    throw new ValidationError('premise is required');
+  }
 
-    // Sanitize the premise text
-    const sanitizedPremise = sanitizePremise(premise);
+  // Sanitize the premise text
+  const sanitizedPremise = sanitizePremise(premise);
 
-    if (sanitizedPremise.length < 10) {
-      return res.status(400).json({ error: 'Premise too short - please provide more detail' });
-    }
+  if (sanitizedPremise.length < 10) {
+    throw new ValidationError('Premise too short - please provide more detail');
+  }
 
-    logger.info('[Config] Smart interpret request:', sanitizedPremise.substring(0, 50));
+  logger.info('[Config] Smart interpret request:', sanitizedPremise.substring(0, 50));
 
-    const result = await smartConfig.interpretPremise(sanitizedPremise, current_config || {});
+  const result = await smartConfig.interpretPremise(sanitizedPremise, current_config || {});
 
-    if (result.success) {
-      res.json({
-        success: true,
-        suggestedConfig: result.suggestedConfig,
-        reasoning: result.reasoning,
-        analysis: result.analysis
-      });
-    } else {
-      res.status(400).json({ success: false, error: result.error });
-    }
-
-  } catch (error) {
-    logger.error('Error in smart-interpret:', error);
-    res.status(500).json({ success: false, error: 'Failed to interpret premise' });
+  if (result.success) {
+    res.json({
+      success: true,
+      suggestedConfig: result.suggestedConfig,
+      reasoning: result.reasoning,
+      analysis: result.analysis
+    });
+  } else {
+    res.status(400).json({ success: false, error: result.error });
   }
 });
 
@@ -427,7 +403,7 @@ router.post('/smart-interpret', aiRateLimiter, async (req, res) => {
  * POST /api/config/smart-apply
  * Apply smart configuration to a session
  */
-router.post('/smart-apply', async (req, res) => {
+router.post('/smart-apply', requireAuth, async (req, res) => {
   try {
     const { session_id, premise, current_config } = req.body;
 
@@ -470,10 +446,10 @@ router.get('/voice-styles', (req, res) => {
   const styles = {
     warm: {
       name: 'Warm & Gentle',
-      description: 'Soft, comforting, bedtime-friendly',
+      description: 'Soft, comforting, low-intensity',
       settings: { stability: 0.7, similarity_boost: 0.8, style: 0.3, speed: 0.9 },
       icon: '🌅',
-      bestFor: ['bedtime', 'children', 'romance']
+      bestFor: ['calm', 'children', 'romance']
     },
     dramatic: {
       name: 'Dramatic',
@@ -615,7 +591,7 @@ router.post('/auto-select-toggle', async (req, res) => {
  * Process RTC (realtime conversation) input for smart configuration
  * This endpoint is used by the RTC mode to interpret voice commands
  */
-router.post('/rtc-input', async (req, res) => {
+router.post('/rtc-input', requireAuth, async (req, res) => {
   try {
     const { transcript, session_context } = req.body;
 

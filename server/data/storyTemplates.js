@@ -5,18 +5,18 @@
 
 const STORY_TEMPLATES = {
   // ============================================
-  // CHILDREN'S BEDTIME STORIES
+  // GENTLE YOUTH ADVENTURES
   // ============================================
 
   'sleepy-forest': {
     id: 'sleepy-forest',
-    name: 'The Sleepy Forest',
-    description: 'A gentle adventure through a magical forest where all the animals are getting ready for bed',
+    name: 'The Quiet Forest',
+    description: 'A gentle adventure through a magical forest as the animals settle into the evening glow',
     category: 'children',
     audience: 'children',
     ageRange: '3-8',
     estimatedMinutes: 10,
-    tags: ['bedtime', 'animals', 'nature', 'calming'],
+    tags: ['calm', 'animals', 'nature', 'cozy'],
     thumbnail: '/storyteller/images/templates/sleepy-forest.png',
 
     config: {
@@ -31,19 +31,19 @@ const STORY_TEMPLATES = {
 
     outlineSeed: {
       setting: 'A magical forest where fireflies light the paths and flowers glow softly in the moonlight',
-      theme: 'The importance of rest and saying goodnight to friends',
+      theme: 'The importance of rest and checking in with friends',
       protagonist: {
         name: 'Little Owl',
         role: 'A young owl on their first nighttime flight',
         traits: ['curious', 'kind', 'slightly sleepy']
       },
-      hook: 'Little Owl must help all the forest animals find their cozy beds before the moon reaches the top of the sky',
+      hook: 'Little Owl must help all the forest animals find their safe nests before the moon reaches the top of the sky',
       plotPoints: [
         'Little Owl wakes up at sunset and stretches their wings',
         'Meets a bunny family who needs help finding their burrow',
         'Helps a tired deer fawn find its mother',
-        'Sings a lullaby with the crickets',
-        'Returns home as all the forest settles into peaceful sleep'
+        'Sings a soft song with the crickets',
+        'Returns home as all the forest settles into peaceful rest'
       ]
     },
 
@@ -57,12 +57,12 @@ const STORY_TEMPLATES = {
   'dream-cloud': {
     id: 'dream-cloud',
     name: 'The Dream Cloud Express',
-    description: 'A magical train made of clouds takes children on a journey through dreamland',
+    description: 'A magical train made of clouds takes children on a journey through the sky of daydreams',
     category: 'children',
     audience: 'children',
     ageRange: '4-10',
     estimatedMinutes: 15,
-    tags: ['dreams', 'imagination', 'magical', 'bedtime'],
+    tags: ['dreams', 'imagination', 'magical', 'cozy'],
 
     config: {
       genre: { fantasy: 0.5, adventure: 0.3, humor: 0.2 },
@@ -82,7 +82,7 @@ const STORY_TEMPLATES = {
         role: 'A child who discovers the secret train station on their pillow',
         traits: ['imaginative', 'brave', 'kind-hearted']
       },
-      hook: 'When Star falls asleep, they find a golden ticket that takes them to the Dream Cloud Express',
+      hook: 'When Star drifts into a daydream, they find a golden ticket that takes them to the Dream Cloud Express',
       plotPoints: [
         'Star discovers a glowing ticket under their pillow',
         'Boards the fluffy cloud train with other dreaming children',
@@ -489,10 +489,10 @@ const STORY_TEMPLATES = {
 // Template categories for UI organization
 const TEMPLATE_CATEGORIES = {
   children: {
-    name: 'Children\'s Bedtime',
-    description: 'Gentle, calming stories perfect for bedtime',
-    icon: 'moon',
-    color: '#9b87f5'
+    name: 'Gentle & Cozy',
+    description: 'Soft, low-intensity stories for younger listeners',
+    icon: 'sparkles',
+    color: '#6A8A82'
   },
   fantasy: {
     name: 'Fantasy',
@@ -553,7 +553,7 @@ function getTemplatesByCategory(category) {
 }
 
 /**
- * Get templates suitable for bedtime
+ * Get templates suitable for calm mode
  */
 function getBedtimeTemplates() {
   return Object.values(STORY_TEMPLATES).filter(t => t.config.bedtimeMode);

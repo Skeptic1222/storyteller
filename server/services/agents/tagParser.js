@@ -229,15 +229,37 @@ export function hasCharacterTags(prose) {
  * Strip all [CHAR] tags from prose, leaving only the text content
  * Useful for text-only display or narrator-only audio generation
  *
+ * IMPORTANT: Restores quotation marks around dialogue for proper display.
+ * Tags like [CHAR:Name]Hello[/CHAR] become "Hello" with quotes.
+ *
  * @param {string} prose - Prose with [CHAR:Name] tags
- * @returns {string} Plain text without tags
+ * @param {Object} options - Optional settings
+ * @param {boolean} options.preserveQuotes - If true, wrap dialogue in quotes (default: true)
+ * @returns {string} Plain text without tags (dialogue wrapped in quotes)
  */
-export function stripTags(prose) {
+export function stripTags(prose, options = {}) {
   if (!prose || typeof prose !== 'string') {
     return '';
   }
 
-  // Remove opening and closing tags, keeping content
+  const { preserveQuotes = true } = options;
+
+  if (preserveQuotes) {
+    // Replace [CHAR:Name]dialogue[/CHAR] with "dialogue" (quotes restored)
+    // This is critical for readable display - dialogue needs quotation marks
+    return prose
+      .replace(/\[CHAR:[^\]]+\]([\s\S]*?)\[\/CHAR\]/g, (match, dialogue) => {
+        const trimmedDialogue = dialogue.trim();
+        // Only add quotes if dialogue isn't empty and doesn't already have quotes
+        if (!trimmedDialogue) return '';
+        if (/^[""\u201C]/.test(trimmedDialogue)) return trimmedDialogue; // Already has opening quote
+        return `"${trimmedDialogue}"`;
+      })
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  // Legacy behavior: Remove tags without adding quotes (for TTS)
   return prose
     .replace(/\[CHAR:[^\]]+\]/g, '')
     .replace(/\[\/CHAR\]/g, '')
@@ -330,9 +352,129 @@ export function detectBasicEmotion(text) {
   return 'neutral';
 }
 
+/**
+ * Auto-repair common tag issues in prose
+ * Fixes unclosed tags, removes orphan closing tags, etc.
+ *
+ * @param {string} prose - Prose with potentially broken tags
+ * @returns {{repaired: string, fixes: string[]}} Repaired prose and list of fixes applied
+ */
+export function repairTags(prose) {
+  if (!prose || typeof prose !== 'string') {
+    return { repaired: prose, fixes: [] };
+  }
+
+  const fixes = [];
+  let result = prose;
+
+  // Fix 1: Find unclosed [CHAR:Name] tags and close them
+  // Look for opening tags not followed by closing tags before the next opening tag or end
+  const segments = [];
+  let lastIndex = 0;
+  const openPattern = /\[CHAR:([^\]]+)\]/g;
+  let match;
+
+  // First pass: identify all tag positions
+  const tagPositions = [];
+  const openRegex = /\[CHAR:([^\]]+)\]/g;
+  const closeRegex = /\[\/CHAR\]/g;
+
+  while ((match = openRegex.exec(result)) !== null) {
+    tagPositions.push({ type: 'open', index: match.index, length: match[0].length, speaker: match[1] });
+  }
+  while ((match = closeRegex.exec(result)) !== null) {
+    tagPositions.push({ type: 'close', index: match.index, length: match[0].length });
+  }
+
+  // Sort by position
+  tagPositions.sort((a, b) => a.index - b.index);
+
+  // Second pass: check for imbalances and fix
+  let openStack = [];
+  let insertions = []; // {index, text} to insert
+
+  for (const tag of tagPositions) {
+    if (tag.type === 'open') {
+      if (openStack.length > 0) {
+        // We have an unclosed tag - close it before this one
+        const unclosed = openStack.pop();
+        insertions.push({ index: tag.index, text: '[/CHAR]' });
+        fixes.push(`AUTO_CLOSED tag for "${unclosed.speaker}" before position ${tag.index}`);
+      }
+      openStack.push(tag);
+    } else {
+      if (openStack.length > 0) {
+        openStack.pop(); // Properly matched
+      } else {
+        // Orphan closing tag - mark for removal
+        insertions.push({ index: tag.index, text: '', length: tag.length, remove: true });
+        fixes.push(`REMOVED orphan [/CHAR] at position ${tag.index}`);
+      }
+    }
+  }
+
+  // Close any remaining unclosed tags at the end
+  while (openStack.length > 0) {
+    const unclosed = openStack.pop();
+    insertions.push({ index: result.length, text: '[/CHAR]' });
+    fixes.push(`AUTO_CLOSED tag for "${unclosed.speaker}" at end of prose`);
+  }
+
+  // Apply insertions in reverse order (so positions stay valid)
+  insertions.sort((a, b) => b.index - a.index);
+  for (const ins of insertions) {
+    if (ins.remove) {
+      result = result.slice(0, ins.index) + result.slice(ins.index + ins.length);
+    } else {
+      result = result.slice(0, ins.index) + ins.text + result.slice(ins.index);
+    }
+  }
+
+  if (fixes.length > 0) {
+    logger.info(`[TagParser] TAG_REPAIR | fixes: ${fixes.length} | ${fixes.join('; ')}`);
+  }
+
+  return { repaired: result, fixes };
+}
+
+/**
+ * Validate and optionally repair tags
+ *
+ * @param {string} prose - Prose to validate/repair
+ * @param {boolean} autoRepair - If true, attempt to repair issues
+ * @returns {{valid: boolean, errors: string[], repaired?: string, fixes?: string[]}}
+ */
+export function validateAndRepairTags(prose, autoRepair = true) {
+  const validation = validateTagBalance(prose);
+
+  if (validation.valid) {
+    return { valid: true, errors: [], repaired: prose, fixes: [] };
+  }
+
+  if (!autoRepair) {
+    return validation;
+  }
+
+  // Attempt repair
+  const { repaired, fixes } = repairTags(prose);
+
+  // Re-validate after repair
+  const revalidation = validateTagBalance(repaired);
+
+  if (revalidation.valid) {
+    logger.info(`[TagParser] TAG_REPAIR_SUCCESS | original_errors: ${validation.errors.length} | fixes_applied: ${fixes.length}`);
+    return { valid: true, errors: [], repaired, fixes };
+  } else {
+    logger.warn(`[TagParser] TAG_REPAIR_PARTIAL | remaining_errors: ${revalidation.errors.join('; ')}`);
+    return { valid: false, errors: revalidation.errors, repaired, fixes };
+  }
+}
+
 export default {
   parseTaggedProse,
   validateTagBalance,
+  validateAndRepairTags,
+  repairTags,
   extractSpeakers,
   hasCharacterTags,
   stripTags,

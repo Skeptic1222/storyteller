@@ -30,7 +30,7 @@ const CATEGORY_COLORS = {
   safety: 'text-green-400',
   validation: 'text-golden-400',
   database: 'text-blue-400',
-  general: 'text-night-400'
+  general: 'text-slate-400'
 };
 
 /**
@@ -38,7 +38,7 @@ const CATEGORY_COLORS = {
  */
 const LogEntry = memo(function LogEntry({ entry }) {
   const Icon = CATEGORY_ICONS[entry.category] || Terminal;
-  const colorClass = CATEGORY_COLORS[entry.category] || 'text-night-400';
+  const colorClass = CATEGORY_COLORS[entry.category] || 'text-slate-400';
 
   // Check if this is a special formatted line (headers, checkmarks, etc.)
   const isHeader = entry.message.includes('===') || entry.message.includes('===');
@@ -69,7 +69,7 @@ const LogEntry = memo(function LogEntry({ entry }) {
       ${isHeader ? 'mt-2 mb-1' : ''}
       ${isBox ? 'opacity-50' : ''}
     `}>
-      <span className="text-night-600 flex-shrink-0 w-16">
+      <span className="text-slate-600 flex-shrink-0 w-16">
         {formatTime(entry.timestamp)}
       </span>
       <Icon className={`w-3 h-3 mt-0.5 flex-shrink-0 ${colorClass}`} />
@@ -124,25 +124,25 @@ const DetailedProgressPanel = memo(function DetailedProgressPanel({
   }
 
   return (
-    <div className="bg-night-900/80 rounded-lg border border-night-700 overflow-hidden">
+    <div className="bg-slate-900/80 rounded-lg border border-slate-700 overflow-hidden">
       {/* Header - Clickable to expand/collapse */}
       <button
         onClick={toggleExpand}
-        className="w-full flex items-center justify-between px-3 py-2 bg-night-800/50 hover:bg-night-800 transition-colors"
+        className="w-full flex items-center justify-between px-3 py-2 bg-slate-800/50 hover:bg-slate-800 transition-colors"
       >
         <div className="flex items-center gap-2">
           <Terminal className="w-4 h-4 text-green-400" />
-          <span className="text-night-200 text-sm font-medium">Technical Progress Log</span>
-          <span className="text-night-500 text-xs">({logs.length} entries)</span>
+          <span className="text-slate-200 text-sm font-medium">Technical Progress Log</span>
+          <span className="text-slate-500 text-xs">({logs.length} entries)</span>
         </div>
         <div className="flex items-center gap-2">
           {autoScroll && expanded && (
             <span className="text-green-400/60 text-xs animate-pulse">Auto-scroll</span>
           )}
           {expanded ? (
-            <ChevronUp className="w-4 h-4 text-night-400" />
+            <ChevronUp className="w-4 h-4 text-slate-400" />
           ) : (
-            <ChevronDown className="w-4 h-4 text-night-400" />
+            <ChevronDown className="w-4 h-4 text-slate-400" />
           )}
         </div>
       </button>
@@ -152,7 +152,7 @@ const DetailedProgressPanel = memo(function DetailedProgressPanel({
         <div
           ref={scrollContainerRef}
           onScroll={handleScroll}
-          className="px-3 py-2 overflow-y-auto bg-night-950/50"
+          className="px-3 py-2 overflow-y-auto bg-slate-950/50"
           style={{ maxHeight }}
         >
           {logs.map((entry) => (
@@ -163,7 +163,7 @@ const DetailedProgressPanel = memo(function DetailedProgressPanel({
 
       {/* Collapsed preview - Shows last few entries */}
       {!expanded && logs.length > 0 && (
-        <div className="px-3 py-1 text-xs font-mono text-night-500 truncate">
+        <div className="px-3 py-1 text-xs font-mono text-slate-500 truncate">
           {logs[logs.length - 1]?.message || '...'}
         </div>
       )}

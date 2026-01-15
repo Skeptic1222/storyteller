@@ -32,15 +32,15 @@ const AuthorStylePicker = memo(function AuthorStylePicker({
   const selectedAuthor = AUTHOR_STYLES.find(a => a.id === selectedStyle);
 
   return (
-    <section className={`bg-gradient-to-br from-night-800/50 to-night-900/50 rounded-2xl p-4 border transition-all duration-500 ${isAnimating ? 'border-golden-400 ring-2 ring-golden-400/30' : 'border-night-700'}`}>
+    <section className={`bg-gradient-to-br from-slate-800/50 to-slate-900/50 rounded-2xl p-4 border transition-all duration-500 ${isAnimating ? 'border-golden-400 ring-2 ring-golden-400/30' : 'border-slate-700'}`}>
       <div className="flex items-center justify-between mb-3">
-        <h2 className="text-lg font-medium text-night-100 flex items-center gap-2">
+        <h2 className="text-lg font-medium text-slate-100 flex items-center gap-2">
           <Feather className="w-5 h-5 text-golden-400" />
           Writing Style
         </h2>
         {autoSelectToggle}
       </div>
-      <p className="text-night-400 text-sm mb-4">
+      <p className="text-slate-400 text-sm mb-4">
         Choose an author's distinctive voice, or use modern storytelling
       </p>
 
@@ -52,13 +52,13 @@ const AuthorStylePicker = memo(function AuthorStylePicker({
               <span className="text-golden-400 font-medium">
                 {selectedAuthor.name}
               </span>
-              <p className="text-night-400 text-xs mt-0.5">
+              <p className="text-slate-400 text-xs mt-0.5">
                 {selectedAuthor.description}
               </p>
             </div>
             <button
               onClick={() => onStyleChange('none')}
-              className="text-night-400 hover:text-night-200 text-xs px-2 py-1 bg-night-700 rounded"
+              className="text-slate-400 hover:text-slate-200 text-xs px-2 py-1 bg-slate-700 rounded"
             >
               Clear
             </button>
@@ -71,15 +71,15 @@ const AuthorStylePicker = memo(function AuthorStylePicker({
         onClick={() => onStyleChange('none')}
         className={`w-full p-3 rounded-xl border-2 transition-all text-left mb-4 ${
           selectedStyle === 'none' || !selectedStyle
-            ? 'border-golden-400 bg-night-800'
-            : 'border-night-700 bg-night-800/50 hover:border-night-500'
+            ? 'border-golden-400 bg-slate-800'
+            : 'border-slate-700 bg-slate-800/50 hover:border-slate-500'
         }`}
       >
         <div className="flex items-center gap-2">
           <span className="text-xl">✨</span>
           <div>
-            <div className="text-night-100 text-sm font-medium">Modern Storytelling</div>
-            <div className="text-night-500 text-xs">Clear, accessible contemporary style</div>
+            <div className="text-slate-100 text-sm font-medium">Modern Storytelling</div>
+            <div className="text-slate-500 text-xs">Clear, accessible contemporary style</div>
           </div>
         </div>
       </button>
@@ -89,10 +89,10 @@ const AuthorStylePicker = memo(function AuthorStylePicker({
         <div className="space-y-4 max-h-96 overflow-y-auto pr-1">
           {Object.entries(AUTHOR_STYLES_BY_CATEGORY).filter(([key]) => key !== 'modern').map(([categoryKey, category]) => (
             <div key={categoryKey}>
-              <h3 className="text-night-300 text-sm font-medium mb-2 flex items-center gap-2 sticky top-0 bg-night-900/90 py-1">
+              <h3 className="text-slate-300 text-sm font-medium mb-2 flex items-center gap-2 sticky top-0 bg-slate-900/90 py-1">
                 <span>{category.icon}</span>
                 {category.label}
-                <span className="text-night-500 text-xs">({category.authors.length})</span>
+                <span className="text-slate-500 text-xs">({category.authors.length})</span>
               </h3>
               <div className="grid grid-cols-2 gap-2">
                 {category.authors.map(author => (
@@ -101,12 +101,12 @@ const AuthorStylePicker = memo(function AuthorStylePicker({
                     onClick={() => onStyleChange(author.id)}
                     className={`p-2.5 rounded-lg border-2 transition-all text-left ${
                       selectedStyle === author.id
-                        ? 'border-golden-400 bg-night-800'
-                        : 'border-night-700 bg-night-800/50 hover:border-night-500'
+                        ? 'border-golden-400 bg-slate-800'
+                        : 'border-slate-700 bg-slate-800/50 hover:border-slate-500'
                     }`}
                   >
-                    <div className="text-night-100 text-xs font-medium truncate">{author.name}</div>
-                    <div className="text-night-500 text-[10px] truncate">{author.description}</div>
+                    <div className="text-slate-100 text-xs font-medium truncate">{author.name}</div>
+                    <div className="text-slate-500 text-[10px] truncate">{author.description}</div>
                   </button>
                 ))}
               </div>
@@ -116,7 +116,7 @@ const AuthorStylePicker = memo(function AuthorStylePicker({
       ) : (
         /* Quick picks - popular authors from different categories */
         <div className="space-y-3">
-          <p className="text-night-500 text-xs">Popular choices:</p>
+          <p className="text-slate-500 text-xs">Popular choices:</p>
           <div className="grid grid-cols-2 gap-2">
             {POPULAR_AUTHORS.map(author => (
               <button
@@ -124,13 +124,13 @@ const AuthorStylePicker = memo(function AuthorStylePicker({
                 onClick={() => onStyleChange(author.id)}
                 className={`p-2.5 rounded-lg border-2 transition-all text-left ${
                   selectedStyle === author.id
-                    ? 'border-golden-400 bg-night-800'
-                    : 'border-night-700 bg-night-800/50 hover:border-night-500'
+                    ? 'border-golden-400 bg-slate-800'
+                    : 'border-slate-700 bg-slate-800/50 hover:border-slate-500'
                 }`}
               >
                 <div className="flex items-center gap-1.5">
                   <span className="text-sm">{author.cat}</span>
-                  <span className="text-night-100 text-xs font-medium truncate">{author.name}</span>
+                  <span className="text-slate-100 text-xs font-medium truncate">{author.name}</span>
                 </div>
               </button>
             ))}
@@ -141,7 +141,7 @@ const AuthorStylePicker = memo(function AuthorStylePicker({
       {/* Show more/less button */}
       <button
         onClick={() => setShowAllAuthors(!showAllAuthors)}
-        className="w-full mt-4 py-2.5 text-golden-400 hover:text-golden-300 text-sm flex items-center justify-center gap-1 transition-colors bg-night-800/50 rounded-lg border border-night-700"
+        className="w-full mt-4 py-2.5 text-golden-400 hover:text-golden-300 text-sm flex items-center justify-center gap-1 transition-colors bg-slate-800/50 rounded-lg border border-slate-700"
       >
         {showAllAuthors ? (
           <>Show less <ChevronUp className="w-4 h-4" /></>
@@ -154,12 +154,12 @@ const AuthorStylePicker = memo(function AuthorStylePicker({
       {!showAllAuthors && (
         <div className="mt-3 flex flex-wrap gap-2 justify-center">
           {Object.entries(AUTHOR_STYLES_BY_CATEGORY).filter(([key]) => key !== 'modern').slice(0, 5).map(([key, cat]) => (
-            <span key={key} className="text-night-500 text-xs flex items-center gap-1">
+            <span key={key} className="text-slate-500 text-xs flex items-center gap-1">
               <span>{cat.icon}</span>
               {cat.label}
             </span>
           ))}
-          <span className="text-night-600 text-xs">& more...</span>
+          <span className="text-slate-600 text-xs">& more...</span>
         </div>
       )}
     </section>

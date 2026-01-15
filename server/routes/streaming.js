@@ -14,14 +14,19 @@ import {
 } from '../services/audioStreaming.js';
 import { logger } from '../utils/logger.js';
 import path from 'path';
+import { wrapRoutes, NotFoundError } from '../middleware/errorHandler.js';
+import { rateLimiters } from '../middleware/rateLimiter.js';
+import { authenticateToken, requireAuth } from '../middleware/auth.js';
 
 const router = express.Router();
+wrapRoutes(router); // Auto-wrap async handlers for error catching
+router.use(authenticateToken);
 
 /**
  * POST /api/streaming/generate
  * Generate streaming audio from text
  */
-router.post('/generate', async (req, res) => {
+router.post('/generate', requireAuth, rateLimiters.tts, async (req, res) => {
   try {
     const { text, voiceId, options = {} } = req.body;
 
@@ -54,7 +59,7 @@ router.post('/generate', async (req, res) => {
  * POST /api/streaming/generate-async
  * Start audio generation and return immediately with stream info
  */
-router.post('/generate-async', async (req, res) => {
+router.post('/generate-async', requireAuth, rateLimiters.tts, async (req, res) => {
   try {
     const { text, voiceId, options = {} } = req.body;
 
@@ -88,7 +93,7 @@ router.post('/generate-async', async (req, res) => {
  * GET /api/streaming/status/:streamId
  * Get status of a streaming generation
  */
-router.get('/status/:streamId', (req, res) => {
+router.get('/status/:streamId', requireAuth, (req, res) => {
   try {
     const { streamId } = req.params;
     const status = getStreamStatus(streamId);
@@ -167,7 +172,7 @@ router.get('/audio/:filename', async (req, res) => {
  * POST /api/streaming/chunked
  * Generate audio in chunks (sentence by sentence)
  */
-router.post('/chunked', async (req, res) => {
+router.post('/chunked', requireAuth, rateLimiters.tts, async (req, res) => {
   try {
     const { text, voiceId, options = {} } = req.body;
 
@@ -209,7 +214,7 @@ router.post('/chunked', async (req, res) => {
  * POST /api/streaming/preload
  * Check if audio files are cached and ready
  */
-router.post('/preload', async (req, res) => {
+router.post('/preload', requireAuth, async (req, res) => {
   try {
     const { urls } = req.body;
 
@@ -233,7 +238,7 @@ router.post('/preload', async (req, res) => {
  * POST /api/streaming/cleanup
  * Clean up old streaming files
  */
-router.post('/cleanup', async (req, res) => {
+router.post('/cleanup', requireAuth, async (req, res) => {
   try {
     const { maxAgeHours = 24 } = req.body;
     const maxAgeMs = maxAgeHours * 60 * 60 * 1000;

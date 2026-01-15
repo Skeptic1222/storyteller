@@ -1317,6 +1317,138 @@ export async function detectSFXMultiAgent(sceneText, storyConfig, outline = null
       }
     }
 
+    // =========================================================================
+    // STEP 8: Enforce Minimum Counts Based on SFX Level
+    // =========================================================================
+    // If we're below the minimum for the selected level, add more genre-appropriate sounds
+    const levelMinimums = {
+      low: 4,
+      medium: 6,
+      high: 10
+    };
+
+    const targetMinimum = levelMinimums[sfxLevel] || levelMinimums.medium;
+
+    if (finalSfxList.length < targetMinimum) {
+      logger.warn(`[SFX Pipeline] Below target minimum (${finalSfxList.length}/${targetMinimum}) for ${sfxLevel} level - adding supplemental sounds`);
+
+      // Define supplemental sounds for each genre
+      const supplementalSounds = {
+        scifi: [
+          { key: 'ship_engine_idle', category: 'scifi', timing: 'continuous' },
+          { key: 'computer_beep', category: 'scifi', timing: 'middle' },
+          { key: 'door_whoosh', category: 'scifi', timing: 'on_action' },
+          { key: 'comm_static', category: 'scifi', timing: 'beginning' },
+          { key: 'hologram_flicker', category: 'scifi', timing: 'middle' },
+          { key: 'scanner_pulse', category: 'scifi', timing: 'on_action' }
+        ],
+        horror: [
+          { key: 'creepy_whisper', category: 'horror', timing: 'middle' },
+          { key: 'floor_creak', category: 'horror', timing: 'on_action' },
+          { key: 'distant_scream', category: 'horror', timing: 'end' },
+          { key: 'heartbeat_slow', category: 'horror', timing: 'continuous' },
+          { key: 'door_creak', category: 'horror', timing: 'on_action' },
+          { key: 'wind_howl', category: 'horror', timing: 'beginning' }
+        ],
+        fantasy: [
+          { key: 'forest_ambient', category: 'fantasy', timing: 'continuous' },
+          { key: 'magic_shimmer', category: 'fantasy', timing: 'on_action' },
+          { key: 'sword_unsheathe', category: 'fantasy', timing: 'on_action' },
+          { key: 'torch_crackle', category: 'fantasy', timing: 'continuous' },
+          { key: 'bird_song', category: 'fantasy', timing: 'beginning' },
+          { key: 'wind_gentle', category: 'fantasy', timing: 'continuous' }
+        ],
+        cyberpunk: [
+          { key: 'neon_buzz', category: 'cyberpunk', timing: 'continuous' },
+          { key: 'rain_on_metal', category: 'cyberpunk', timing: 'continuous' },
+          { key: 'crowd_chatter', category: 'cyberpunk', timing: 'beginning' },
+          { key: 'drone_flyby', category: 'cyberpunk', timing: 'middle' },
+          { key: 'hologram_glitch', category: 'cyberpunk', timing: 'on_action' },
+          { key: 'electric_hum', category: 'cyberpunk', timing: 'continuous' }
+        ],
+        modern: [
+          { key: 'city_traffic', category: 'modern', timing: 'continuous' },
+          { key: 'footsteps_concrete', category: 'modern', timing: 'on_action' },
+          { key: 'phone_notification', category: 'modern', timing: 'on_action' },
+          { key: 'door_open', category: 'modern', timing: 'on_action' },
+          { key: 'keyboard_typing', category: 'modern', timing: 'continuous' },
+          { key: 'car_pass', category: 'modern', timing: 'middle' }
+        ]
+      };
+
+      // Get existing sfx keys to avoid duplicates
+      const existingKeys = new Set(finalSfxList.map(s => s.sfxKey));
+
+      // Get supplemental sounds for this genre (or default to modern)
+      const genreSupplements = supplementalSounds[pipeline.context.primaryGenre] ||
+                               supplementalSounds.modern;
+
+      // Add sounds until we reach minimum
+      for (const supp of genreSupplements) {
+        if (finalSfxList.length >= targetMinimum) break;
+
+        const sfxKey = `${supp.category}.${supp.key}`;
+        if (existingKeys.has(sfxKey)) continue;
+
+        const library = GENRE_SFX_LIBRARY[supp.category];
+        const sfxDef = library?.[supp.key];
+
+        if (sfxDef) {
+          finalSfxList.push({
+            sfxKey,
+            name: supp.key.replace(/_/g, ' '),
+            category: supp.category,
+            prompt: sfxDef.prompt,
+            duration: sfxDef.duration,
+            loop: sfxDef.loop,
+            timing: supp.timing,
+            trigger: 'Supplemental ambient for target count',
+            reason: `Added to meet ${sfxLevel} level minimum (${targetMinimum} sounds)`,
+            type: sfxDef.loop ? 'ambient' : 'one-shot',
+            importance: 'medium',
+            source: 'level_enforcement',
+            status: 'pending'
+          });
+          existingKeys.add(sfxKey);
+          logger.info(`[SFX Pipeline] Supplemental add: ${sfxKey} (timing: ${supp.timing})`);
+        }
+      }
+
+      // If still below target, add atmosphere sounds
+      if (finalSfxList.length < targetMinimum) {
+        const atmosphereSounds = ['tension', 'mysterious', 'epic', 'peaceful'];
+        for (const atmoKey of atmosphereSounds) {
+          if (finalSfxList.length >= targetMinimum) break;
+
+          const sfxKey = `atmosphere.${atmoKey}`;
+          if (existingKeys.has(sfxKey)) continue;
+
+          const atmosphereDef = GENRE_SFX_LIBRARY.atmosphere[atmoKey];
+          if (atmosphereDef) {
+            finalSfxList.push({
+              sfxKey,
+              name: `${atmoKey} atmosphere`,
+              category: 'atmosphere',
+              prompt: atmosphereDef.prompt,
+              duration: atmosphereDef.duration,
+              loop: atmosphereDef.loop,
+              timing: 'continuous',
+              trigger: 'Supplemental atmosphere',
+              reason: `Added to meet ${sfxLevel} level minimum`,
+              type: 'atmospheric',
+              importance: 'low',
+              source: 'atmosphere_supplement',
+              status: 'pending'
+            });
+            existingKeys.add(sfxKey);
+            logger.info(`[SFX Pipeline] Atmosphere supplement: ${sfxKey}`);
+          }
+        }
+      }
+
+      logger.info(`[SFX Pipeline] After enforcement: ${finalSfxList.length} sounds (target: ${targetMinimum})`);
+    }
+
     const elapsed = Date.now() - startTime;
     logger.info(`[SFX Pipeline] ✓ Complete in ${elapsed}ms - Final count: ${finalSfxList.length} sounds`);
     logger.info(`[SFX Pipeline] Grade: ${pipeline.teacherReview.grade} | Feedback: ${pipeline.teacherReview.feedback}`);

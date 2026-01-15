@@ -756,6 +756,7 @@ End on resonant image encapsulating ephemeral meaning.`
   howard: {
     name: 'Robert E. Howard',
     genres: ['Sword & Sorcery', 'Pulp Adventure', 'Dark Fantasy'],
+    knownFor: ['Conan the Barbarian', 'Kull', 'Solomon Kane'],
     description: 'Raw barbaric vitality, primal conflicts, savage action',
     style: {
       pov: 'Third-person limited, close to protagonist\'s visceral experience',
@@ -784,6 +785,7 @@ End with hero triumphant but world still dark and dangerous.`
   decamp: {
     name: 'L. Sprague de Camp',
     genres: ['Sword & Sorcery', 'Historical Fantasy', 'Science Fantasy'],
+    knownFor: ['Conan (pastiche)', 'The Complete Compleat Enchanter'],
     description: 'Scholarly wit, logical magic systems, adventure with irony',
     style: {
       pov: 'Third-person omniscient with wry authorial commentary',
@@ -1268,6 +1270,7 @@ End with some threads resolved, others complicated.`
   jordan: {
     name: 'Robert Jordan',
     genres: ['Epic Fantasy', 'Wheel of Time', 'Chosen One'],
+    knownFor: ['The Wheel of Time', 'Conan (novels)'],
     description: 'Vast tapestry, detailed world-building, prophecy fulfilled',
     style: {
       pov: 'Multiple third-person limited, weaving between many characters',

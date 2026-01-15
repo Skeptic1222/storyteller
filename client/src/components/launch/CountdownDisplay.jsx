@@ -14,8 +14,8 @@ const CountdownDisplay = memo(function CountdownDisplay({ phase, value, onSkip }
         <div className="mb-4">
           <Sparkles className="w-12 h-12 text-golden-400 mx-auto animate-pulse" />
         </div>
-        <h2 className="text-2xl font-bold text-night-100 mb-2">All Set!</h2>
-        <p className="text-night-400 text-lg">Beginning in...</p>
+        <h2 className="text-2xl font-bold text-slate-100 mb-2">All Set!</h2>
+        <p className="text-slate-400 text-lg">Beginning in...</p>
       </div>
     );
   }
@@ -32,7 +32,7 @@ const CountdownDisplay = memo(function CountdownDisplay({ phase, value, onSkip }
           {/* Main circle */}
           <div className="relative w-32 h-32 rounded-full bg-gradient-to-br from-golden-400 to-amber-500
                           flex items-center justify-center shadow-lg shadow-golden-400/40">
-            <span className="text-4xl font-bold text-night-900">GO!</span>
+            <span className="text-4xl font-bold text-slate-900">GO!</span>
           </div>
         </div>
       </div>
@@ -65,14 +65,14 @@ const CountdownDisplay = memo(function CountdownDisplay({ phase, value, onSkip }
         </div>
       </div>
 
-      <p className="text-night-300 mt-6 text-lg">
+      <p className="text-slate-300 mt-6 text-lg">
         Starting in...
       </p>
 
       {/* Cancel button during countdown */}
       {onSkip && (
         <button
-          className="mt-4 text-night-500 hover:text-night-300 text-sm underline transition-colors"
+          className="mt-4 text-slate-500 hover:text-slate-300 text-sm underline transition-colors"
           onClick={onSkip}
         >
           Skip countdown

@@ -1,11 +1,11 @@
 /**
  * SleepTimer Component
- * UI for setting and displaying sleep timer
+ * UI for setting and displaying a listening timer
  */
 
 import { useState, memo } from 'react';
-import { Moon, Clock, Plus, X, ChevronDown, AlertCircle } from 'lucide-react';
-import { useSleepTimer, SLEEP_TIMER_PRESETS } from '../hooks/useSleepTimer';
+import { Clock, Plus, X, ChevronDown, AlertCircle } from 'lucide-react';
+import { useSleepTimer } from '../hooks/useSleepTimer';
 
 /**
  * Compact sleep timer control for story player
@@ -54,17 +54,17 @@ export const SleepTimerControl = memo(function SleepTimerControl({
           ${isActive
             ? hasWarned
               ? 'bg-amber-500/20 text-amber-400 animate-pulse'
-              : 'bg-purple-500/20 text-purple-400'
-            : 'bg-night-700 text-night-400 hover:bg-night-600'
+              : 'bg-narrimo-sage/20 text-narrimo-sage'
+            : 'bg-slate-700 text-slate-400 hover:bg-slate-600'
           }
         `}
-        title={isActive ? `Sleep timer: ${formattedTime}` : 'Set sleep timer'}
+        title={isActive ? `Listening timer: ${formattedTime}` : 'Set listening timer'}
       >
-        <Moon className="w-4 h-4" />
+        <Clock className="w-4 h-4" />
         {isActive ? (
           <span className="text-sm font-medium">{formattedTime}</span>
         ) : (
-          <span className="text-sm">Sleep</span>
+          <span className="text-sm">Timer</span>
         )}
         <ChevronDown className={`w-3 h-3 transition-transform ${showPicker ? 'rotate-180' : ''}`} />
       </button>
@@ -82,7 +82,7 @@ export const SleepTimerControl = memo(function SleepTimerControl({
             fill="none"
             stroke="currentColor"
             strokeWidth="2"
-            className="text-night-700"
+            className="text-slate-700"
           />
           <circle
             cx="50"
@@ -92,19 +92,19 @@ export const SleepTimerControl = memo(function SleepTimerControl({
             stroke="currentColor"
             strokeWidth="2"
             strokeDasharray={`${progress * 3.01} 301`}
-            className={hasWarned ? 'text-amber-400' : 'text-purple-400'}
+            className={hasWarned ? 'text-amber-400' : 'text-narrimo-sage'}
           />
         </svg>
       )}
 
       {/* Dropdown picker */}
       {showPicker && (
-        <div className="absolute bottom-full left-0 mb-2 w-48 bg-night-800 rounded-lg shadow-xl border border-night-600 overflow-hidden z-50">
-          <div className="p-2 border-b border-night-600 flex items-center justify-between">
-            <span className="text-night-300 text-sm font-medium">Sleep Timer</span>
+        <div className="absolute bottom-full left-0 mb-2 w-48 bg-slate-800 rounded-lg shadow-xl border border-slate-600 overflow-hidden z-50">
+          <div className="p-2 border-b border-slate-600 flex items-center justify-between">
+            <span className="text-slate-300 text-sm font-medium">Listening Timer</span>
             <button
               onClick={() => setShowPicker(false)}
-              className="text-night-500 hover:text-night-300"
+              className="text-slate-500 hover:text-slate-300"
             >
               <X className="w-4 h-4" />
             </button>
@@ -119,8 +119,8 @@ export const SleepTimerControl = memo(function SleepTimerControl({
                   w-full px-3 py-2 rounded text-left text-sm transition-colors
                   flex items-center justify-between
                   ${duration === preset.minutes && isActive
-                    ? 'bg-purple-500/20 text-purple-400'
-                    : 'hover:bg-night-700 text-night-300'
+                    ? 'bg-narrimo-sage/20 text-narrimo-sage'
+                    : 'hover:bg-slate-700 text-slate-300'
                   }
                 `}
               >
@@ -134,10 +134,10 @@ export const SleepTimerControl = memo(function SleepTimerControl({
 
           {/* Add time button (when active) */}
           {isActive && (
-            <div className="p-2 border-t border-night-600">
+            <div className="p-2 border-t border-slate-600">
               <button
                 onClick={() => addTime(5)}
-                className="w-full px-3 py-2 rounded bg-night-700 hover:bg-night-600 text-night-300 text-sm flex items-center justify-center gap-2"
+                className="w-full px-3 py-2 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm flex items-center justify-center gap-2"
               >
                 <Plus className="w-4 h-4" />
                 Add 5 minutes
@@ -166,7 +166,7 @@ export const SleepTimerWarning = memo(function SleepTimerWarning({
       <div className="bg-amber-900/90 backdrop-blur-sm rounded-xl px-4 py-3 shadow-lg flex items-center gap-3 animate-bounce-gentle">
         <AlertCircle className="w-5 h-5 text-amber-400" />
         <span className="text-amber-100 text-sm">
-          Sleep timer: {remainingSeconds}s remaining
+          Timer: {remainingSeconds}s remaining
         </span>
         <button
           onClick={() => onAddTime(5)}

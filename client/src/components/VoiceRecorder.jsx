@@ -157,8 +157,8 @@ function VoiceRecorder({ onTranscript, disabled = false, size = 'normal' }) {
           ${isRecording
             ? 'bg-red-500 animate-pulse'
             : isProcessing
-              ? 'bg-night-600'
-              : 'bg-night-700 hover:bg-night-600'
+              ? 'bg-slate-600'
+              : 'bg-slate-700 hover:bg-slate-600'
           }
           ${disabled ? 'opacity-50 cursor-not-allowed' : ''}
         `}
@@ -181,7 +181,7 @@ function VoiceRecorder({ onTranscript, disabled = false, size = 'normal' }) {
       )}
 
       {isProcessing && (
-        <p className="text-night-400 text-xs">Processing...</p>
+        <p className="text-slate-400 text-xs">Processing...</p>
       )}
     </div>
   );

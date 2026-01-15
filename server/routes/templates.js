@@ -15,8 +15,10 @@ import {
   TEMPLATE_CATEGORIES
 } from '../data/storyTemplates.js';
 import { logger } from '../utils/logger.js';
+import { wrapRoutes, NotFoundError } from '../middleware/errorHandler.js';
 
 const router = express.Router();
+wrapRoutes(router); // Auto-wrap async handlers for error catching
 
 /**
  * GET /api/templates

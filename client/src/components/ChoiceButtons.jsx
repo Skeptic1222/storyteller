@@ -10,7 +10,7 @@ const ChoiceButtons = memo(function ChoiceButtons({ choices, onSelect }) {
       C: 'from-green-500 to-green-600',
       D: 'from-orange-500 to-orange-600'
     };
-    return colors[key] || 'from-night-500 to-night-600';
+    return colors[key] || 'from-slate-500 to-slate-600';
   };
 
   // Map keys to ordinal words for voice hints
@@ -46,7 +46,7 @@ const ChoiceButtons = memo(function ChoiceButtons({ choices, onSelect }) {
       role="group"
       aria-label="Story choices"
     >
-      <div className="text-center text-night-300 text-sm mb-4" id="choice-prompt">
+      <div className="text-center text-slate-300 text-sm mb-4" id="choice-prompt">
         What would you like to do?
       </div>
       {choices.map((choice, index) => (
@@ -57,8 +57,8 @@ const ChoiceButtons = memo(function ChoiceButtons({ choices, onSelect }) {
           aria-label={`Choice ${choice.key}: ${choice.text}${choice.description ? `. ${choice.description}` : ''}`}
           aria-describedby="choice-prompt"
           tabIndex={0}
-          className="w-full p-4 rounded-xl bg-night-800/80 border border-night-600
-                     hover:border-night-400 transition-all choice-button
+          className="w-full p-4 rounded-xl bg-slate-800/80 border border-slate-600
+                     hover:border-slate-400 transition-all choice-button
                      flex items-center gap-4 text-left group
                      focus:outline-none focus:ring-2 focus:ring-golden-500 focus:border-golden-500"
         >
@@ -71,24 +71,24 @@ const ChoiceButtons = memo(function ChoiceButtons({ choices, onSelect }) {
             {choice.key}
           </div>
           <div className="flex-1">
-            <div className="text-night-100 font-medium">
+            <div className="text-slate-100 font-medium">
               {choice.text}
             </div>
             {choice.description && (
-              <div className="text-night-400 text-sm mt-1">
+              <div className="text-slate-400 text-sm mt-1">
                 {choice.description}
               </div>
             )}
             {/* Voice command hint for this specific choice */}
-            <div className="text-night-500 text-xs mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
+            <div className="text-slate-500 text-xs mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
               Press {index + 1} or {choice.key} • Say "{keyToOrdinal[choice.key]}"
             </div>
           </div>
         </button>
       ))}
-      <div className="text-center text-night-500 text-xs mt-2 space-y-1" aria-live="polite">
+      <div className="text-center text-slate-500 text-xs mt-2 space-y-1" aria-live="polite">
         <div>⌨️ Press 1-4 or A-D • 🎤 Say "one", "two", "three"</div>
-        <div className="text-night-600">Or tap to select</div>
+        <div className="text-slate-600">Or tap to select</div>
       </div>
     </div>
   );

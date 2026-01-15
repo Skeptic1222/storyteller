@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Moon, Home, Volume2, VolumeX } from 'lucide-react';
+import { BookOpen, Home, Volume2, VolumeX } from 'lucide-react';
 import { io } from 'socket.io-client';
 import { apiCall } from '../config';
 
@@ -98,7 +98,7 @@ function Storytime() {
   const startConversation = async () => {
     setState(STATES.GREETING);
 
-    const greeting = "Hey there! I'm your storyteller. What kind of story would you like to hear tonight? You can tell me about characters, a setting, or just describe the mood you're in.";
+    const greeting = "Hey there! I'm Narrimo, your co-author. What kind of story do you want to build? Share characters, a setting, or just a mood - or say 'surprise me'.";
 
     setCurrentAiMessage(greeting);
     setMessages([{ role: 'assistant', content: greeting }]);
@@ -331,33 +331,33 @@ function Storytime() {
       <audio ref={audioRef} />
 
       {/* Header */}
-      <header className="flex items-center justify-between p-4 bg-night-900/50">
-        <button onClick={goHome} className="p-2 rounded-full hover:bg-night-800">
-          <Home className="w-6 h-6 text-night-300" />
+      <header className="flex items-center justify-between p-4 bg-slate-900/50">
+        <button onClick={goHome} className="p-2 rounded-full hover:bg-slate-800">
+          <Home className="w-6 h-6 text-slate-300" />
         </button>
-        <h2 className="text-golden-400 font-medium">Storytime</h2>
+        <h2 className="text-narrimo-coral font-medium">Voice Studio</h2>
         <button
           onClick={() => setIsMuted(!isMuted)}
-          className="p-2 rounded-full hover:bg-night-800"
+          className="p-2 rounded-full hover:bg-slate-800"
         >
           {isMuted ? (
-            <VolumeX className="w-6 h-6 text-night-300" />
+            <VolumeX className="w-6 h-6 text-slate-300" />
           ) : (
-            <Volume2 className="w-6 h-6 text-golden-400" />
+            <Volume2 className="w-6 h-6 text-narrimo-coral" />
           )}
         </button>
       </header>
 
       {/* Main Content */}
       <main className="flex-1 flex flex-col items-center justify-center p-6">
-        {/* Moon with state indicator */}
+        {/* BookOpen with state indicator */}
         <div className="mb-8">
           <div className={`relative ${state === STATES.RESPONDING ? 'animate-pulse' : ''}`}>
-            <Moon className={`w-24 h-24 ${
+            <BookOpen className={`w-24 h-24 ${
               state === STATES.LISTENING ? 'text-blue-400' :
               state === STATES.PROCESSING ? 'text-yellow-400' :
-              state === STATES.RESPONDING ? 'text-golden-400' :
-              'text-golden-400'
+              state === STATES.RESPONDING ? 'text-narrimo-coral' :
+              'text-narrimo-coral'
             }`} />
 
             {/* Listening indicator */}
@@ -384,17 +384,17 @@ function Storytime() {
             <p className="text-yellow-400 text-lg">Thinking...</p>
           )}
           {state === STATES.RESPONDING && (
-            <p className="text-golden-400 text-lg">Speaking...</p>
+            <p className="text-narrimo-coral text-lg">Speaking...</p>
           )}
           {state === STATES.STARTING && (
-            <p className="text-golden-400 text-lg">Starting your story...</p>
+            <p className="text-narrimo-coral text-lg">Starting your story...</p>
           )}
         </div>
 
         {/* Current AI message */}
         {currentAiMessage && (
-          <div className="max-w-md mx-auto mb-6 p-4 bg-night-800/50 rounded-xl">
-            <p className="text-night-100 text-lg leading-relaxed text-center">
+          <div className="max-w-md mx-auto mb-6 p-4 bg-slate-800/50 rounded-xl">
+            <p className="text-slate-100 text-lg leading-relaxed text-center">
               "{currentAiMessage}"
             </p>
           </div>
@@ -420,8 +420,8 @@ function Storytime() {
         {state === STATES.LISTENING && (
           <button
             onClick={handleTapToSubmit}
-            className="mt-4 px-6 py-3 bg-night-800 rounded-full text-night-300
-                       hover:bg-night-700 transition-all"
+            className="mt-4 px-6 py-3 bg-slate-800 rounded-full text-slate-300
+                       hover:bg-slate-700 transition-all"
           >
             Tap when done speaking
           </button>
@@ -429,11 +429,11 @@ function Storytime() {
       </main>
 
       {/* Footer */}
-      <footer className="p-6 bg-night-900/80 backdrop-blur">
+      <footer className="p-6 bg-slate-900/80 backdrop-blur">
         <div className="flex items-center justify-center gap-4">
           <button
             onClick={goToConfigure}
-            className="px-4 py-2 text-night-400 text-sm hover:text-night-200 transition-all"
+            className="px-4 py-2 text-slate-400 text-sm hover:text-slate-200 transition-all"
           >
             Configure manually instead
           </button>

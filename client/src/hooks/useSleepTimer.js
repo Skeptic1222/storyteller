@@ -1,7 +1,7 @@
 /**
  * useSleepTimer Hook
  * Manages automatic story pause after a set duration
- * Perfect for bedtime stories
+ * Useful for long listening sessions
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -20,7 +20,7 @@ export const SLEEP_TIMER_PRESETS = [
 ];
 
 /**
- * Sleep timer hook for auto-pausing stories
+ * Listening timer hook for auto-pausing playback
  * @param {Object} options - Configuration options
  * @param {Function} options.onTimerEnd - Callback when timer ends (use to pause story)
  * @param {Function} options.onWarning - Callback 1 minute before timer ends
@@ -57,7 +57,7 @@ export function useSleepTimer(options = {}) {
   const intervalRef = useRef(null);
 
   /**
-   * Start the sleep timer
+   * Start the timer
    * @param {number} minutes - Duration in minutes
    */
   const startTimer = useCallback((minutes) => {
@@ -78,7 +78,7 @@ export function useSleepTimer(options = {}) {
     setIsPaused(false);
     setHasWarned(false);
 
-    console.log(`[SleepTimer] Started: ${minutes} minutes`);
+    console.log(`[ListeningTimer] Started: ${minutes} minutes`);
 
     intervalRef.current = setInterval(() => {
       setRemainingSeconds(prev => {
@@ -86,7 +86,7 @@ export function useSleepTimer(options = {}) {
         if (prev === 61 && !hasWarned) {
           setHasWarned(true);
           onWarningRef.current?.();
-          console.log('[SleepTimer] Warning: 1 minute remaining');
+          console.log('[ListeningTimer] Warning: 1 minute remaining');
         }
 
         // Check for end
@@ -95,7 +95,7 @@ export function useSleepTimer(options = {}) {
           intervalRef.current = null;
           setIsActive(false);
           onTimerEndRef.current?.();
-          console.log('[SleepTimer] Timer ended');
+          console.log('[ListeningTimer] Timer ended');
           return 0;
         }
 
@@ -117,7 +117,7 @@ export function useSleepTimer(options = {}) {
     setRemainingSeconds(0);
     setIsPaused(false);
     setHasWarned(false);
-    console.log('[SleepTimer] Stopped');
+    console.log('[ListeningTimer] Stopped');
   }, []);
 
   /**
@@ -131,7 +131,7 @@ export function useSleepTimer(options = {}) {
       intervalRef.current = null;
     }
     setIsPaused(true);
-    console.log('[SleepTimer] Paused');
+    console.log('[ListeningTimer] Paused');
   }, [isActive, isPaused]);
 
   /**
@@ -161,7 +161,7 @@ export function useSleepTimer(options = {}) {
       });
     }, 1000);
 
-    console.log('[SleepTimer] Resumed');
+    console.log('[ListeningTimer] Resumed');
   }, [isActive, isPaused, hasWarned]);
 
   /**
@@ -174,7 +174,7 @@ export function useSleepTimer(options = {}) {
     const additionalSeconds = minutes * 60;
     setRemainingSeconds(prev => prev + additionalSeconds);
     setHasWarned(false); // Reset warning if we added time
-    console.log(`[SleepTimer] Added ${minutes} minutes`);
+    console.log(`[ListeningTimer] Added ${minutes} minutes`);
   }, [isActive]);
 
   // Handle visibility change (pause when tab is hidden)

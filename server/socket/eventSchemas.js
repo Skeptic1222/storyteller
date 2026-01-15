@@ -89,13 +89,15 @@ export const LaunchStageUpdateSchema = {
  * @property {string} message - Progress message
  * @property {number} percent - Completion percentage (0-100)
  * @property {Object<string, string>} statuses - All stage statuses
+ * @property {string|null} stage - Active stage (voices, sfx, cover, qa)
  */
 export const LaunchProgressSchema = {
   event: 'launch-progress',
   payload: {
     message: 'Generating cover art...',
     percent: 50,
-    statuses: { voices: 'success', sfx: 'success', cover: 'in_progress', qa: 'pending' }
+    statuses: { voices: 'success', sfx: 'success', cover: 'in_progress', qa: 'pending' },
+    stage: 'cover'
   }
 };
 

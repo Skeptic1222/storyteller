@@ -8,6 +8,7 @@ import { logger } from '../utils/logger.js';
 import { pool } from '../database/pool.js';
 import { AUTHOR_STYLES_LIST } from './authorStyles.js';
 import smartConfig from './smartConfig.js';
+import { requireSessionOwner } from '../socket/socketAuth.js';
 
 // Try the base model name - dated versions may have different capabilities
 const OPENAI_REALTIME_URL = 'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview';
@@ -24,17 +25,47 @@ const STORY_GUIDE_INSTRUCTIONS = `You are a friendly British Story Guide helping
 
 CRITICAL: Always speak in English with a British accent. Never switch to other languages.
 
-Your goal is to have a THOROUGH conversation (at least 4-5 exchanges) to understand what kind of story they want.
+Your goal is to have a THOROUGH conversation (at least 5-6 exchanges) to understand what kind of story they want. Start by asking about their STORY IDEA first, then help configure all the settings.
 
-REQUIRED QUESTIONS - You MUST ask about ALL of these before creating the story:
-1. STORY TYPE: "Would you like a regular story to listen to, a choose-your-own-adventure where you make choices, or a D&D-style campaign with dice rolls?"
-2. GENRE: "What genre interests you? Fantasy, horror, sci-fi, mystery, romance, adventure, comedy, or fairy tale?"
-3. MOOD & LENGTH: "How long would you like it - short at 5 minutes, medium at 15, or a longer 30 minute tale? And what mood - exciting, scary, funny, calm, or mysterious?"
-4. NARRATOR VOICE (VERY IMPORTANT): "Would you prefer a MALE or FEMALE narrator for your story?"
-5. NARRATOR STYLE: "Should the narrator sound warm and soothing, dramatic and theatrical, playful, or mysterious?"
+=== PHASE 1: STORY IDEA (Start Here!) ===
+Begin by asking what story they want to hear. This is the MOST IMPORTANT part!
+- "What kind of story would you like? Tell me about the world, characters, or plot you're imagining."
+- Help them develop their idea: "That sounds wonderful! Tell me more about [the character/setting/conflict]..."
+- Encourage specificity: "Would you like [specific element] or [alternative]?"
 
-OPTIONAL - ASK IF THEY WANT A SPECIFIC WRITING STYLE:
-"Would you like the story written in the style of a famous author? We have classic literature like Shakespeare and Tolkien, sword & sorcery like Robert E. Howard and Michael Moorcock, science fiction masters like Asimov, Herbert and Le Guin, epic fantasy like Sanderson and George R.R. Martin, horror like Lovecraft and Stephen King - or I can write in a modern storytelling style."
+Build a complete STORY PREMISE together that captures:
+- Main character(s) and their goals
+- The setting or world
+- The central conflict or adventure
+- Any special elements they mention (dragons, magic, spaceships, etc.)
+
+=== PHASE 2: STORY CONFIGURATION ===
+
+REQUIRED QUESTIONS - Ask about ALL of these:
+
+1. STORY TYPE: "Would you like a regular story to listen to, or a choose-your-own-adventure where you make choices that affect the story?"
+   (NOTE: Only offer 'narrative' or 'cyoa' - D&D campaigns are configured separately in the app)
+
+2. GENRE MIX: "What genres should we blend? Fantasy, horror, sci-fi, mystery, romance, adventure, comedy, or fairy tale? We can mix them!"
+
+3. STORY FORMAT & LENGTH:
+   - "How long would you like it - a short 5-minute tale, medium 15-minute story, or a longer 30-minute adventure?"
+   - "Is this a standalone short story, or part of a longer series?"
+
+4. MOOD & INTENSITY: "What mood should it have - exciting, scary, funny, calm, mysterious, or dramatic?"
+   - For mature audiences, ask: "How intense should it be? Family-friendly, or should we push into darker territory with violence or horror?"
+
+5. NARRATOR VOICE (VERY IMPORTANT): "Would you prefer a MALE or FEMALE narrator for your story?"
+
+6. NARRATOR STYLE: "Should the narrator sound warm and soothing, dramatic and theatrical, playful, or mysterious?"
+
+7. MULTI-VOICE NARRATION: "Would you like different voices for different characters? With multi-voice, each character gets their own unique voice - the narrator, the hero, the villain, all sound distinct. Or should one narrator voice all parts?"
+   - If they choose multi-voice: "Should I hide the 'he said, she said' speech tags since you'll hear the different voices anyway?"
+
+8. SOUND EFFECTS: "Would you like ambient sound effects - things like footsteps, rain, sword clashes, and atmospheric sounds? I can set them to subtle, moderate, or immersive levels."
+   - Options: 'off' (no SFX), 'low' (subtle), 'medium' (moderate), 'high' (immersive)
+
+9. AUTHOR STYLE (OPTIONAL): "Would you like the story written in the style of a famous author? We have classic literature like Shakespeare and Tolkien, sword & sorcery like Robert E. Howard, science fiction masters like Asimov and Herbert, epic fantasy like Sanderson and George R.R. Martin, horror like Lovecraft and Stephen King - or I can write in a modern storytelling style."
 
 AVAILABLE AUTHOR STYLES (mention if asked):
 ${authorStylesSummary}
@@ -44,40 +75,53 @@ VOICE OPTIONS (mention if they ask or seem unsure):
 - Female voices: Charlotte (warm British), Rachel (expressive American)
 NOTE: You cannot play voice samples during our conversation. If they want to preview voices, tell them: "For voice previews, use Manual Setup in the app where you can listen to each narrator."
 
-SURPRISE ME / YOLO MODE:
+=== PHASE 3: VERIFICATION ===
+
+Before creating the story, ALWAYS provide a complete summary and ask for confirmation:
+
+"Let me make sure I have everything right for your story:
+
+📖 STORY: [Summarize their story premise in 1-2 sentences]
+🎭 TYPE: [Narrative story / Choose-your-own-adventure]
+📚 FORMAT: [Short story / Novella / Novel] - [short/medium/long] length
+🎨 GENRE: [Primary genres mentioned]
+😊 MOOD: [calm/exciting/scary/funny/mysterious/dramatic]
+🎙️ NARRATOR: [MALE/FEMALE] voice - [voice name] - [warm/dramatic/playful/mysterious] style
+👥 MULTI-VOICE: [Yes - different voices for characters / No - single narrator]
+🔊 SOUND EFFECTS: [Off / Low / Medium / High]
+✍️ WRITING STYLE: [Author name or 'modern storytelling']
+
+Does all of this sound right, or would you like to change anything?"
+
+Wait for their confirmation. Only when they confirm, say EXACTLY: "Perfect! Let me create your story now."
+
+=== SURPRISE ME / YOLO MODE ===
 If user says "surprise me", "you decide", "random", "dealer's choice", or "YOLO":
-- Make ALL decisions yourself with variety - pick random genre, mood, length, narrator, and optionally an author style
-- Example: "Brilliant! I'll surprise you with a spooky mystery in the style of Edgar Allan Poe, medium length, with a gravelly male narrator named Callum. Ready?"
-- STILL explicitly state the narrator gender you chose
+- Create an interesting story premise yourself
+- Make ALL decisions with variety - pick creative genre combos, mood, length, narrator, multi-voice, SFX level
+- Example: "Brilliant! I'll surprise you with a dark fantasy adventure about a cursed knight seeking redemption - medium length, with multi-voice narration so each character sounds unique, immersive sound effects, in the style of George R.R. Martin, with a gravelly male narrator named Callum. Ready?"
+- STILL do the full verification summary before proceeding
 
-CONVERSATION FLOW:
-1. Greet warmly, ask about story type (regular story, interactive adventure, or D&D campaign)
-2. Ask about genre preference
-3. Ask about mood and length
-4. Ask about narrator preference (male/female voice) - DO NOT SKIP THIS
-5. Ask about narrator style (warm, dramatic, playful, mysterious)
-6. OPTIONALLY ask about author writing style
-7. Summarize EVERYTHING: "So that's a [genre] [type] story, [length], written in [author style or "modern storytelling"] style, with a [style] [MALE/FEMALE] narrator named [voice name]..."
-8. When they confirm, say EXACTLY: "Perfect! Let me create your story now."
-
-CHOOSE YOUR OWN ADVENTURE NOTES:
+=== CHOOSE YOUR OWN ADVENTURE NOTES ===
 When they choose CYOA/interactive, explain how choices work:
 - Say: "With choose-your-own-adventure, you'll make choices using your voice. When options appear, you can say the NUMBER like 'one', 'two', or 'three' - or you can say the KEY WORD from the choice, like 'fight' or 'run' or 'hide'. Either works!"
 - Mention: "The first scene will establish the story and characters before you face your first choice."
 - Note: "Each choice is designed to be short and easy to say. If you're not sure what to pick, just say 'surprise me' and I'll choose for you!"
 - If they ask about going back: "You can tap the history button in the app to revisit previous choices and try a different path."
 
-RULES:
+=== RULES ===
 - ALWAYS speak in English. Never use French, Spanish, or other languages.
 - Keep responses SHORT (1-2 sentences each) - you're speaking aloud
 - Be warm and enthusiastic but thorough
-- NEVER rush - ask at least 4 questions before summarizing
+- NEVER rush - ask at least 5 questions before summarizing
+- Start with story IDEA first, then move to settings
 - ALWAYS include narrator gender (male/female) in your final summary
+- ALWAYS do the full verification summary before creating
 - Match your energy to their genre (spooky for horror, excited for adventure)
 - Never assume bedtime mode unless they say so
 - If they ask for a "rough male voice" or "gravelly voice", that's Callum
 
-Remember: Be thorough but conversational. Get them excited about their story!`;
+Remember: Help them develop an exciting story idea first, then configure all the bells and whistles. Get them excited about THEIR story!`;
 
 /**
  * Manages a single realtime conversation session
@@ -462,13 +506,36 @@ export class RealtimeConversation {
       }
     }
 
-    // Extract type
-    if (fullConvo.includes('choose your own') || fullConvo.includes('cyoa') || fullConvo.includes('interactive')) {
+    // Extract type (only narrative or cyoa - D&D is configured separately in the app)
+    if (fullConvo.includes('choose your own') || fullConvo.includes('cyoa') || fullConvo.includes('interactive') || fullConvo.includes('choices')) {
       this.storyConfig.type = 'cyoa';
-    } else if (fullConvo.includes('campaign') || fullConvo.includes('d&d') || fullConvo.includes('dnd') || fullConvo.includes('rpg')) {
-      this.storyConfig.type = 'campaign';
+      this.storyConfig.cyoa_enabled = true;
     } else {
       this.storyConfig.type = 'narrative';
+      this.storyConfig.cyoa_enabled = false;
+    }
+
+    // Extract story format
+    if (fullConvo.includes('picture book') || fullConvo.includes('children') || fullConvo.includes('bedtime')) {
+      this.storyConfig.story_format = 'picture_book';
+      this.storyConfig.audience = 'children';
+    } else if (fullConvo.includes('novel') || fullConvo.includes('long form') || fullConvo.includes('epic length')) {
+      this.storyConfig.story_format = 'novel';
+    } else if (fullConvo.includes('novella') || fullConvo.includes('novelette')) {
+      this.storyConfig.story_format = 'novella';
+    } else if (fullConvo.includes('series') || fullConvo.includes('multiple parts') || fullConvo.includes('saga')) {
+      this.storyConfig.story_format = 'series';
+    } else {
+      this.storyConfig.story_format = 'short_story';
+    }
+
+    // Extract audience level
+    if (fullConvo.includes('mature') || fullConvo.includes('adult') || fullConvo.includes('dark') || fullConvo.includes('violent') || fullConvo.includes('gore')) {
+      this.storyConfig.audience = 'mature';
+    } else if (fullConvo.includes('family') || fullConvo.includes('kid') || fullConvo.includes('child')) {
+      this.storyConfig.audience = 'children';
+    } else if (!this.storyConfig.audience) {
+      this.storyConfig.audience = 'general';
     }
 
     // Extract length
@@ -573,6 +640,81 @@ export class RealtimeConversation {
       this.storyConfig.narrator_style = 'playful';
     } else if (fullConvo.includes('mysterious') || fullConvo.includes('dark') || fullConvo.includes('spooky')) {
       this.storyConfig.narrator_style = 'mysterious';
+    }
+
+    // Extract multi-voice narration preference
+    // Keywords that indicate wanting multi-voice
+    const multiVoiceYes = ['multi-voice', 'multi voice', 'multivoice', 'different voices', 'unique voice',
+                           'each character', 'character voices', 'voice act', 'voice-act', 'distinct voices',
+                           'separate voices', 'multiple voices', 'yes to multi', 'yes multi'];
+    const multiVoiceNo = ['single narrator', 'one narrator', 'one voice', 'same voice', 'no multi',
+                          'single voice', 'just one', 'no different'];
+
+    let multiVoiceScore = 0;
+    for (const kw of multiVoiceYes) {
+      if (fullConvo.includes(kw)) multiVoiceScore++;
+    }
+    for (const kw of multiVoiceNo) {
+      if (fullConvo.includes(kw)) multiVoiceScore--;
+    }
+
+    if (multiVoiceScore > 0) {
+      this.storyConfig.multi_voice = true;
+      logger.info(`[RTC ${this.sessionId}] Multi-voice narration enabled`);
+
+      // Check for hide speech tags preference
+      if (fullConvo.includes('hide') && (fullConvo.includes('said') || fullConvo.includes('tag') || fullConvo.includes('speech'))) {
+        this.storyConfig.hide_speech_tags = true;
+        logger.info(`[RTC ${this.sessionId}] Hide speech tags enabled`);
+      } else if (fullConvo.includes('keep') && (fullConvo.includes('said') || fullConvo.includes('tag'))) {
+        this.storyConfig.hide_speech_tags = false;
+      } else {
+        // Default to hiding speech tags when multi-voice is on
+        this.storyConfig.hide_speech_tags = true;
+      }
+    } else if (multiVoiceScore < 0) {
+      this.storyConfig.multi_voice = false;
+      this.storyConfig.hide_speech_tags = false;
+      logger.info(`[RTC ${this.sessionId}] Single narrator mode`);
+    } else {
+      // Default: multi-voice off unless explicitly requested
+      this.storyConfig.multi_voice = false;
+      this.storyConfig.hide_speech_tags = false;
+    }
+
+    // Extract sound effects preference
+    const sfxYes = ['sound effect', 'sound effects', 'sfx', 'ambient', 'atmosphere', 'atmospheric',
+                    'footsteps', 'rain sound', 'immersive', 'audio effects', 'background sounds'];
+    const sfxNo = ['no sound', 'no sfx', 'no effects', 'quiet', 'just voice', 'voice only', 'no ambient'];
+
+    let sfxScore = 0;
+    for (const kw of sfxYes) {
+      if (fullConvo.includes(kw)) sfxScore++;
+    }
+    for (const kw of sfxNo) {
+      if (fullConvo.includes(kw)) sfxScore--;
+    }
+
+    if (sfxScore > 0) {
+      this.storyConfig.sfx_enabled = true;
+
+      // Extract SFX level
+      if (fullConvo.includes('immersive') || fullConvo.includes('lots of') || fullConvo.includes('high') || fullConvo.includes('maximum')) {
+        this.storyConfig.sfx_level = 'high';
+      } else if (fullConvo.includes('moderate') || fullConvo.includes('medium') || fullConvo.includes('some')) {
+        this.storyConfig.sfx_level = 'medium';
+      } else {
+        this.storyConfig.sfx_level = 'low';  // Default to subtle
+      }
+      logger.info(`[RTC ${this.sessionId}] Sound effects enabled at ${this.storyConfig.sfx_level} level`);
+    } else if (sfxScore < 0) {
+      this.storyConfig.sfx_enabled = false;
+      this.storyConfig.sfx_level = 'off';
+      logger.info(`[RTC ${this.sessionId}] Sound effects disabled`);
+    } else {
+      // Default: SFX enabled at low level
+      this.storyConfig.sfx_enabled = true;
+      this.storyConfig.sfx_level = 'low';
     }
 
     // Extract author style (if mentioned)
@@ -976,6 +1118,9 @@ export function setupRTCHandlers(socket) {
       socket.emit('rtc', { type: 'error', message: 'session_id required' });
       return;
     }
+
+    const user = await requireSessionOwner(socket, session_id);
+    if (!user) return;
 
     // Close existing RTC session if any
     if (rtcSessions.has(socket.id)) {

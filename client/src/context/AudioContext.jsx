@@ -3,21 +3,40 @@ import { queueLog, audioLog } from '../utils/clientLogger';
 
 const AudioContextReact = createContext(null);
 
+// PERFORMANCE: Limit queue size to prevent memory bloat during long sessions
+const MAX_QUEUE_SIZE = 10;
+// MEMORY: Maximum blob URLs to track before forced cleanup
+const MAX_BLOB_URLS = 50;
+
+const VOLUME_STORAGE_KEY = 'narrimo_volume';
+const LEGACY_VOLUME_STORAGE_KEY = 'storyteller_volume';
+
 export function AudioProvider({ children }) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
+  const [isStartingPlayback, setIsStartingPlayback] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [isUnlocked, setIsUnlocked] = useState(false);
   const [pendingAudio, setPendingAudio] = useState(null);
   const [volume, setVolumeState] = useState(() => {
     // Load saved volume from localStorage, default to max (1.0)
-    const saved = localStorage.getItem('storyteller_volume');
-    return saved ? parseFloat(saved) : 1.0;
+    const saved = localStorage.getItem(VOLUME_STORAGE_KEY);
+    if (saved) return parseFloat(saved);
+
+    const legacySaved = localStorage.getItem(LEGACY_VOLUME_STORAGE_KEY);
+    if (legacySaved) {
+      localStorage.setItem(VOLUME_STORAGE_KEY, legacySaved);
+      localStorage.removeItem(LEGACY_VOLUME_STORAGE_KEY);
+      return parseFloat(legacySaved);
+    }
+
+    return 1.0;
   });
 
   const audioRef = useRef(null);
   const audioQueue = useRef([]);
+  const currentItemRef = useRef(null); // Track current playing item for onEnd callback
   const webAudioCtxRef = useRef(null);
   const blobUrlsRef = useRef(new Set()); // Track all blob URLs for cleanup
   const isIOS = useRef(
@@ -37,7 +56,22 @@ export function AudioProvider({ children }) {
 
       audioRef.current.addEventListener('ended', () => {
         audioLog.info(`STATE: PLAYING → ENDED | duration: ${audioRef.current?.duration?.toFixed(2)}s | queueRemaining: ${audioQueue.current.length}`);
+        // Save onEnd callback BEFORE clearing ref (prevents race condition)
+        const onEndCallback = currentItemRef.current?.onEnd;
+        currentItemRef.current = null;
         setIsPlaying(false);
+
+        // Call onEnd callback for the item that just finished
+        if (onEndCallback) {
+          queueLog.info('CALLBACK | onEnd fired after playback ended');
+          try {
+            onEndCallback();
+          } catch (err) {
+            // FAIL LOUDLY - don't silently swallow errors
+            console.error('[AudioContext] ERROR in onEnd callback:', err);
+            audioLog.error(`CALLBACK_ERROR | onEnd failed: ${err.message}`);
+          }
+        }
         playNext();
       });
       audioRef.current.addEventListener('timeupdate', () => {
@@ -172,6 +206,25 @@ export function AudioProvider({ children }) {
     try {
       console.log('[Audio] Playing audio internally, format:', format, 'data length:', audioData?.length);
 
+      // MEMORY: Force cleanup if too many blob URLs accumulated
+      if (blobUrlsRef.current.size >= MAX_BLOB_URLS) {
+        console.warn(`[AudioContext] Blob URL limit reached (${MAX_BLOB_URLS}), forcing cleanup`);
+        const currentSrc = audioRef.current?.src;
+        blobUrlsRef.current.forEach(url => {
+          // Don't revoke the currently playing URL
+          if (url !== currentSrc) {
+            try {
+              URL.revokeObjectURL(url);
+            } catch (e) { /* ignore */ }
+          }
+        });
+        // Keep only the current src if it's a blob
+        blobUrlsRef.current.clear();
+        if (currentSrc && currentSrc.startsWith('blob:')) {
+          blobUrlsRef.current.add(currentSrc);
+        }
+      }
+
       // Convert base64 to blob
       const byteCharacters = atob(audioData);
       const byteNumbers = new Array(byteCharacters.length);
@@ -185,10 +238,11 @@ export function AudioProvider({ children }) {
 
       console.log('[Audio] Created blob URL:', url);
 
-      // Clean up old URL
+      // Clean up old URL immediately (don't wait for ended event)
       if (audioRef.current.src && audioRef.current.src.startsWith('blob:')) {
-        URL.revokeObjectURL(audioRef.current.src);
-        blobUrlsRef.current.delete(audioRef.current.src);
+        const oldUrl = audioRef.current.src;
+        URL.revokeObjectURL(oldUrl);
+        blobUrlsRef.current.delete(oldUrl);
       }
 
       audioRef.current.src = url;
@@ -211,13 +265,16 @@ export function AudioProvider({ children }) {
       });
 
       console.log('[Audio] Audio loaded, attempting play...');
+      setIsStartingPlayback(true);
       await audioRef.current.play();
       console.log('[Audio] Playback started successfully!');
 
       setIsPlaying(true);
       setIsPaused(false);
+      setIsStartingPlayback(false);
     } catch (error) {
       console.error('[Audio] playAudioInternal error:', error);
+      setIsStartingPlayback(false);
       throw error;
     }
   }, []);
@@ -275,12 +332,17 @@ export function AudioProvider({ children }) {
   const resume = useCallback(() => {
     if (audioRef.current && isPaused) {
       console.log('[Audio] Resuming');
+      setIsStartingPlayback(true);
       audioRef.current.play()
         .then(() => {
           setIsPaused(false);
           setIsPlaying(true);
+          setIsStartingPlayback(false);
         })
-        .catch(err => audioLog.error(`RESUME_FAILED | error: ${err.message}`));
+        .catch(err => {
+          setIsStartingPlayback(false);
+          audioLog.error(`RESUME_FAILED | error: ${err.message}`);
+        });
     }
   }, [isPaused]);
 
@@ -289,6 +351,30 @@ export function AudioProvider({ children }) {
       const clearedCount = audioQueue.current.length;
       audioLog.info(`STOP | clearing queue: ${clearedCount} items | currentTime: ${audioRef.current.currentTime?.toFixed(2)}`);
       queueLog.info(`CLEAR | cleared: ${clearedCount} items`);
+
+      // Call onEnd for currently playing item (critical for state cleanup like introAudioQueued)
+      if (currentItemRef.current?.onEnd) {
+        queueLog.info('CALLBACK | onEnd fired during stop()');
+        try {
+          currentItemRef.current.onEnd();
+        } catch (err) {
+          console.error('[AudioContext] ERROR in onEnd callback during stop:', err);
+        }
+      }
+      currentItemRef.current = null;
+
+      // Also call onEnd for all queued items that won't get to play
+      audioQueue.current.forEach((item, idx) => {
+        if (item.onEnd) {
+          queueLog.info(`CALLBACK | onEnd fired for queued item ${idx} during stop()`);
+          try {
+            item.onEnd();
+          } catch (err) {
+            console.error('[AudioContext] ERROR in queued onEnd callback during stop:', err);
+          }
+        }
+      });
+
       audioRef.current.pause();
       audioRef.current.currentTime = 0;
       setIsPlaying(false);
@@ -302,7 +388,8 @@ export function AudioProvider({ children }) {
   const setVolume = useCallback((newVolume) => {
     const clampedVolume = Math.max(0, Math.min(1, newVolume));
     setVolumeState(clampedVolume);
-    localStorage.setItem('storyteller_volume', clampedVolume.toString());
+    localStorage.setItem(VOLUME_STORAGE_KEY, clampedVolume.toString());
+    localStorage.removeItem(LEGACY_VOLUME_STORAGE_KEY);
     if (audioRef.current) {
       audioRef.current.volume = clampedVolume;
     }
@@ -316,10 +403,34 @@ export function AudioProvider({ children }) {
     }
   }, [volume]);
 
-  const queueAudio = useCallback((audioData, format = 'mp3', onStart = null) => {
-    const queueItem = { audioData, format, onStart, queuedAt: Date.now() };
+  const queueAudio = useCallback((audioData, format = 'mp3', onStart = null, onEnd = null) => {
+    // FAIL LOUDLY: Validate callback parameters to catch accidental parameter swapping
+    if (onStart !== null && typeof onStart !== 'function') {
+      console.error('[AudioContext] ERROR: onStart must be a function, got:', typeof onStart);
+      onStart = null;
+    }
+    if (onEnd !== null && typeof onEnd !== 'function') {
+      console.error('[AudioContext] ERROR: onEnd must be a function, got:', typeof onEnd);
+      onEnd = null;
+    }
+
+    // MEMORY: Prevent unbounded queue growth during long sessions
+    if (audioQueue.current.length >= MAX_QUEUE_SIZE) {
+      console.warn(`[AudioContext] Queue full (${MAX_QUEUE_SIZE}), dropping oldest item`);
+      const dropped = audioQueue.current.shift();
+      // Call onEnd for dropped item to prevent state leaks
+      if (dropped?.onEnd) {
+        try {
+          dropped.onEnd();
+        } catch (err) {
+          console.error('[AudioContext] ERROR in dropped item onEnd:', err);
+        }
+      }
+    }
+
+    const queueItem = { audioData, format, onStart, onEnd, queuedAt: Date.now() };
     audioQueue.current.push(queueItem);
-    queueLog.info(`ENQUEUE | format: ${format} | hasOnStart: ${!!onStart} | queueLength: ${audioQueue.current.length} | dataLength: ${audioData?.length || 0}`);
+    queueLog.info(`ENQUEUE | format: ${format} | hasOnStart: ${!!onStart} | hasOnEnd: ${!!onEnd} | queueLength: ${audioQueue.current.length} | dataLength: ${audioData?.length || 0}`);
     if (!isPlaying && !isPaused) {
       queueLog.info('IMMEDIATE_PLAY | not playing/paused, starting queue');
       playNext();
@@ -331,8 +442,9 @@ export function AudioProvider({ children }) {
   const playNext = useCallback(() => {
     if (audioQueue.current.length > 0) {
       const next = audioQueue.current.shift();
+      currentItemRef.current = next; // Track for onEnd callback
       const waitTime = next.queuedAt ? Date.now() - next.queuedAt : 0;
-      queueLog.info(`DEQUEUE | format: ${next.format} | remaining: ${audioQueue.current.length} | hasOnStart: ${!!next.onStart} | waitedMs: ${waitTime}`);
+      queueLog.info(`DEQUEUE | format: ${next.format} | remaining: ${audioQueue.current.length} | hasOnStart: ${!!next.onStart} | hasOnEnd: ${!!next.onEnd} | waitedMs: ${waitTime}`);
       // FIXED: Call onStart AFTER playAudio resolves (when audio actually starts)
       // This prevents SFX from triggering during intro audio
       playAudio(next.audioData, next.format)
@@ -340,11 +452,20 @@ export function AudioProvider({ children }) {
           // Call onStart callback AFTER audio starts playing
           if (next.onStart) {
             queueLog.info('CALLBACK | onStart fired after playback started');
-            next.onStart();
+            try {
+              next.onStart();
+            } catch (err) {
+              // FAIL LOUDLY - don't silently swallow errors
+              console.error('[AudioContext] ERROR in onStart callback:', err);
+              queueLog.error(`CALLBACK_ERROR | onStart failed: ${err.message}`);
+            }
           }
         })
         .catch(err => {
+          // FAIL LOUDLY - don't silently continue
+          console.error('[AudioContext] PLAYBACK_ERROR:', err);
           queueLog.error(`PLAYBACK_ERROR | error: ${err.message}`);
+          currentItemRef.current = null;
         });
     } else {
       queueLog.info('EMPTY | no more items to play');
@@ -354,6 +475,7 @@ export function AudioProvider({ children }) {
   const value = useMemo(() => ({
     isPlaying,
     isPaused,
+    isStartingPlayback,
     currentTime,
     duration,
     isUnlocked,
@@ -366,7 +488,7 @@ export function AudioProvider({ children }) {
     resume,
     stop,
     queueAudio
-  }), [isPlaying, isPaused, currentTime, duration, isUnlocked, pendingAudio, volume, setVolume, playAudio, playUrl, pause, resume, stop, queueAudio]);
+  }), [isPlaying, isPaused, isStartingPlayback, currentTime, duration, isUnlocked, pendingAudio, volume, setVolume, playAudio, playUrl, pause, resume, stop, queueAudio]);
 
   return (
     <AudioContextReact.Provider value={value}>
@@ -374,7 +496,7 @@ export function AudioProvider({ children }) {
       {/* Show tap-to-play overlay on iOS when audio is pending */}
       {pendingAudio && isIOS.current && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-night-900/90 backdrop-blur"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/90 backdrop-blur"
           onClick={() => {
             // The unlock handler will pick this up
             console.log('[Audio] User tapped overlay');
@@ -387,7 +509,7 @@ export function AudioProvider({ children }) {
               </svg>
             </div>
             <p className="text-golden-400 text-xl font-medium mb-2">Tap to Play</p>
-            <p className="text-night-400 text-sm">Your story is ready!</p>
+            <p className="text-slate-400 text-sm">Your story is ready!</p>
           </div>
         </div>
       )}

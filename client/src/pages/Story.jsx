@@ -1054,6 +1054,10 @@ function Story() {
     );
   }
 
+  // Determine if story header should be hidden (clearer than complex boolean)
+  // Hide during: generation, launch screen active, ready to play, or audio queued but not started
+  const shouldHideStoryHeader = isGenerating || launchActive || isReadyToPlay || (isAudioQueued && !sceneAudioStarted);
+
   return (
     <div
       className="min-h-screen flex flex-col relative"
@@ -1144,9 +1148,8 @@ function Story() {
         </div>
 
         {/* Story Title & Details - Hide when LaunchScreen is visible to avoid duplicate titles */}
-        {/* FIXED: Also hide during isGenerating phase since LaunchScreen shows then too */}
-        {/* FIXED: Also hide when audio is queued but playback hasn't started yet */}
-        {!(isGenerating || launchActive || isReadyToPlay || (isAudioQueued && !sceneAudioStarted)) && (
+        {/* Extracted boolean logic for clarity: show header only when NOT in any overlay/launch phase */}
+        {!shouldHideStoryHeader && (
           <div className="px-4 pb-3 text-center">
             <h1 className="text-3xl md:text-4xl font-bold text-golden-400 mb-2 leading-tight">
               {session?.title || outlineData?.title || launchStats?.title || 'Creating your story...'}

@@ -8,9 +8,15 @@ import { pool } from '../database/pool.js';
 import { ElevenLabsService, RECOMMENDED_VOICES, VOICE_PRESETS } from '../services/elevenlabs.js';
 import { VOICE_PREVIEWS, CHARACTER_VOICE_SUGGESTIONS, NARRATOR_STYLES } from '../services/conversationEngine.js';
 import { logger } from '../utils/logger.js';
+import { normalizeStyleValue } from '../utils/styleUtils.js';
+import { wrapRoutes, NotFoundError } from '../middleware/errorHandler.js';
+import { rateLimiters } from '../middleware/rateLimiter.js';
+import { authenticateToken, requireAuth, requireAdmin } from '../middleware/auth.js';
 
 const router = Router();
+wrapRoutes(router); // Auto-wrap async handlers for error catching
 const elevenlabs = new ElevenLabsService();
+router.use(authenticateToken, requireAuth);
 
 /**
  * GET /api/voices
@@ -99,7 +105,7 @@ router.get('/recommended', async (req, res) => {
  * POST /api/voices/sync
  * Sync voices from ElevenLabs API to database
  */
-router.post('/sync', async (req, res) => {
+router.post('/sync', requireAdmin, async (req, res) => {
   try {
     const voices = await elevenlabs.getVoices();
 
@@ -167,7 +173,7 @@ router.post('/sync', async (req, res) => {
  * POST /api/voices/preview
  * Generate a voice preview audio sample with optional style settings
  */
-router.post('/preview', async (req, res) => {
+router.post('/preview', rateLimiters.tts, async (req, res) => {
   try {
     const { voice_id, text, voice_settings } = req.body;
 
@@ -213,11 +219,11 @@ router.get('/narrator-styles', async (req, res) => {
     const styles = {
       warm: {
         name: 'Warm & Gentle',
-        desc: 'Soothing, perfect for bedtime',
+        desc: 'Soothing, low-intensity delivery',
         stability: 0.7,
         similarity_boost: 0.8,
         style: 20,
-        best_for: ['bedtime', 'children', 'romance']
+        best_for: ['calm', 'children', 'romance']
       },
       dramatic: {
         name: 'Dramatic',
@@ -324,7 +330,7 @@ router.get('/previews', async (req, res) => {
  * POST /api/voices/preview-sample
  * Generate audio for a specific voice preview sample
  */
-router.post('/preview-sample', async (req, res) => {
+router.post('/preview-sample', rateLimiters.tts, async (req, res) => {
   try {
     const { voice_key, narrator_style } = req.body;
 
@@ -337,14 +343,10 @@ router.post('/preview-sample', async (req, res) => {
     let voiceSettings = {};
     if (narrator_style && NARRATOR_STYLES[narrator_style]) {
       const style = NARRATOR_STYLES[narrator_style];
-      // Normalize style value from 0-100 to 0.0-1.0 if needed
-      const normalizedStyle = style.style !== undefined
-        ? (style.style > 1 ? style.style / 100 : style.style)
-        : 0;
       voiceSettings = {
         stability: style.stability,
         similarity_boost: style.similarity_boost || 0.75,
-        style: normalizedStyle,
+        style: normalizeStyleValue(style.style, 0), // uses styleUtils.js
         use_speaker_boost: true
       };
     }
@@ -417,7 +419,7 @@ router.get('/character-suggestions', async (req, res) => {
  */
 router.get('/preferences/:userId', async (req, res) => {
   try {
-    const { userId } = req.params;
+    const userId = req.user.id;
 
     const result = await pool.query(`
       SELECT vp.*, ev.name as voice_name, ev.description as voice_description
@@ -441,10 +443,11 @@ router.get('/preferences/:userId', async (req, res) => {
  */
 router.post('/preferences', async (req, res) => {
   try {
-    const { user_id, preference_label, voice_id, is_default } = req.body;
+    const { preference_label, voice_id, is_default } = req.body;
+    const user_id = req.user.id;
 
-    if (!user_id || !voice_id) {
-      return res.status(400).json({ error: 'user_id and voice_id are required' });
+    if (!voice_id) {
+      return res.status(400).json({ error: 'voice_id is required' });
     }
 
     // If setting as default, unset other defaults first
@@ -1189,7 +1192,7 @@ router.post('/cost-estimate', async (req, res) => {
  * POST /api/voices/sync-full
  * Full voice sync using new elevenlabsVoiceSync service
  */
-router.post('/sync-full', async (req, res) => {
+router.post('/sync-full', requireAdmin, async (req, res) => {
   try {
     const { includeShared = false } = req.body;
 
@@ -1221,7 +1224,7 @@ router.post('/sync-full', async (req, res) => {
  * GET /api/voices/sync-status
  * Get voice sync status
  */
-router.get('/sync-status', async (req, res) => {
+router.get('/sync-status', requireAdmin, async (req, res) => {
   try {
     const status = await elevenlabsVoiceSync.getSyncStatus();
     res.json(status);
@@ -1235,7 +1238,7 @@ router.get('/sync-status', async (req, res) => {
  * POST /api/voices/preview-styled
  * Generate preview with specific style preset
  */
-router.post('/preview-styled', async (req, res) => {
+router.post('/preview-styled', rateLimiters.tts, async (req, res) => {
   try {
     const { voice_id, style_preset, text, quality_tier } = req.body;
 
@@ -1353,7 +1356,7 @@ function generateReasonText(profile, config) {
   const reasons = [];
 
   if (config.bedtime_mode && profile.bedtime >= 90) {
-    reasons.push('soothing for bedtime');
+    reasons.push('soothing for calm stories');
   }
 
   if (config.audience === 'children' && profile.audiences.children >= 90) {

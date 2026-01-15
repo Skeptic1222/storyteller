@@ -1,6 +1,8 @@
 import { createContext, useContext, useEffect, useState, useCallback, useMemo } from 'react';
 import { io } from 'socket.io-client';
 import { SOCKET_PATH } from '../config';
+import { useAuth } from './AuthContext';
+import { getStoredToken } from '../utils/authToken';
 
 const SocketContext = createContext(null);
 
@@ -8,18 +10,28 @@ export function SocketProvider({ children }) {
   const [socket, setSocket] = useState(null);
   const [connected, setConnected] = useState(false);
   const [sessionId, setSessionId] = useState(null);
+  const { user } = useAuth();
 
   useEffect(() => {
-    const socketInstance = io({
+    const token = getStoredToken();
+    // Connect to socket with explicit configuration
+    const socketInstance = io(window.location.origin, {
       path: SOCKET_PATH,
-      transports: ['websocket', 'polling'],
+      // Try polling first - more reliable through reverse proxies
+      transports: ['polling', 'websocket'],
+      upgrade: true,  // Allow upgrade to websocket after polling connects
       reconnection: true,
       reconnectionDelay: 1000,
       reconnectionAttempts: 10,
       // Increase timeouts to handle long-running AI operations (scene generation can take 60-90s)
-      timeout: 120000,           // 120 second connection timeout
-      ackTimeout: 120000         // 120 second acknowledgement timeout
+      timeout: 30000,            // 30 second connection timeout (reduced to fail faster)
+      ackTimeout: 120000,        // 120 second acknowledgement timeout
+      forceNew: true,            // Always create new connection
+      withCredentials: true,     // Include cookies
+      auth: { token }
     });
+
+    console.log('[Socket] Initializing connection to:', window.location.origin, 'path:', SOCKET_PATH);
 
     socketInstance.on('connect', () => {
       console.log('[Socket] CONNECTED | id:', socketInstance.id);

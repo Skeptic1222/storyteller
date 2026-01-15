@@ -44,23 +44,23 @@ function ProviderIndicator({ intensity, audience, genres = {} }) {
 
   if (!usesVenice) {
     return (
-      <div className="flex items-center gap-2 text-xs text-night-500 mt-4 p-3 bg-night-800/50 rounded-lg border border-night-700">
+      <div className="flex items-center gap-2 text-xs text-slate-500 mt-4 p-3 bg-slate-800/50 rounded-lg border border-slate-700">
         <span className="text-green-400">●</span>
         <span>All content routed to <span className="text-green-400">OpenAI</span></span>
-        <span className="ml-auto text-night-600">Standard AI</span>
+        <span className="ml-auto text-slate-600">Standard AI</span>
       </div>
     );
   }
 
   return (
-    <div className="mt-4 p-3 bg-night-800/50 rounded-lg border border-purple-500/30">
+    <div className="mt-4 p-3 bg-slate-800/50 rounded-lg border border-purple-500/30">
       <div className="flex items-center justify-between mb-2">
-        <span className="text-xs text-night-400">Estimated AI Provider Split</span>
+        <span className="text-xs text-slate-400">Estimated AI Provider Split</span>
         <span className="text-xs text-purple-400">🔓 Uncensored Mode</span>
       </div>
 
       {/* Provider bar */}
-      <div className="h-3 bg-night-700 rounded-full overflow-hidden flex">
+      <div className="h-3 bg-slate-700 rounded-full overflow-hidden flex">
         <div
           className="bg-gradient-to-r from-green-500 to-green-600 transition-all"
           style={{ width: `${openaiPercent}%` }}
@@ -76,17 +76,17 @@ function ProviderIndicator({ intensity, audience, genres = {} }) {
         <div className="flex items-center gap-1">
           <span className="w-2 h-2 rounded-full bg-green-500"></span>
           <span className="text-green-400">OpenAI</span>
-          <span className="text-night-500">~{openaiPercent}%</span>
+          <span className="text-slate-500">~{openaiPercent}%</span>
         </div>
         <div className="flex items-center gap-1">
           <span className="w-2 h-2 rounded-full bg-purple-500"></span>
           <span className="text-purple-400">Venice.ai</span>
-          <span className="text-night-500">~{venicePercent}%</span>
+          <span className="text-slate-500">~{venicePercent}%</span>
         </div>
       </div>
 
       {/* What triggers Venice */}
-      <div className="mt-2 text-xs text-night-500">
+      <div className="mt-2 text-xs text-slate-500">
         <span className="text-purple-400">Venice.ai</span> handles:{' '}
         {[
           goreUsesVenice && 'graphic violence',

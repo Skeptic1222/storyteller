@@ -1,23 +1,32 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { apiCall } from '../config';
+import { setStoredToken } from '../utils/authToken';
 import { useAuth } from '../context/AuthContext';
 import {
-  Moon, Sparkles, Mic, Volume2, BookOpen, Users, Wand2,
-  GitBranch, Shield, Clock, Palette, Music, Image, Archive,
+  Sparkles, Mic, Volume2, BookOpen, Users, Wand2,
+  GitBranch, Shield, Music, Image, Archive,
   ChevronDown, Check, Star, Play, Headphones, MessageCircle,
-  Gamepad2, Baby, Sword, Heart, Ghost, Compass, BookMarked,
-  ArrowRight, Loader2
+  Sword, Heart, Ghost, Compass, BookMarked,
+  Loader2, Feather
 } from 'lucide-react';
 
 // Google OAuth Client ID - Replace with your actual client ID
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
+const BASE_URL = import.meta.env.BASE_URL || '/storyteller/';
 
 function Landing() {
   const navigate = useNavigate();
-  const { isAuthenticated, loginWithGoogle, loading: authLoading } = useAuth();
+  const { isAuthenticated, loginWithGoogle, loading: authLoading, checkAuthStatus } = useAuth();
   const [showPricing, setShowPricing] = useState(false);
   const [loginLoading, setLoginLoading] = useState(false);
   const [loginError, setLoginError] = useState(null);
+  const [showDevLogin, setShowDevLogin] = useState(false);
+  const [devLoginLoading, setDevLoginLoading] = useState(false);
+  const [devLoginError, setDevLoginError] = useState(null);
+  const [devTokenInput, setDevTokenInput] = useState('');
+  const [requiresSecureContext, setRequiresSecureContext] = useState(false);
+  const [secureContextUrl, setSecureContextUrl] = useState('');
   const featuresRef = useRef(null);
   const pricingRef = useRef(null);
 
@@ -27,6 +36,19 @@ function Landing() {
       navigate('/');
     }
   }, [isAuthenticated, navigate]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    setShowDevLogin(params.get('dev') === '1');
+  }, []);
+
+  useEffect(() => {
+    const isLocalhost = ['localhost', '127.0.0.1'].includes(window.location.hostname);
+    if (!window.isSecureContext && !isLocalhost) {
+      setRequiresSecureContext(true);
+      setSecureContextUrl(window.location.href.replace(/^http:/, 'https:'));
+    }
+  }, []);
 
   // Track Google API ready state
   const [googleReady, setGoogleReady] = useState(false);
@@ -80,6 +102,7 @@ function Landing() {
     if (googleInitialized.current) {
       console.log('[GoogleAuth] Already initialized');
       setGoogleReady(true);
+      setShowGoogleButton(true);
       return;
     }
 
@@ -89,6 +112,13 @@ function Landing() {
     }
 
     try {
+      // Revoke any cached Google session to prevent showing previous user's name
+      if (window.google.accounts.id.revoke) {
+        window.google.accounts.id.revoke('', (done) => {
+          console.log('[GoogleAuth] Revoked cached session');
+        });
+      }
+
       window.google.accounts.id.initialize({
         client_id: GOOGLE_CLIENT_ID,
         callback: (response) => {
@@ -98,10 +128,12 @@ function Landing() {
           }
         },
         auto_select: false,
-        cancel_on_tap_outside: true
+        cancel_on_tap_outside: true,
+        prompt: 'select_account'
       });
       googleInitialized.current = true;
       setGoogleReady(true);
+      setShowGoogleButton(true);
       console.log('[GoogleAuth] Initialized successfully');
     } catch (error) {
       console.error('[GoogleAuth] Initialization failed:', error);
@@ -109,12 +141,12 @@ function Landing() {
     }
   };
 
-  const handleGoogleResponse = async (response) => {
-    if (response.credential) {
-      setLoginLoading(true);
-      setLoginError(null);
-      console.log('[GoogleAuth] Authenticating with server...');
-      const result = await loginWithGoogle(response.credential);
+    const handleGoogleResponse = async (response) => {
+      if (response.credential) {
+        setLoginLoading(true);
+        setLoginError(null);
+        console.log('[GoogleAuth] Authenticating with server...');
+        const result = await loginWithGoogle(response.credential);
       if (!result.success) {
         console.error('[GoogleAuth] Server auth failed:', result.error);
         setLoginError(result.error);
@@ -128,55 +160,74 @@ function Landing() {
   const handleGoogleLogin = () => {
     console.log('[GoogleAuth] Login button clicked, googleReady:', googleReady);
 
+    if (requiresSecureContext) {
+      setLoginError('Google Sign-In requires HTTPS on this domain. Switch to the secure URL to continue.');
+      return;
+    }
+
     if (!GOOGLE_CLIENT_ID) {
-      // Demo mode - skip auth for testing (no Google Client ID configured)
       console.log('[GoogleAuth] No client ID - entering demo mode');
-      navigate('/');
+      setLoginError('Google Sign-In is not configured.');
       return;
     }
 
     if (!googleReady || !window.google?.accounts?.id) {
       console.log('[GoogleAuth] Google API not ready, retrying initialization...');
       setLoginError('Google Sign-In is loading. Please try again in a moment.');
-      // Try to initialize again
       if (window.google?.accounts?.id) {
         initializeGoogle();
       }
       return;
     }
 
+    // Standard Google button flow only (no auto-select/one-tap). Ensure button is visible.
+    setShowGoogleButton(true);
+  };
+
+  const handleDevLogin = async () => {
+    const token = devTokenInput.trim();
+    if (!token) {
+      setDevLoginError('Dev token required.');
+      return;
+    }
+
+    setDevLoginLoading(true);
+    setDevLoginError(null);
+
     try {
-      console.log('[GoogleAuth] Triggering Google prompt...');
-      window.google.accounts.id.prompt((notification) => {
-        console.log('[GoogleAuth] Prompt notification:', notification.getMomentType());
-        if (notification.isNotDisplayed()) {
-          const reason = notification.getNotDisplayedReason();
-          console.log('[GoogleAuth] Prompt not displayed:', reason);
-          // Show fallback button for common issues
-          if (reason === 'opt_out_or_no_session' || reason === 'suppressed_by_user') {
-            setShowGoogleButton(true);
-            setLoginError(null); // Clear error, we have a fallback
-          } else {
-            setLoginError('Google Sign-In unavailable. Please try the button below.');
-            setShowGoogleButton(true);
-          }
-        }
-        if (notification.isSkippedMoment()) {
-          console.log('[GoogleAuth] Prompt skipped:', notification.getSkippedReason());
-          setShowGoogleButton(true);
-        }
+      const response = await apiCall('/auth/dev-login', {
+        method: 'POST',
+        body: JSON.stringify({ token })
       });
+
+      if (response.ok) {
+        const data = await response.json();
+        setStoredToken(data.token);
+        await checkAuthStatus();
+        navigate('/');
+      } else {
+        let errorMessage = 'Dev login failed.';
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.message || errorData.error || errorMessage;
+        } catch {
+          // Keep default message.
+        }
+        setDevLoginError(errorMessage);
+      }
     } catch (error) {
-      console.error('[GoogleAuth] Prompt failed:', error);
-      setLoginError('Failed to open Google Sign-In. Please try again.');
-      setShowGoogleButton(true);
+      console.error('[DevLogin] Failed:', error);
+      setDevLoginError('Dev login failed. Please try again.');
+    } finally {
+      setDevLoginLoading(false);
     }
   };
 
-  // Render Google button when fallback is needed
+  // Render Google button (standard flow only)
   useEffect(() => {
     if (showGoogleButton && googleReady && googleButtonRef.current && window.google?.accounts?.id) {
-      console.log('[GoogleAuth] Rendering fallback button');
+      console.log('[GoogleAuth] Rendering Google button');
+      googleButtonRef.current.innerHTML = '';
       window.google.accounts.id.renderButton(
         googleButtonRef.current,
         {
@@ -199,40 +250,40 @@ function Landing() {
   // Story type cards data
   const storyTypes = [
     {
-      icon: Baby,
-      title: "Bedtime Tales",
-      description: "Gentle, calming stories designed to ease children (and adults) into peaceful sleep. Soft narration, ambient sounds, and dreamy adventures.",
-      color: "from-purple-500 to-indigo-600"
+      icon: Sparkles,
+      title: "Mythic & Folklore",
+      description: "Legends, gods, and hidden realms. Reimagine timeless myths or invent new ones from scratch.",
+      color: "from-narrimo-sage/60 to-narrimo-coral/50"
     },
     {
       icon: Sword,
       title: "Epic Adventures",
-      description: "Heroes, quests, and legendary journeys. From dragon-slaying knights to space explorers charting unknown galaxies.",
-      color: "from-orange-500 to-red-600"
+      description: "Heroes, quests, and legendary journeys. From dragon-slaying knights to rogue pilots in distant galaxies.",
+      color: "from-narrimo-coral/50 to-orange-500/40"
     },
     {
       icon: Ghost,
-      title: "Spooky Stories",
-      description: "Thrilling tales with just the right amount of suspense. Adjustable intensity from 'mildly mysterious' to 'edge of your seat'.",
-      color: "from-gray-600 to-purple-800"
+      title: "Thriller & Horror",
+      description: "Suspenseful stories with adjustable intensity, from eerie mystery to full cinematic terror.",
+      color: "from-slate-700/70 to-narrimo-midnight/80"
     },
     {
-      icon: Gamepad2,
-      title: "D&D Campaigns",
-      description: "Full tabletop RPG experiences narrated by AI. Create characters, roll dice, explore dungeons, and make choices that matter.",
-      color: "from-red-600 to-yellow-500"
+      icon: BookOpen,
+      title: "Interactive Fiction",
+      description: "Branching narratives where every choice reshapes the world. Multiple endings, rich characters, and replayable arcs.",
+      color: "from-cyan-500/40 to-narrimo-sage/50"
     },
     {
       icon: Heart,
       title: "Romance & Drama",
-      description: "Heartwarming tales of love, friendship, and human connection. From meet-cutes to sweeping period dramas.",
-      color: "from-pink-500 to-rose-600"
+      description: "Slow burns, high stakes, and intimate character arcs across eras and genres.",
+      color: "from-rose-500/40 to-narrimo-coral/50"
     },
     {
       icon: Compass,
       title: "Mystery & Detective",
-      description: "Whodunits and detective stories where you gather clues and solve the case. Perfect for puzzle lovers.",
-      color: "from-emerald-600 to-teal-700"
+      description: "Puzzle-forward stories where you gather clues, interrogate suspects, and solve the case.",
+      color: "from-emerald-500/40 to-narrimo-sage/60"
     }
   ];
 
@@ -241,124 +292,125 @@ function Landing() {
     {
       icon: Mic,
       title: "Voice-First Design",
-      description: "Just speak naturally. Our real-time conversation agent understands your story preferences without touching your phone. Perfect for lying in bed."
+      description: "Speak naturally and shape stories in real time. Hands-free creation that works anywhere, any time."
     },
     {
       icon: Volume2,
       title: "Professional Narration",
-      description: "Premium AI voices from ElevenLabs bring every character to life. Choose from dozens of narrator styles - from soothing bedtime tones to dramatic storytellers."
+      description: "Premium AI voices bring every character to life. Choose cinematic narrators, intimate whispers, or bold dramatic delivery."
     },
     {
       icon: GitBranch,
       title: "Choose Your Adventure",
-      description: "Interactive branching narratives where your choices shape the story. Voice-activated or tap-to-select decision points throughout."
+      description: "Interactive branching narratives where your choices change the arc. Tap or speak your decisions."
     },
     {
       icon: BookMarked,
       title: "Read-Along Karaoke",
-      description: "Follow along with synchronized text highlighting as the story is narrated. Perfect for improving reading skills or following complex plots."
+      description: "Synchronized text highlighting for clean read-along playback and deep scene review."
     },
     {
       icon: Wand2,
-      title: "Author Styles",
-      description: "Stories crafted in the style of your favorite authors - Tolkien's epic prose, Rowling's whimsy, King's suspense, or Seuss's playful rhymes."
+      title: "Author Style Inspiration",
+      description: "Channel the rhythm and tone of iconic storytelling styles, with policy-aligned inspiration controls."
     },
     {
       icon: Image,
-      title: "Picture Book Mode",
-      description: "AI-generated illustrations accompany each scene, creating a visual storybook experience. Export as a digital keepsake."
+      title: "Visual Scene Mode",
+      description: "AI-generated illustrations can accompany key moments for a cinematic storyboard feel."
     },
     {
       icon: Archive,
-      title: "Story Library",
-      description: "Your personal archive of every story ever told. Re-listen anytime, share favorites, or continue branching stories where you left off."
+      title: "Living Library",
+      description: "Every world, story, and branch saved. Re-listen, remix, or expand later."
     },
     {
       icon: Shield,
       title: "Content Controls",
-      description: "Fine-grained safety settings for every listener. Control intensity levels for suspense, romance, and action. Kid-safe defaults with adult options."
+      description: "Set intensity and safety boundaries per listener, with mature themes where permitted."
     }
   ];
 
   // Pricing tiers
   const pricingTiers = [
     {
-      name: "Dreamer",
+      name: "Explorer",
       price: "$7.99",
       period: "/month",
-      description: "Perfect for occasional storytelling",
+      description: "For occasional story sparks",
       features: [
         "5 stories per month",
         "Up to 10 minutes each",
         "Standard voices",
-        "Story library access",
+        "Library access",
         "1 user profile"
       ],
       highlight: false,
-      cta: "Start Dreaming"
+      cta: "Start Exploring"
     },
     {
-      name: "Storyteller",
+      name: "Creator",
       price: "$14.99",
       period: "/month",
-      description: "Most popular for families",
+      description: "Most popular for weekly creators",
       features: [
         "12 stories per month",
         "Up to 20 minutes each",
         "Premium voices",
-        "Choose Your Adventure",
-        "Picture Book mode",
+        "Interactive branching",
+        "Story Bible access",
         "2 user profiles",
         "Priority generation"
       ],
       highlight: true,
-      cta: "Become a Storyteller"
+      cta: "Go Creator"
     },
     {
-      name: "Family",
+      name: "Studio",
       price: "$24.99",
       period: "/month",
-      description: "Unlimited imagination for everyone",
+      description: "For shared worlds and long arcs",
       features: [
         "25 stories per month",
         "Up to 30 minutes each",
         "All premium features",
-        "D&D Campaign mode",
+        "Extended story length",
         "Custom voice cloning",
         "5 user profiles",
         "Offline downloads"
       ],
       highlight: false,
-      cta: "Start Family Plan"
+      cta: "Build a Studio"
     }
   ];
 
   if (authLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-night-900 via-night-950 to-black">
-        <Loader2 className="w-12 h-12 text-golden-400 animate-spin" />
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-narrimo-midnight via-slate-950 to-black">
+        <Loader2 className="w-12 h-12 text-narrimo-coral animate-spin" />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-night-900 via-night-950 to-black text-white overflow-x-hidden">
+    <div className="min-h-screen bg-gradient-to-b from-narrimo-midnight via-slate-950 to-black text-white overflow-x-hidden">
       {/* Hero Section */}
       <section className="relative min-h-screen flex flex-col items-center justify-center px-6 py-20">
-        {/* Animated stars background */}
-        <div className="absolute inset-0 stars-bg opacity-60 pointer-events-none" />
+        {/* Subtle paper texture background */}
+        <div className="absolute inset-0 paper-bg opacity-60 pointer-events-none" />
 
-        {/* Floating particles */}
+        {/* Floating particles with gradient colors */}
         <div className="absolute inset-0 overflow-hidden pointer-events-none">
           {[...Array(20)].map((_, i) => (
             <div
               key={i}
-              className="absolute w-1 h-1 bg-golden-400/30 rounded-full animate-float"
+              className="absolute w-1 h-1 rounded-full animate-float"
               style={{
                 left: `${Math.random() * 100}%`,
                 top: `${Math.random() * 100}%`,
                 animationDelay: `${Math.random() * 5}s`,
-                animationDuration: `${3 + Math.random() * 4}s`
+                animationDuration: `${3 + Math.random() * 4}s`,
+                backgroundColor: i % 3 === 0 ? 'rgba(255, 111, 97, 0.4)' : i % 3 === 1 ? 'rgba(106, 138, 130, 0.35)' : 'rgba(247, 244, 233, 0.25)'
               }}
             />
           ))}
@@ -368,24 +420,32 @@ function Landing() {
         <div className="relative z-10 text-center max-w-4xl mx-auto">
           <div className="mb-8 animate-float">
             <div className="relative inline-block">
-              <Moon className="w-28 h-28 text-golden-400 mx-auto" />
-              <Sparkles className="w-8 h-8 text-golden-400 absolute -top-2 -right-2 animate-twinkle" />
-              <Sparkles className="w-5 h-5 text-golden-300 absolute bottom-4 -left-4 animate-twinkle" style={{ animationDelay: '1s' }} />
+              <img
+                src={`${BASE_URL}assets/images/newlogo.png`}
+                alt="Narrimo logo"
+                className="h-56 md:h-64 w-auto mx-auto drop-shadow-2xl object-contain"
+                style={{ filter: 'drop-shadow(0 0 30px rgba(255, 111, 97, 0.35))' }}
+                onError={(e) => {
+                  // Fallback to BookOpen icon if image fails
+                  e.target.style.display = 'none';
+                  e.target.nextSibling.style.display = 'block';
+                }}
+              />
+              <div style={{ display: 'none' }}>
+                <BookOpen className="w-28 h-28 text-narrimo-coral mx-auto" />
+              </div>
             </div>
           </div>
 
-          <h1 className="text-5xl md:text-7xl font-bold mb-6">
-            <span className="gradient-text">Storyteller</span>
-          </h1>
+          {/* Logo already contains text "Narrimo" - text element removed to avoid duplication */}
 
-          <p className="text-xl md:text-2xl text-night-200 mb-4 font-light">
-            Where Every Night Becomes an Adventure
+          <p className="text-xl md:text-2xl text-narrimo-cream mb-4 font-light tracking-wide">
+            Narrated worlds, endlessly customizable
           </p>
 
-          <p className="text-lg text-night-400 mb-10 max-w-2xl mx-auto leading-relaxed">
-            AI-powered personalized audio stories with professional narration.
-            Just speak your wishes into the night, and watch as unique tales
-            unfold - perfectly crafted for bedtime, road trips, or quiet moments.
+          <p className="text-lg text-slate-300 mb-10 max-w-2xl mx-auto leading-relaxed">
+            Cinematic audio stories across every genre. Emulate author styles, branch your plot,
+            and co-write in real time with a concierge that remembers your canon.
           </p>
 
           {/* CTA Buttons */}
@@ -411,8 +471,16 @@ function Landing() {
             </button>
 
             <button
+              onClick={() => navigate('/discover')}
+              className="flex items-center gap-2 px-6 py-3 rounded-xl border border-white/20 text-slate-200
+                       hover:border-narrimo-coral/60 hover:text-narrimo-coral transition-colors"
+            >
+              Browse free stories
+            </button>
+
+            <button
               onClick={() => scrollToSection(featuresRef)}
-              className="flex items-center gap-2 px-6 py-3 text-night-300 hover:text-golden-400 transition-colors"
+              className="flex items-center gap-2 px-6 py-3 text-slate-300 hover:text-narrimo-coral transition-colors"
             >
               <span>Learn more</span>
               <ChevronDown className="w-5 h-5 animate-bounce" />
@@ -421,6 +489,46 @@ function Landing() {
 
           {loginError && (
             <p className="text-red-400 text-sm mb-4">{loginError}</p>
+          )}
+          {requiresSecureContext && (
+            <div className="text-amber-300 text-sm mb-4">
+              Google Sign-In needs HTTPS. Open{' '}
+              <a href={secureContextUrl} className="underline hover:text-amber-200">
+                the secure Narrimo URL
+              </a>
+              {' '}to continue.
+            </div>
+          )}
+
+          {showDevLogin && (
+            <div className="flex flex-col sm:flex-row gap-3 justify-center items-center mb-4">
+              <input
+                type="password"
+                value={devTokenInput}
+                onChange={(event) => setDevTokenInput(event.target.value)}
+                placeholder="Dev token"
+                className="w-64 px-4 py-2 rounded-lg bg-slate-900/80 text-slate-100 border border-slate-700
+                         focus:outline-none focus:border-narrimo-coral/80 focus:ring-2 focus:ring-narrimo-coral/20"
+              />
+              <button
+                onClick={handleDevLogin}
+                disabled={loginLoading || devLoginLoading}
+                className="group flex items-center gap-2 px-5 py-2 bg-slate-800/80 text-slate-100 rounded-lg
+                         font-semibold text-sm border border-slate-700 hover:border-narrimo-coral/60 transition-all
+                         hover:shadow-lg hover:shadow-narrimo-coral/10 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {devLoginLoading ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Feather className="w-4 h-4 text-narrimo-sage" />
+                )}
+                <span>Dev Login</span>
+              </button>
+            </div>
+          )}
+
+          {devLoginError && (
+            <p className="text-red-400 text-sm mb-4">{devLoginError}</p>
           )}
 
           {/* Fallback Google Sign-In button (rendered by Google API) */}
@@ -431,12 +539,12 @@ function Landing() {
           )}
 
           {/* Trust indicators */}
-          <div className="flex flex-wrap justify-center gap-6 text-night-500 text-sm">
+          <div className="flex flex-wrap justify-center gap-6 text-slate-500 text-sm">
             <span className="flex items-center gap-1">
               <Check className="w-4 h-4 text-green-500" /> No credit card required
             </span>
             <span className="flex items-center gap-1">
-              <Check className="w-4 h-4 text-green-500" /> Free story included
+              <Check className="w-4 h-4 text-green-500" /> Listen to free stories without a subscription
             </span>
             <span className="flex items-center gap-1">
               <Check className="w-4 h-4 text-green-500" /> Cancel anytime
@@ -446,32 +554,32 @@ function Landing() {
 
         {/* Scroll indicator */}
         <div className="absolute bottom-8 left-1/2 -translate-x-1/2 animate-bounce">
-          <ChevronDown className="w-8 h-8 text-night-500" />
+          <ChevronDown className="w-8 h-8 text-slate-500" />
         </div>
       </section>
 
       {/* Story Types Section */}
-      <section className="py-20 px-6 bg-gradient-to-b from-night-950 to-night-900">
+      <section className="py-20 px-6 bg-gradient-to-b from-slate-950 to-narrimo-midnight">
         <div className="max-w-6xl mx-auto">
           <h2 className="text-4xl font-bold text-center mb-4">
-            <span className="gradient-text">Endless Worlds Await</span>
+            <span className="gradient-text">Worlds Without Limits</span>
           </h2>
-          <p className="text-night-300 text-center mb-16 max-w-2xl mx-auto">
-            From gentle bedtime tales to epic adventures, choose your genre or let our AI surprise you
+          <p className="text-slate-300 text-center mb-16 max-w-2xl mx-auto">
+            Choose a genre, set the tone, and let Narrimo shape the arc.
           </p>
 
           <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
             {storyTypes.map((type, index) => (
               <div
                 key={index}
-                className="group relative p-6 bg-night-800/50 rounded-2xl border border-night-700
-                         hover:border-golden-400/50 transition-all duration-300 hover:-translate-y-1"
+                className="group relative p-6 bg-slate-800/50 rounded-2xl border border-slate-700
+                         hover:border-narrimo-coral/60 transition-all duration-300 hover:-translate-y-1"
               >
                 <div className={`absolute inset-0 bg-gradient-to-br ${type.color} opacity-0
                               group-hover:opacity-10 rounded-2xl transition-opacity duration-300`} />
-                <type.icon className="w-10 h-10 text-golden-400 mb-4" />
+                <type.icon className="w-10 h-10 text-narrimo-coral mb-4" />
                 <h3 className="text-xl font-semibold mb-2 text-white">{type.title}</h3>
-                <p className="text-night-400 text-sm leading-relaxed">{type.description}</p>
+                <p className="text-slate-400 text-sm leading-relaxed">{type.description}</p>
               </div>
             ))}
           </div>
@@ -479,30 +587,30 @@ function Landing() {
       </section>
 
       {/* Features Section */}
-      <section ref={featuresRef} className="py-20 px-6 bg-night-900">
+      <section ref={featuresRef} className="py-20 px-6 bg-narrimo-midnight">
         <div className="max-w-6xl mx-auto">
           <h2 className="text-4xl font-bold text-center mb-4">
-            <span className="gradient-text">Powered by Magic (and AI)</span>
+            <span className="gradient-text">AI, Audio, and Living Worlds</span>
           </h2>
-          <p className="text-night-300 text-center mb-16 max-w-2xl mx-auto">
-            Eight specialized AI agents work together to craft stories that feel truly personal
+          <p className="text-slate-300 text-center mb-16 max-w-2xl mx-auto">
+            A multi-agent system crafts narration, structure, and continuity with human-level pacing.
           </p>
 
           <div className="grid md:grid-cols-2 gap-8">
             {features.map((feature, index) => (
               <div
                 key={index}
-                className="flex gap-4 p-6 bg-night-800/30 rounded-xl border border-night-800
-                         hover:border-night-700 transition-colors"
+                className="flex gap-4 p-6 bg-slate-800/30 rounded-xl border border-slate-800
+                         hover:border-slate-700 transition-colors"
               >
                 <div className="flex-shrink-0">
-                  <div className="w-12 h-12 bg-golden-400/10 rounded-xl flex items-center justify-center">
-                    <feature.icon className="w-6 h-6 text-golden-400" />
-                  </div>
+                <div className="w-12 h-12 bg-narrimo-coral/10 rounded-xl flex items-center justify-center">
+                  <feature.icon className="w-6 h-6 text-narrimo-coral" />
+                </div>
                 </div>
                 <div>
                   <h3 className="text-lg font-semibold mb-2 text-white">{feature.title}</h3>
-                  <p className="text-night-400 text-sm leading-relaxed">{feature.description}</p>
+                  <p className="text-slate-400 text-sm leading-relaxed">{feature.description}</p>
                 </div>
               </div>
             ))}
@@ -511,10 +619,10 @@ function Landing() {
       </section>
 
       {/* How It Works */}
-      <section className="py-20 px-6 bg-gradient-to-b from-night-900 to-night-950">
+      <section className="py-20 px-6 bg-gradient-to-b from-narrimo-midnight to-slate-950">
         <div className="max-w-4xl mx-auto">
           <h2 className="text-4xl font-bold text-center mb-16">
-            <span className="gradient-text">As Simple as Saying Goodnight</span>
+            <span className="gradient-text">From Spark to Story</span>
           </h2>
 
           <div className="space-y-12">
@@ -522,39 +630,39 @@ function Landing() {
               {
                 step: 1,
                 title: "Start with Your Voice",
-                description: "Tap the moon and simply talk. Tell us who's listening, what kind of story you're in the mood for, or just say 'surprise me'.",
+                description: "Tap and talk. Describe characters, mood, or genre, or just say 'surprise me'.",
                 icon: Mic
               },
               {
                 step: 2,
-                title: "Watch the Magic Happen",
-                description: "Our multi-agent AI crafts a unique story just for you - complete with characters, plot twists, and the perfect pacing for your chosen length.",
+                title: "Watch the Arc Form",
+                description: "Narrimo shapes a full story arc with characters, twists, and pacing tuned to your length and intensity.",
                 icon: Wand2
               },
               {
                 step: 3,
-                title: "Listen & Interact",
-                description: "Sit back as professional narration brings your story to life. Make choices when prompted, or just let the tale unfold.",
+                title: "Listen & Steer",
+                description: "Professional narration brings it to life. Choose branches or let the story unfold hands-free.",
                 icon: Headphones
               },
               {
                 step: 4,
-                title: "Save Your Adventures",
-                description: "Every story is saved to your library. Re-listen, explore different branches, or share your favorites.",
+                title: "Save Your Worlds",
+                description: "Everything lands in your library. Re-listen, remix, or expand the canon later.",
                 icon: Archive
               }
             ].map((item, index) => (
               <div key={index} className="flex gap-6 items-start">
-                <div className="flex-shrink-0 w-16 h-16 bg-golden-400/10 rounded-full flex items-center justify-center
-                              border-2 border-golden-400">
-                  <span className="text-2xl font-bold text-golden-400">{item.step}</span>
+                <div className="flex-shrink-0 w-16 h-16 bg-narrimo-coral/10 rounded-full flex items-center justify-center
+                              border-2 border-narrimo-coral">
+                  <span className="text-2xl font-bold text-narrimo-coral">{item.step}</span>
                 </div>
                 <div className="flex-1 pt-3">
                   <h3 className="text-xl font-semibold mb-2 text-white flex items-center gap-3">
                     {item.title}
-                    <item.icon className="w-5 h-5 text-golden-400" />
+                    <item.icon className="w-5 h-5 text-narrimo-coral" />
                   </h3>
-                  <p className="text-night-400 leading-relaxed">{item.description}</p>
+                  <p className="text-slate-400 leading-relaxed">{item.description}</p>
                 </div>
               </div>
             ))}
@@ -563,39 +671,38 @@ function Landing() {
       </section>
 
       {/* Voice Agent Highlight */}
-      <section className="py-20 px-6 bg-night-950">
+      <section className="py-20 px-6 bg-slate-950">
         <div className="max-w-5xl mx-auto">
-          <div className="bg-gradient-to-br from-night-800 to-night-900 rounded-3xl p-8 md:p-12 border border-night-700">
+          <div className="bg-gradient-to-br from-slate-800 to-slate-900 rounded-3xl p-8 md:p-12 border border-slate-700">
             <div className="flex flex-col md:flex-row gap-8 items-center">
               <div className="flex-1">
                 <div className="flex items-center gap-3 mb-4">
-                  <MessageCircle className="w-8 h-8 text-golden-400" />
-                  <span className="text-sm text-golden-400 font-semibold uppercase tracking-wide">
+                  <MessageCircle className="w-8 h-8 text-narrimo-coral" />
+                  <span className="text-sm text-narrimo-coral font-semibold uppercase tracking-wide">
                     Real-Time Conversation
                   </span>
                 </div>
                 <h2 className="text-3xl font-bold mb-4 text-white">
                   Your Personal Story Concierge
                 </h2>
-                <p className="text-night-300 mb-6 leading-relaxed">
+                <p className="text-slate-300 mb-6 leading-relaxed">
                   No menus. No typing. Just natural conversation. Our voice agent understands context,
-                  remembers your preferences, and helps you design the perfect story - all while you're
-                  getting comfortable in bed.
+                  remembers your preferences, and helps you design the perfect story on the fly.
                 </p>
-                <p className="text-night-400 italic">
+                <p className="text-slate-400 italic">
                   "I want a story about a brave knight... but make it funny, and not too scary...
                   oh, and can there be a talking dog?"
                 </p>
-                <p className="text-golden-400 mt-4 font-medium">
+                <p className="text-narrimo-coral mt-4 font-medium">
                   "Perfect! I'll create a comedic medieval adventure with Sir Bumblesworth
                   and his wise-cracking canine companion, Biscuit. Ready to begin?"
                 </p>
               </div>
               <div className="flex-shrink-0">
-                <div className="w-48 h-48 bg-night-800 rounded-full flex items-center justify-center
-                              border-4 border-golden-400/30 relative">
-                  <Moon className="w-20 h-20 text-golden-400 animate-pulse" />
-                  <div className="absolute inset-0 rounded-full border-4 border-golden-400/20 animate-ping" />
+                <div className="w-48 h-48 bg-slate-800 rounded-full flex items-center justify-center
+                              border-4 border-narrimo-coral/30 relative">
+                  <BookOpen className="w-20 h-20 text-narrimo-coral animate-pulse" />
+                  <div className="absolute inset-0 rounded-full border-4 border-narrimo-coral/20 animate-ping" />
                 </div>
               </div>
             </div>
@@ -604,12 +711,12 @@ function Landing() {
       </section>
 
       {/* Pricing Section */}
-      <section ref={pricingRef} className="py-20 px-6 bg-gradient-to-b from-night-950 to-night-900">
+      <section ref={pricingRef} className="py-20 px-6 bg-gradient-to-b from-slate-950 to-slate-900">
         <div className="max-w-6xl mx-auto">
           <h2 className="text-4xl font-bold text-center mb-4">
             <span className="gradient-text">Choose Your Journey</span>
           </h2>
-          <p className="text-night-300 text-center mb-16 max-w-2xl mx-auto">
+          <p className="text-slate-300 text-center mb-16 max-w-2xl mx-auto">
             Start free with one story. Upgrade when you're ready for more adventures.
           </p>
 
@@ -619,28 +726,28 @@ function Landing() {
                 key={index}
                 className={`relative p-8 rounded-2xl border transition-all duration-300 hover:-translate-y-2
                           ${tier.highlight
-                            ? 'bg-gradient-to-b from-golden-400/10 to-night-800 border-golden-400 shadow-xl shadow-golden-400/20'
-                            : 'bg-night-800/50 border-night-700 hover:border-night-600'
+                            ? 'bg-gradient-to-b from-narrimo-coral/10 to-slate-800 border-narrimo-coral shadow-xl shadow-narrimo-coral/20'
+                            : 'bg-slate-800/50 border-slate-700 hover:border-slate-600'
                           }`}
               >
                 {tier.highlight && (
-                  <div className="absolute -top-4 left-1/2 -translate-x-1/2 px-4 py-1 bg-golden-400
-                                text-night-900 text-sm font-semibold rounded-full">
+                  <div className="absolute -top-4 left-1/2 -translate-x-1/2 px-4 py-1 bg-narrimo-coral
+                                text-narrimo-midnight text-sm font-semibold rounded-full">
                     Most Popular
                   </div>
                 )}
 
                 <h3 className="text-2xl font-bold mb-2 text-white">{tier.name}</h3>
-                <p className="text-night-400 text-sm mb-4">{tier.description}</p>
+                <p className="text-slate-400 text-sm mb-4">{tier.description}</p>
 
                 <div className="mb-6">
-                  <span className="text-4xl font-bold text-golden-400">{tier.price}</span>
-                  <span className="text-night-400">{tier.period}</span>
+                  <span className="text-4xl font-bold text-narrimo-coral">{tier.price}</span>
+                  <span className="text-slate-400">{tier.period}</span>
                 </div>
 
                 <ul className="space-y-3 mb-8">
                   {tier.features.map((feature, i) => (
-                    <li key={i} className="flex items-center gap-2 text-night-300 text-sm">
+                    <li key={i} className="flex items-center gap-2 text-slate-300 text-sm">
                       <Check className="w-4 h-4 text-green-500 flex-shrink-0" />
                       <span>{feature}</span>
                     </li>
@@ -651,8 +758,8 @@ function Landing() {
                   onClick={handleGoogleLogin}
                   className={`w-full py-3 rounded-xl font-semibold transition-all duration-300
                             ${tier.highlight
-                              ? 'bg-golden-400 text-night-900 hover:bg-golden-300'
-                              : 'bg-night-700 text-white hover:bg-night-600'
+                              ? 'bg-narrimo-coral text-narrimo-midnight hover:bg-[#ff8579]'
+                              : 'bg-slate-700 text-white hover:bg-slate-600'
                             }`}
                 >
                   {tier.cta}
@@ -661,19 +768,19 @@ function Landing() {
             ))}
           </div>
 
-          <p className="text-center text-night-500 text-sm mt-8">
-            All plans include a 7-day free trial. Cancel anytime.
+          <p className="text-center text-slate-500 text-sm mt-8">
+            Listen to free stories without a subscription. All plans include a 7-day free trial. Cancel anytime.
           </p>
         </div>
       </section>
 
       {/* Roadmap Preview */}
-      <section className="py-20 px-6 bg-night-900">
+      <section className="py-20 px-6 bg-slate-900">
         <div className="max-w-4xl mx-auto text-center">
           <h2 className="text-4xl font-bold mb-4">
             <span className="gradient-text">Coming Soon</span>
           </h2>
-          <p className="text-night-300 mb-12 max-w-2xl mx-auto">
+          <p className="text-slate-300 mb-12 max-w-2xl mx-auto">
             We're just getting started. Here's what's on the horizon...
           </p>
 
@@ -681,12 +788,12 @@ function Landing() {
             {[
               { icon: Users, label: "Multiplayer Stories" },
               { icon: Music, label: "Custom Soundtracks" },
-              { icon: Gamepad2, label: "Voice-Controlled Games" },
+              { icon: Feather, label: "Write Your Own Endings" },
               { icon: Star, label: "Celebrity Voices" }
             ].map((item, index) => (
-              <div key={index} className="p-4 bg-night-800/30 rounded-xl border border-night-800">
-                <item.icon className="w-8 h-8 text-golden-400/60 mx-auto mb-2" />
-                <p className="text-night-400 text-sm">{item.label}</p>
+              <div key={index} className="p-4 bg-slate-800/30 rounded-xl border border-slate-800">
+                <item.icon className="w-8 h-8 text-narrimo-sage/80 mx-auto mb-2" />
+                <p className="text-slate-400 text-sm">{item.label}</p>
               </div>
             ))}
           </div>
@@ -694,49 +801,53 @@ function Landing() {
       </section>
 
       {/* Final CTA */}
-      <section className="py-20 px-6 bg-gradient-to-b from-night-900 to-night-950">
+      <section className="py-20 px-6 bg-gradient-to-b from-slate-900 to-slate-950">
         <div className="max-w-3xl mx-auto text-center">
-          <Moon className="w-16 h-16 text-golden-400 mx-auto mb-6" />
+          <BookOpen className="w-16 h-16 text-narrimo-coral mx-auto mb-6" />
           <h2 className="text-4xl font-bold mb-4 text-white">
-            Ready to Begin Your Story?
+            Ready to Build a World?
           </h2>
-          <p className="text-night-300 mb-8 text-lg">
-            Your first adventure is on us. No credit card required.
+          <p className="text-slate-300 mb-8 text-lg">
+            Your first listen is on us. No credit card required.
           </p>
           <button
             onClick={handleGoogleLogin}
             disabled={loginLoading}
-            className="inline-flex items-center gap-3 px-10 py-5 bg-golden-400 text-night-900
+            className="inline-flex items-center gap-3 px-10 py-5 bg-narrimo-coral text-narrimo-midnight
                      rounded-xl font-bold text-xl shadow-lg hover:shadow-xl transition-all
-                     duration-300 hover:scale-105 disabled:opacity-50"
+                     duration-300 hover:scale-105 hover:bg-[#ff8579] disabled:opacity-50"
           >
             {loginLoading ? (
               <Loader2 className="w-6 h-6 animate-spin" />
             ) : (
               <Play className="w-6 h-6" />
             )}
-            <span>Start Your Free Story</span>
+            <span>Start Listening Free</span>
           </button>
         </div>
       </section>
 
       {/* Footer */}
-      <footer className="py-12 px-6 bg-night-950 border-t border-night-800">
+      <footer className="py-12 px-6 bg-slate-950 border-t border-slate-800">
         <div className="max-w-6xl mx-auto">
           <div className="flex flex-col md:flex-row justify-between items-center gap-6">
-            <div className="flex items-center gap-2">
-              <Moon className="w-6 h-6 text-golden-400" />
-              <span className="font-bold text-white">Storyteller</span>
+             <div className="flex items-center gap-2">
+               <img
+                 src={`${BASE_URL}assets/images/newlogo.png`}
+                 alt="Narrimo logo"
+                 className="h-12 md:h-14 w-auto object-contain"
+               />
+               <span className="font-bold text-white">Narrimo</span>
+             </div>
+
+            <div className="flex gap-6 text-slate-400 text-sm">
+              <a href="#" className="hover:text-narrimo-coral transition-colors">Privacy</a>
+              <a href="#" className="hover:text-narrimo-coral transition-colors">Terms</a>
+              <a href="#" className="hover:text-narrimo-coral transition-colors">Support</a>
+              <a href="#" className="hover:text-narrimo-coral transition-colors">Contact</a>
             </div>
 
-            <div className="flex gap-6 text-night-400 text-sm">
-              <a href="#" className="hover:text-golden-400 transition-colors">Privacy</a>
-              <a href="#" className="hover:text-golden-400 transition-colors">Terms</a>
-              <a href="#" className="hover:text-golden-400 transition-colors">Support</a>
-              <a href="#" className="hover:text-golden-400 transition-colors">Contact</a>
-            </div>
-
-            <p className="text-night-500 text-sm">
+            <p className="text-slate-500 text-sm">
               Made with AI and imagination
             </p>
           </div>

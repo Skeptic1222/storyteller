@@ -2,9 +2,10 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { apiCall } from '../config';
+import Layout, { PageContainer, PageHeader } from '../components/Layout';
 import {
   CreditCard, Check, Star, Crown, Users, Sparkles,
-  BookOpen, Wand2, ArrowLeft, AlertCircle
+  BookOpen, Wand2, AlertCircle
 } from 'lucide-react';
 
 function Subscription() {
@@ -80,44 +81,43 @@ function Subscription() {
     family: Users
   };
 
+  const tierLabels = {
+    dreamer: 'Explorer',
+    storyteller: 'Creator',
+    family: 'Studio'
+  };
+
   const tierColors = {
-    dreamer: 'from-purple-500 to-purple-700',
-    storyteller: 'from-golden-400 to-amber-600',
-    family: 'from-emerald-400 to-emerald-600'
+    dreamer: 'from-narrimo-sage to-slate-700',
+    storyteller: 'from-narrimo-coral to-[#ff8579]',
+    family: 'from-slate-700 to-narrimo-sage'
   };
 
   return (
-    <div className="min-h-screen p-4 md:p-8">
-      <div className="max-w-5xl mx-auto">
+    <Layout>
+      <PageContainer maxWidth="6xl" className="pt-20 pb-8">
         {/* Header */}
-        <div className="flex items-center gap-4 mb-8">
-          <button
-            onClick={() => navigate('/')}
-            className="p-2 hover:bg-night-800 rounded-lg text-night-400 hover:text-white transition-colors"
-          >
-            <ArrowLeft className="w-5 h-5" />
-          </button>
-          <div>
-            <h1 className="text-2xl font-bold text-white">Subscription Plans</h1>
-            <p className="text-night-400">Choose the perfect plan for your storytelling adventures</p>
-          </div>
-        </div>
+        <PageHeader
+          title="Subscription Plans"
+          subtitle="Choose the plan that fits your creative pace"
+          backPath="/"
+        />
 
         {/* Current Plan */}
         {subscription && (
-          <div className="bg-night-800/50 rounded-xl p-6 border border-night-700 mb-8">
+          <div className="bg-slate-800/50 rounded-xl p-6 border border-slate-700 mb-8">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-night-400 mb-1">Current Plan</p>
-                <p className="text-xl font-bold text-white capitalize">{subscription.tier}</p>
+                <p className="text-sm text-slate-400 mb-1">Current Plan</p>
+                <p className="text-xl font-bold text-white capitalize">{tierLabels[subscription.tier] || subscription.tier}</p>
               </div>
               {usage && (
                 <div className="text-right">
-                  <p className="text-sm text-night-400 mb-1">This Month's Usage</p>
+                  <p className="text-sm text-slate-400 mb-1">This Month's Usage</p>
                   <p className="text-white">
                     {usage.storiesGenerated} / {usage.storiesLimit} stories
                   </p>
-                  <p className="text-night-400 text-sm">
+                  <p className="text-slate-400 text-sm">
                     {usage.minutesUsed?.toFixed(1)} / {usage.minutesLimit} min narration
                   </p>
                 </div>
@@ -143,7 +143,7 @@ function Subscription() {
         {/* Plans Grid */}
         <div className="grid md:grid-cols-3 gap-6">
           {loading ? (
-            <div className="col-span-3 text-center py-12 text-night-400">
+            <div className="col-span-3 text-center py-12 text-slate-400">
               Loading plans...
             </div>
           ) : (
@@ -151,16 +151,17 @@ function Subscription() {
               const Icon = tierIcons[plan.id] || Star;
               const isCurrentPlan = subscription?.tier === plan.id;
               const gradient = tierColors[plan.id] || 'from-gray-500 to-gray-700';
+              const displayName = tierLabels[plan.id] || plan.name;
 
               return (
                 <div
                   key={plan.id}
-                  className={`relative bg-night-800/50 rounded-xl border overflow-hidden
-                             ${isCurrentPlan ? 'border-golden-400' : 'border-night-700'}
-                             ${plan.popular ? 'ring-2 ring-golden-400/50' : ''}`}
+                  className={`relative bg-slate-800/50 rounded-xl border overflow-hidden
+                             ${isCurrentPlan ? 'border-narrimo-coral' : 'border-slate-700'}
+                             ${plan.popular ? 'ring-2 ring-narrimo-coral/40' : ''}`}
                 >
                   {plan.popular && (
-                    <div className="absolute top-0 right-0 bg-golden-400 text-night-900 text-xs font-bold
+                    <div className="absolute top-0 right-0 bg-narrimo-coral text-narrimo-midnight text-xs font-bold
                                    px-3 py-1 rounded-bl-lg">
                       MOST POPULAR
                     </div>
@@ -169,7 +170,7 @@ function Subscription() {
                   {/* Header */}
                   <div className={`p-6 bg-gradient-to-r ${gradient}`}>
                     <Icon className="w-8 h-8 text-white mb-3" />
-                    <h3 className="text-xl font-bold text-white">{plan.name}</h3>
+                    <h3 className="text-xl font-bold text-white">{displayName}</h3>
                     <div className="flex items-baseline gap-1 mt-2">
                       <span className="text-3xl font-bold text-white">${plan.price}</span>
                       <span className="text-white/70">/month</span>
@@ -180,7 +181,7 @@ function Subscription() {
                   <div className="p-6">
                     <ul className="space-y-3 mb-6">
                       {plan.features.map((feature, idx) => (
-                        <li key={idx} className="flex items-start gap-2 text-night-300">
+                        <li key={idx} className="flex items-start gap-2 text-slate-300">
                           <Check className="w-5 h-5 text-emerald-400 flex-shrink-0 mt-0.5" />
                           <span>{feature}</span>
                         </li>
@@ -188,7 +189,7 @@ function Subscription() {
                     </ul>
 
                     {isCurrentPlan ? (
-                      <div className="w-full py-3 bg-night-700 rounded-lg text-center text-night-400 font-medium">
+                      <div className="w-full py-3 bg-slate-700 rounded-lg text-center text-slate-400 font-medium">
                         Current Plan
                       </div>
                     ) : (
@@ -197,8 +198,8 @@ function Subscription() {
                         disabled={!paypalConfigured}
                         className={`w-full py-3 rounded-lg font-medium transition-colors
                                   ${paypalConfigured
-                                    ? 'bg-golden-400 hover:bg-golden-300 text-night-900'
-                                    : 'bg-night-700 text-night-400 cursor-not-allowed'}`}
+                                    ? 'bg-narrimo-coral hover:bg-[#ff8579] text-narrimo-midnight'
+                                    : 'bg-slate-700 text-slate-400 cursor-not-allowed'}`}
                       >
                         {paypalConfigured ? 'Subscribe' : 'Coming Soon'}
                       </button>
@@ -211,28 +212,28 @@ function Subscription() {
         </div>
 
         {/* Free Tier Info */}
-        <div className="mt-8 bg-night-800/30 rounded-xl p-6 border border-night-700">
+        <div className="mt-8 bg-slate-800/30 rounded-xl p-6 border border-slate-700">
           <h3 className="text-lg font-semibold text-white mb-4">Free Tier</h3>
-          <div className="flex flex-wrap gap-6 text-night-300">
+          <div className="flex flex-wrap gap-6 text-slate-300">
             <div className="flex items-center gap-2">
-              <BookOpen className="w-4 h-4 text-golden-400" />
+              <BookOpen className="w-4 h-4 text-narrimo-coral" />
               <span>1 story per month</span>
             </div>
             <div className="flex items-center gap-2">
-              <Sparkles className="w-4 h-4 text-golden-400" />
+              <Sparkles className="w-4 h-4 text-narrimo-coral" />
               <span>10 minutes of narration</span>
             </div>
             <div className="flex items-center gap-2">
-              <Users className="w-4 h-4 text-golden-400" />
+              <Users className="w-4 h-4 text-narrimo-coral" />
               <span>1 user profile</span>
             </div>
           </div>
-          <p className="text-night-400 text-sm mt-4">
-            Perfect for trying out Storyteller. Upgrade anytime for more stories and features!
+          <p className="text-slate-400 text-sm mt-4">
+            Perfect for trying Narrimo. Upgrade anytime for more stories and features!
           </p>
         </div>
-      </div>
-    </div>
+      </PageContainer>
+    </Layout>
   );
 }
 

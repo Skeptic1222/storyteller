@@ -13,6 +13,7 @@
 
 import { pool } from '../database/pool.js';
 import OpenAI from 'openai';
+import { cache } from './cache.js';
 
 // Initialize OpenAI for Teacher agent
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -29,8 +30,9 @@ const storyVoiceAssignments = new Map();
 /**
  * Clear voice assignment tracking for a story
  */
-export function clearStoryAssignments(sessionId) {
+export async function clearStoryAssignments(sessionId) {
   storyVoiceAssignments.delete(sessionId);
+  await cache.invalidateVoiceAssignments(sessionId);
 }
 
 /**
@@ -898,6 +900,10 @@ async function saveVoiceAssignments(sessionId, voiceCast) {
       }
 
       await client.query('COMMIT');
+
+      // Update cache with new assignments
+      await cache.setVoiceAssignments(sessionId, Object.fromEntries(voiceCast));
+
       console.log(`[VoiceSelection] Saved ${voiceCast.size} voice assignments for session ${sessionId}`);
     } catch (error) {
       await client.query('ROLLBACK');
@@ -911,10 +917,29 @@ async function saveVoiceAssignments(sessionId, voiceCast) {
 }
 
 /**
- * Load voice assignments from database
+ * Load voice assignments from database with Redis caching
  */
 export async function loadVoiceAssignments(sessionId) {
   try {
+    // Check Redis cache first
+    const cached = await cache.getVoiceAssignments(sessionId);
+    if (cached) {
+      console.log(`[VoiceSelection] Loaded voice assignments from cache for ${sessionId}`);
+      const assignments = new Map(Object.entries(cached));
+
+      // Update in-memory tracking
+      if (assignments.size > 0) {
+        const voiceMap = new Map();
+        for (const [name, voice] of assignments) {
+          voiceMap.set(voice.voiceId, name);
+        }
+        storyVoiceAssignments.set(sessionId, voiceMap);
+      }
+
+      return assignments;
+    }
+
+    // Fetch from database
     const result = await pool.query(`
       SELECT
         sva.character_name,
@@ -949,6 +974,9 @@ export async function loadVoiceAssignments(sessionId) {
         voiceMap.set(voice.voiceId, name);
       }
       storyVoiceAssignments.set(sessionId, voiceMap);
+
+      // Cache in Redis (convert Map to object for serialization)
+      await cache.setVoiceAssignments(sessionId, Object.fromEntries(assignments));
     }
 
     return assignments;

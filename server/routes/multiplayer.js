@@ -6,8 +6,10 @@
 import { Router } from 'express';
 import { MultiplayerService } from '../services/multiplayerService.js';
 import { logger } from '../utils/logger.js';
+import { wrapRoutes, NotFoundError, ValidationError } from '../middleware/errorHandler.js';
 
 const router = Router();
+wrapRoutes(router); // Auto-wrap async handlers for error catching
 
 /**
  * GET /api/multiplayer/:sessionId
