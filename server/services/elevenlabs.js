@@ -530,6 +530,7 @@ export const ELEVENLABS_MODELS = {
     supports_speed: false,
     supports_timestamps: true,
     supports_audio_tags: true,  // NEW: Natural language voice direction
+    supports_speaker_boost: false,  // P2.3: V3 does NOT support speaker_boost
     languages: 32,
     latency: 'medium',  // ~58% slower than v2, but quality is 300% better
     cost_multiplier: 1.0,
@@ -544,6 +545,7 @@ export const ELEVENLABS_MODELS = {
     supports_speed: false,
     supports_timestamps: true,
     supports_audio_tags: false,
+    supports_speaker_boost: true,  // P2.3: V2 DOES support speaker_boost
     languages: 29,
     latency: 'medium',
     cost_multiplier: 1.0,
@@ -557,6 +559,7 @@ export const ELEVENLABS_MODELS = {
     supports_style: true,
     supports_speed: true,
     supports_timestamps: true,
+    supports_speaker_boost: true,  // P2.3: Turbo DOES support speaker_boost
     languages: 32,
     latency: 'low',
     cost_multiplier: 0.5,
@@ -570,6 +573,7 @@ export const ELEVENLABS_MODELS = {
     supports_style: false,
     supports_speed: true,
     supports_timestamps: true,
+    supports_speaker_boost: true,  // P2.3: Flash DOES support speaker_boost
     languages: 32,
     latency: 'very_low',
     cost_multiplier: 0.25,
@@ -583,6 +587,7 @@ export const ELEVENLABS_MODELS = {
     supports_style: false,
     supports_speed: false,
     supports_timestamps: false,
+    supports_speaker_boost: false,  // P2.3: Legacy monolingual does NOT support speaker_boost
     languages: 1,
     latency: 'low',
     cost_multiplier: 0.5,
@@ -933,18 +938,35 @@ export class ElevenLabsService {
 
       // Speed only applies to turbo and flash models
       const speed = options.speed ?? preset?.speed ?? 1.0;
+
+      // P2.3: Only include speaker_boost if model supports it (V3 does NOT)
       const useSpeakerBoost = options.use_speaker_boost ?? tierDefaults.use_speaker_boost;
 
       // Build voice settings object
       const voiceSettings = {
         stability,
-        similarity_boost: similarityBoost,
-        use_speaker_boost: useSpeakerBoost
+        similarity_boost: similarityBoost
       };
+
+      // P2.3: Only add speaker_boost if model supports it (V2/Turbo/Flash yes, V3 no)
+      if (modelConfig.supports_speaker_boost) {
+        voiceSettings.use_speaker_boost = useSpeakerBoost;
+      }
 
       // Only add style if model supports it
       if (modelConfig.supports_style) {
         voiceSettings.style = style;
+      }
+
+      // P2.3: Add seed parameter for voice consistency across sessions
+      // Generate deterministic seed based on sessionId + voiceId + segment for reproducibility
+      if (options.seed !== undefined) {
+        voiceSettings.seed = options.seed;
+      } else if (options.sessionId && voice) {
+        // Create deterministic seed from session + voice (reproducible across calls)
+        const seedData = `${options.sessionId}:${voice}:${quality_tier}`;
+        const seedHash = crypto.createHash('sha256').update(seedData).digest();
+        voiceSettings.seed = seedHash.readUInt32BE(0); // Use first 4 bytes as uint32 seed
       }
 
       logger.info(`[ElevenLabs] Generating TTS: model=${modelId}, tier=${quality_tier}, stability=${stability}, style=${style}`);
@@ -1757,23 +1779,31 @@ export class ElevenLabsService {
 
     try {
       const preset = options.preset ? VOICE_PRESETS[options.preset] : null;
+      const modelConfig = getModelConfig(modelId);
 
       // ElevenLabs TTD (timestamps) API only accepts stability: 0.0, 0.5, or 1.0
       // Quantize to nearest valid value
       const rawStability = options.stability ?? preset?.stability ?? 0.5;
       const ttdStability = rawStability <= 0.25 ? 0.0 : rawStability >= 0.75 ? 1.0 : 0.5;
 
+      // P2.3: Build voice settings with conditional speaker_boost support
+      const voiceSettings = {
+        stability: ttdStability, // Must be 0.0, 0.5, or 1.0 for TTD endpoint
+        similarity_boost: options.similarity_boost ?? preset?.similarity_boost ?? 0.75,
+        style: options.style ?? preset?.style ?? 0.3
+      };
+
+      // P2.3: Only add speaker_boost if model supports it (V3 does NOT)
+      if (modelConfig.supports_speaker_boost) {
+        voiceSettings.use_speaker_boost = options.use_speaker_boost !== false;
+      }
+
       const response = await axios.post(
         `${ELEVENLABS_API_URL}/text-to-speech/${voice}/with-timestamps`,
         {
           text: processedText,  // Use processed text with Audio Tags
           model_id: modelId,
-          voice_settings: {
-            stability: ttdStability, // Must be 0.0, 0.5, or 1.0 for TTD endpoint
-            similarity_boost: options.similarity_boost ?? preset?.similarity_boost ?? 0.75,
-            style: options.style ?? preset?.style ?? 0.3,
-            use_speaker_boost: options.use_speaker_boost !== false
-          },
+          voice_settings: voiceSettings,
           output_format: 'mp3_44100_128' // CD quality
         },
         {
