@@ -680,7 +680,8 @@ router.post('/:id/generate-outline', requireAuth, validateSessionId, requireSess
     });
 
   } catch (error) {
-    logger.error('Error generating outline:', error);
+    const { id } = req.params;
+    logger.error(`[GenerateOutline] Error for session ${id}:`, error.message);
     // FIX: Pass specific error message to client for better UX
     const clientMessage = error.message.includes('Outline generation failed')
       ? error.message
@@ -718,7 +719,8 @@ router.post('/:id/continue', requireAuth, validateSessionId, requireSessionOwner
     });
 
   } catch (error) {
-    logger.error('Error continuing story:', error);
+    const { id } = req.params;
+    logger.error(`[ContinueStory] Error for session ${id}:`, error.message);
     res.status(500).json({ error: 'Failed to generate next scene' });
   }
 });
@@ -743,7 +745,8 @@ router.post('/:id/generate-audio/:sceneId', requireAuth, validateSessionId, requ
     });
 
   } catch (error) {
-    logger.error('Error generating scene audio:', error);
+    const { id, sceneId } = req.params;
+    logger.error(`[GenerateAudio] Error for session ${id}, scene ${sceneId}:`, error.message);
     res.status(500).json({ error: 'Failed to generate audio' });
   }
 });

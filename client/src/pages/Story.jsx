@@ -729,18 +729,33 @@ function Story() {
     outlineContinuePendingRef.current = true;
     try {
       const response = await apiCall(`/stories/${sessionId}/generate-outline`, { method: 'POST' });
-      if (!response.ok && (response.status === 401 || response.status === 403)) {
+      if (!response.ok) {
         outlineContinuePendingRef.current = false;
         setIsGenerating(false);
         setGenerationProgress({ step: 0, percent: 0, message: '' });
-        setAudioError('Sign in to generate stories.');
+
+        // Handle auth errors
+        if (response.status === 401 || response.status === 403) {
+          setAudioError('Sign in to generate stories.');
+          return;
+        }
+
+        // Handle other HTTP errors
+        try {
+          const errorData = await response.json();
+          const errorMessage = errorData.error?.message || errorData.error || `Server error: ${response.statusText}`;
+          setAudioError(`Failed to generate story: ${errorMessage}`);
+        } catch {
+          setAudioError(`Failed to generate story: ${response.statusText || 'Unknown error'}`);
+        }
         return;
       }
-      if (!response.ok) {
-        console.warn('[Story] Generate outline request returned non-ok status:', response.status);
-      }
     } catch (error) {
-      console.warn('[Story] Generate outline request failed:', error);
+      outlineContinuePendingRef.current = false;
+      setIsGenerating(false);
+      setGenerationProgress({ step: 0, percent: 0, message: '' });
+      const errorMsg = error?.message || 'Network error occurred';
+      setAudioError(`Failed to generate story: ${errorMsg}`);
     }
   }, [sessionId]);
 

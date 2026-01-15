@@ -1,0 +1,353 @@
+/**
+ * useStorySocket Hook
+ * Handles all Socket.IO event subscriptions for the Story page.
+ * Encapsulates audio-ready, choice handling, and error recovery logic.
+ *
+ * Extracted from Story.jsx for maintainability.
+ */
+
+import { useEffect } from 'react';
+import { audioLog, socketLog, sfxLog } from '../utils/clientLogger';
+
+/**
+ * @param {object} options
+ * @param {object} options.socket - Socket.IO socket instance
+ * @param {string} options.sessionId - Current session ID
+ * @param {object} options.session - Session data
+ * @param {object} options.audioContext - Audio context from useAudio hook
+ * @param {object} options.sfxContext - SFX context (playSfxWithState, sfxEnabledRef, sfxDetailsRef)
+ * @param {object} options.stateSetters - State setter functions
+ * @param {object} options.refs - Ref objects (sceneAudioStartedRef)
+ * @param {object} options.callbacks - Callback functions (continueStory, resetLaunch)
+ * @param {array} options.pendingChoices - Current pending choices
+ * @param {boolean} options.launchActive - Whether launch sequence is active
+ */
+
+// Track last progress update for stall detection
+let lastProgressUpdateTime = 0;
+let stallDetectionTimeout = null;
+
+export function useStorySocket({
+  socket,
+  sessionId,
+  session,
+  audioContext,
+  sfxContext,
+  stateSetters,
+  refs,
+  callbacks,
+  pendingChoices,
+  launchActive
+}) {
+  const { playAudio, queueAudio, pause, resume } = audioContext;
+  const { playSfxWithState, sfxEnabledRef, sfxDetailsRef } = sfxContext;
+  const {
+    setIntroAudioQueued,
+    setSceneAudioStarted,
+    setWordTimings,
+    setSceneImages,
+    setSceneAudioQueued,
+    setIsAudioQueued,
+    setChoiceAudioPlaying,
+    setChoices,
+    setPendingChoices,
+    setIsGenerating,
+    setGenerationProgress,
+    setChoiceHistory,
+    setAudioError
+  } = stateSetters;
+  const { sceneAudioStartedRef } = refs;
+  const { continueStory, resetLaunch } = callbacks;
+
+  useEffect(() => {
+    if (!socket) return;
+
+    // Handle intro audio (title/synopsis narration) - QUEUE instead of play immediately
+    // This ensures intro plays fully before scene audio starts
+    const handleIntroAudioReady = (data) => {
+      socketLog.info(`RECV: intro-audio-ready | hasAudio: ${!!data.audio} | format: ${data.format} | bytes: ${data.audio?.length || 0}`);
+      audioLog.info('STATE: IDLE → INTRO_QUEUED | introAudioQueued=true');
+      setIntroAudioQueued(true);
+      setSceneAudioStarted(false);
+      // CRITICAL: Also reset the ref so scene audio onStart callback can fire
+      sceneAudioStartedRef.current = false;
+      // Use onStart to log when intro begins, onEnd to clear flag when intro finishes
+      queueAudio(
+        data.audio,
+        data.format,
+        // onStart callback
+        () => {
+          audioLog.info('STATE: INTRO_QUEUED → INTRO_PLAYING | intro audio started');
+        },
+        // onEnd callback - CRITICAL: clear introAudioQueued when intro finishes
+        () => {
+          audioLog.info('STATE: INTRO_PLAYING → INTRO_COMPLETE | introAudioQueued=false');
+          setIntroAudioQueued(false);
+        }
+      );
+    };
+
+    // Handle scene audio - QUEUE to ensure it plays after intro finishes
+    const handleAudioReady = (data) => {
+      socketLog.info(`RECV: audio-ready | hasTimings: ${!!data.wordTimings} | wordCount: ${data.wordTimings?.words?.length || 0} | bytes: ${data.audio?.length || 0} | images: ${data.sceneImages?.length || 0}`);
+
+      // Clear stall detection since we got audio (generation succeeded)
+      if (stallDetectionTimeout) {
+        clearTimeout(stallDetectionTimeout);
+        stallDetectionTimeout = null;
+      }
+
+      // Store word timings for karaoke/read-along feature
+      if (data.wordTimings) {
+        const wordCount = data.wordTimings.words?.length || data.wordTimings.word_count || 0;
+        const totalDuration = data.wordTimings.total_duration_ms || 0;
+        audioLog.info(`WORD_TIMINGS_DEBUG | type: ${typeof data.wordTimings} | count: ${wordCount} | has_words_array: ${!!data.wordTimings.words} | total_duration_ms: ${totalDuration}`);
+        if (data.wordTimings.words && data.wordTimings.words.length > 0) {
+          const firstWord = data.wordTimings.words[0];
+          audioLog.info(`WORD_TIMINGS_FIRST | text: "${firstWord.text}" | start_ms: ${firstWord.start_ms} | end_ms: ${firstWord.end_ms}`);
+        }
+        setWordTimings(data.wordTimings);
+      } else {
+        audioLog.info('WORD_TIMINGS_DEBUG | none provided - data.wordTimings is null/undefined');
+        setWordTimings(null);
+      }
+
+      // Store scene images for picture book display
+      if (data.sceneImages && data.sceneImages.length > 0) {
+        audioLog.info(`SCENE_IMAGES | count: ${data.sceneImages.length}`);
+        setSceneImages(data.sceneImages);
+      } else {
+        setSceneImages([]);
+      }
+
+      audioLog.info('STATE: * → SCENE_QUEUED | sceneAudioQueued=true');
+      setSceneAudioQueued(true);
+
+      // Queue with onStart callback to trigger SFX when scene audio starts
+      queueAudio(
+        data.audio,
+        data.format,
+        // onStart callback - scene audio begins
+        () => {
+          audioLog.info('STATE: SCENE_QUEUED → SCENE_PLAYING | sceneAudioStarted=true (onStart callback)');
+
+          if (!sceneAudioStartedRef.current) {
+            sceneAudioStartedRef.current = true;
+            setSceneAudioStarted(true);
+            setIsAudioQueued(false);
+
+            // Trigger SFX
+            const currentSfxList = sfxDetailsRef.current?.sfxList;
+            if (currentSfxList && currentSfxList.length > 0 && sfxEnabledRef.current) {
+              sfxLog.info(`TRIGGER_SUCCESS | source: onStart_callback | effects: ${currentSfxList.length} | keys: ${currentSfxList.map(s => s.sfx_key || s.sfxKey).join(', ')}`);
+              playSfxWithState(currentSfxList);
+            } else {
+              sfxLog.info(`TRIGGER_SKIPPED | source: onStart_callback | enabled: ${sfxEnabledRef.current} | sfxList: ${currentSfxList?.length || 0}`);
+            }
+          } else {
+            // FAIL LOUDLY - this should never happen
+            console.warn('[StorySocket] WARNING: onStart called but sceneAudioStarted already true!');
+            sfxLog.warn('TRIGGER_SKIPPED | source: onStart_callback | reason: already_started (unexpected state!)');
+          }
+        },
+        // onEnd callback - scene audio finished
+        () => {
+          audioLog.info('STATE: SCENE_PLAYING → SCENE_COMPLETE | scene audio finished');
+        }
+      );
+    };
+
+    // Handle choice narration audio
+    const handleChoiceAudioReady = (data) => {
+      console.log('[Socket:Recv] EVENT: choice-audio-ready | hasAudio:', !!data.audio, '| format:', data.format);
+      setChoiceAudioPlaying(true);
+      playAudio(data.audio, data.format)
+        .then(() => {
+          console.log('[Story] Choice audio playback started');
+        })
+        .catch(err => {
+          console.error('[Story] Choice audio playback failed:', err);
+          if (pendingChoices.length > 0) {
+            setChoices(pendingChoices);
+            setPendingChoices([]);
+          }
+          setChoiceAudioPlaying(false);
+        });
+    };
+
+    // Handle choice audio error - show choices immediately without audio
+    const handleChoiceAudioError = (data) => {
+      console.warn('[Socket:Recv] EVENT: choice-audio-error | message:', data?.message);
+      if (pendingChoices.length > 0) {
+        setChoices(pendingChoices);
+        setPendingChoices([]);
+      }
+      setChoiceAudioPlaying(false);
+    };
+
+    // Handle generation progress
+    const handleGenerating = (data) => {
+      console.log('[Socket:Recv] EVENT: generating | step:', data?.step, '| percent:', data?.percent, '| message:', data?.message?.substring(0, 40));
+
+      // HEARTBEAT: Reset stall detection timer on every progress update
+      lastProgressUpdateTime = Date.now();
+      if (stallDetectionTimeout) {
+        clearTimeout(stallDetectionTimeout);
+      }
+
+      setIsGenerating(true);
+      if (data && typeof data === 'object') {
+        setGenerationProgress({
+          step: data.step || 0,
+          percent: data.percent || 0,
+          message: data.message || 'Creating your story...'
+        });
+      }
+
+      // STALL DETECTION: Set timeout to detect if no update arrives for 35 seconds
+      stallDetectionTimeout = setTimeout(() => {
+        const timeSinceLastUpdate = Date.now() - lastProgressUpdateTime;
+        if (timeSinceLastUpdate > 30000) {
+          console.error('[Stall Detection] No progress update for 30+ seconds. Generation may be stuck.');
+          setIsGenerating(false);
+          setGenerationProgress({ step: 0, percent: 0, message: '' });
+          setAudioError('Story generation is taking too long. Please refresh the page and try again.');
+        }
+      }, 35000);
+    };
+
+    // Handle choice accepted
+    const handleChoiceAccepted = (data) => {
+      console.log('[Socket:Recv] EVENT: choice-accepted | choice_key:', data?.choice_key, '| choice_text:', data?.choice_text?.substring(0, 30));
+      if (data.choice_key && data.choice_text) {
+        setChoiceHistory(prev => [...prev, {
+          sceneIndex: session?.total_scenes || 0,
+          choiceKey: data.choice_key,
+          choiceText: data.choice_text,
+          timestamp: Date.now()
+        }]);
+      }
+      setChoices([]);
+      continueStory();
+    };
+
+    // Handle story paused
+    const handleStoryPaused = () => {
+      console.log('[Socket:Recv] EVENT: story-paused');
+      pause();
+    };
+
+    // Handle story resumed
+    const handleStoryResumed = () => {
+      console.log('[Socket:Recv] EVENT: story-resumed');
+      resume();
+    };
+
+    // Handle audio error
+    const handleAudioError = (data) => {
+      console.error('[Socket:Recv] EVENT: audio-error | message:', data?.message);
+      // Clear stall detection since we got a response
+      if (stallDetectionTimeout) {
+        clearTimeout(stallDetectionTimeout);
+        stallDetectionTimeout = null;
+      }
+      const isQuotaError = data.message?.toLowerCase().includes('quota');
+      setAudioError(isQuotaError
+        ? 'Voice narration unavailable - ElevenLabs credits exhausted. Story text will still display.'
+        : 'Voice narration temporarily unavailable. Story text will still display.');
+      setTimeout(() => setAudioError(null), 10000);
+    };
+
+    // Handle general error
+    const handleError = (error) => {
+      console.error('[Socket:Recv] EVENT: error | message:', error?.message || error);
+      // Clear stall detection since we got a response
+      if (stallDetectionTimeout) {
+        clearTimeout(stallDetectionTimeout);
+        stallDetectionTimeout = null;
+      }
+
+      // Handle "No pending audio" error - happens after server restart
+      if (error?.message === 'No pending audio for this session') {
+        console.log('[Socket] RECOVERY | reason: no_pending_audio | action: regenerate_scene');
+        resetLaunch();
+        const voiceId = session?.config_json?.voice_id || session?.config_json?.narratorVoice;
+        if (socket && sessionId) {
+          console.log('[Socket:Emit] EVENT: continue-story (recovery) | session_id:', sessionId, '| voice_id:', voiceId);
+          socket.emit('continue-story', {
+            session_id: sessionId,
+            voice_id: voiceId,
+            autoplay: true
+          });
+          setIsGenerating(true);
+          setGenerationProgress({ step: 1, percent: 10, message: 'Recovering session...' });
+        }
+        return;
+      }
+
+      setIsGenerating(false);
+      setGenerationProgress({ step: 0, percent: 0, message: '' });
+    };
+
+    // Handle picture book images ready (generated asynchronously after audio)
+    const handleSceneImagesReady = (data) => {
+      socketLog.info(`RECV: scene-images-ready | sceneId: ${data.sceneId} | images: ${data.sceneImages?.length || 0}`);
+      if (data.sceneImages && data.sceneImages.length > 0) {
+        audioLog.info(`SCENE_IMAGES | count: ${data.sceneImages.length} (async delivery)`);
+        setSceneImages(data.sceneImages);
+      }
+    };
+
+    // Handle picture book generating status
+    const handlePictureBookGenerating = (data) => {
+      console.log('[Socket:Recv] EVENT: picture-book-generating | message:', data?.message);
+      // Could show a loading indicator for images here if desired
+    };
+
+    // Subscribe to events
+    socket.on('intro-audio-ready', handleIntroAudioReady);
+    socket.on('audio-ready', handleAudioReady);
+    socket.on('choice-audio-ready', handleChoiceAudioReady);
+    socket.on('choice-audio-error', handleChoiceAudioError);
+    socket.on('scene-images-ready', handleSceneImagesReady);
+    socket.on('picture-book-generating', handlePictureBookGenerating);
+    socket.on('generating', handleGenerating);
+    socket.on('choice-accepted', handleChoiceAccepted);
+    socket.on('story-paused', handleStoryPaused);
+    socket.on('story-resumed', handleStoryResumed);
+    socket.on('audio-error', handleAudioError);
+    socket.on('error', handleError);
+
+    // Cleanup
+    return () => {
+      // Clear stall detection timeout on unmount
+      if (stallDetectionTimeout) {
+        clearTimeout(stallDetectionTimeout);
+        stallDetectionTimeout = null;
+      }
+
+      socket.off('intro-audio-ready', handleIntroAudioReady);
+      socket.off('audio-ready', handleAudioReady);
+      socket.off('choice-audio-ready', handleChoiceAudioReady);
+      socket.off('choice-audio-error', handleChoiceAudioError);
+      socket.off('scene-images-ready', handleSceneImagesReady);
+      socket.off('picture-book-generating', handlePictureBookGenerating);
+      socket.off('generating', handleGenerating);
+      socket.off('choice-accepted', handleChoiceAccepted);
+      socket.off('story-paused', handleStoryPaused);
+      socket.off('story-resumed', handleStoryResumed);
+      socket.off('audio-error', handleAudioError);
+      socket.off('error', handleError);
+    };
+  }, [
+    socket, sessionId, session,
+    playAudio, queueAudio, pause, resume,
+    playSfxWithState, sfxEnabledRef, sfxDetailsRef,
+    setIntroAudioQueued, setSceneAudioStarted, setWordTimings, setSceneImages, setSceneAudioQueued,
+    setIsAudioQueued, setChoiceAudioPlaying, setChoices, setPendingChoices,
+    setIsGenerating, setGenerationProgress, setChoiceHistory, setAudioError,
+    sceneAudioStartedRef, continueStory, resetLaunch, pendingChoices, launchActive
+  ]);
+}
+
+export default useStorySocket;
