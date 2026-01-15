@@ -1295,7 +1295,7 @@ function Story() {
         ) : (
           <>
             {/* Book Page Layout - Float cover with text wrap, karaoke/read-along */}
-            {showText && currentScene && !launchActive && !isReadyToPlay && (
+            {showText && currentScene && !launchActive && (
               <div className="max-w-2xl mx-auto mb-8">
                 <BookPageLayout
                   // Story metadata

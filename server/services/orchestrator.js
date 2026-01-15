@@ -820,7 +820,13 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
 
     // Filter speech tags if enabled
     if (shouldHideSpeechTags(this.session.config_json)) {
-      segments = await filterSpeechTagsWithLLM(segments, { title: this.session.title, genre: this.session.config_json?.genre });
+      try {
+        segments = await filterSpeechTagsWithLLM(segments, { title: this.session.title, genre: this.session.config_json?.genre });
+        logger.info(`[Orchestrator] Speech tags filtered successfully (${segments.length} segments)`);
+      } catch (error) {
+        logger.warn(`[Orchestrator] Speech tag filtering failed: ${error.message}. Continuing with unfiltered segments.`);
+        // Don't crash - continue with original segments
+      }
     }
 
     logSegmentAnalysis(segments, finalText);
@@ -836,7 +842,66 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
     if (existingAssignments.rows.length > 0) {
       const validation = validateExistingAssignments(characterVoices, effectiveVoiceId);
       if (!validation.valid) {
-        characterVoices = {};
+        // ★ TARGETED REPAIR - Don't nuke everything!
+        logger.warn(`[VoiceValidation] Validation failed, attempting repair: ${validation.errors.join('; ')}`);
+
+        // Find and fix specific problems
+        const fixedVoices = { ...characterVoices };
+        let hadProblems = false;
+
+        // Fix 1: Remove characters using narrator voice
+        for (const [charName, voiceId] of Object.entries(fixedVoices)) {
+          if (voiceId === effectiveVoiceId) {
+            logger.info(`[VoiceValidation] Removing ${charName} (was using narrator voice ${voiceId})`);
+            delete fixedVoices[charName];
+            hadProblems = true;
+          }
+        }
+
+        // Fix 2: Remove characters with null/undefined voices
+        for (const [charName, voiceId] of Object.entries(fixedVoices)) {
+          if (!voiceId) {
+            logger.info(`[VoiceValidation] Removing ${charName} (had null/undefined voice)`);
+            delete fixedVoices[charName];
+            hadProblems = true;
+          }
+        }
+
+        // Fix 3: Handle duplicate voice assignments
+        // Keep first occurrence, mark others for reassignment
+        const voiceToCharacters = {};
+        for (const [charName, voiceId] of Object.entries(fixedVoices)) {
+          if (!voiceToCharacters[voiceId]) {
+            voiceToCharacters[voiceId] = [];
+          }
+          voiceToCharacters[voiceId].push(charName);
+        }
+
+        for (const [voiceId, charNames] of Object.entries(voiceToCharacters)) {
+          if (charNames.length > 1) {
+            // Keep first, remove others
+            const keep = charNames[0];
+            const remove = charNames.slice(1);
+            logger.info(`[VoiceValidation] Resolving duplicate voice ${voiceId.slice(-4)}: keeping ${keep}, removing ${remove.join(', ')}`);
+
+            for (const charName of remove) {
+              delete fixedVoices[charName];
+              hadProblems = true;
+            }
+          }
+        }
+
+        // Use fixed assignments if we had issues, otherwise clear for reassignment
+        if (hadProblems && Object.keys(fixedVoices).length > 0) {
+          characterVoices = fixedVoices;
+          logger.info(`[VoiceValidation] Repair successful: kept ${Object.keys(fixedVoices).length} valid assignments`);
+        } else {
+          // If no assignments remain after repair, clear for full reassignment
+          logger.info(`[VoiceValidation] No valid assignments after repair, requesting full reassignment`);
+          characterVoices = {};
+        }
+      } else {
+        logger.debug(`[VoiceValidation] Validation passed: ${Object.keys(characterVoices).length} assignments are valid`);
       }
     }
 
@@ -961,22 +1026,80 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
           const timing = sfx.timing || 'scene_start';
 
           let triggerAtSeconds = 0;
-          const totalDuration = wordTimings?.duration_seconds || 30;
+          // Calculate total duration: try total_duration_ms first, then duration_seconds, then default to 30
+          let totalDuration = 30;
+          if (wordTimings?.total_duration_ms) {
+            totalDuration = wordTimings.total_duration_ms / 1000;
+          } else if (wordTimings?.duration_seconds) {
+            totalDuration = wordTimings.duration_seconds;
+          }
 
-          switch (timing) {
+          // ============================================================
+          // TIMING CONVERSION: Normalize AI timing strings to seconds
+          // ============================================================
+          switch (timing?.toLowerCase?.()) {
+            // ★ Start of scene (0 seconds)
             case 'beginning':
             case 'scene_start':
+            case 'start':
+            case 'intro':
               triggerAtSeconds = 0;
               break;
+
+            // ★ Middle of scene (50% duration)
             case 'middle':
-              triggerAtSeconds = totalDuration / 2;
+            case 'mid':
+            case 'midway':
+              triggerAtSeconds = Math.round(totalDuration / 2);
               break;
+
+            // ★ End of scene (near the finish, leave 2-3 seconds)
             case 'end':
+            case 'ending':
+            case 'finish':
+            case 'conclusion':
               triggerAtSeconds = Math.max(0, totalDuration - 3);
               break;
-            default:
+
+            // ★ During action/specific moments (60-70% through)
+            case 'during_action':
+            case 'action_moment':
+            case 'on_action':
+            case 'climax':
+            case 'peak':
+              // Place at 60% through the scene for dramatic moments
+              triggerAtSeconds = Math.round(totalDuration * 0.6);
+              break;
+
+            // ★ Contextual/environmental (30% through, subtle)
+            case 'contextual':
+            case 'environmental':
+            case 'ambient':
+            case 'atmosphere':
+            case 'background':
+              // Place early and let it play through
+              triggerAtSeconds = Math.round(totalDuration * 0.3);
+              break;
+
+            // ★ Continuous sounds (play from start with looping)
+            case 'continuous':
+            case 'loop':
+            case 'throughout':
+            case 'constant':
               triggerAtSeconds = 0;
+              // Note: isLooping should already be true for these
+              break;
+
+            // ★ Unknown timing - use sensible default (25% through)
+            default:
+              triggerAtSeconds = Math.round(totalDuration * 0.25);
+              logger.warn(`[SFX] Unknown timing value "${timing}" for ${sfxKey}, using 25% position`);
           }
+
+          // ============================================================
+          // Sanity check: ensure trigger time doesn't exceed scene
+          // ============================================================
+          triggerAtSeconds = Math.max(0, Math.min(triggerAtSeconds, totalDuration - 1));
 
           await pool.query(`
             INSERT INTO scene_sfx (scene_id, sfx_key, detected_keyword, detection_reason, volume)
@@ -1057,6 +1180,8 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
     const forceRegenerate = options?.forceRegenerate === true;
 
     if (scene.audio_url && !forceRegenerate) {
+      // Log cached wordTimings
+      logger.info(`[generateSceneAudio] Using CACHED audio: wordTimings type=${typeof scene.word_timings}, hasWords=${!!scene.word_timings?.words}, count=${scene.word_timings?.words?.length || 0}`);
       return {
         audioUrl: scene.audio_url,
         cached: true,
@@ -1124,6 +1249,9 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
     }
     const durationSeconds = wordTimings?.total_duration_ms ? (wordTimings.total_duration_ms / 1000) : null;
     await saveSceneAudio(sceneId, audioUrl, { wordTimings, durationSeconds, voiceId: effectiveVoiceId });
+
+    // Log wordTimings before return
+    logger.info(`[generateSceneAudio] Returning wordTimings: type=${typeof wordTimings}, hasWords=${!!wordTimings?.words}, count=${wordTimings?.words?.length || 0}, durationMs=${wordTimings?.total_duration_ms || 'N/A'}`);
 
     return { audioUrl, cached: false, audioBuffer, wordTimings };
   }
