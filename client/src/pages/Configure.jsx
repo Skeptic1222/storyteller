@@ -715,18 +715,36 @@ function Configure() {
           body: JSON.stringify(requestBody)
         });
 
-        if (!response.ok) throw new Error('Failed to create session');
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+          const errorMessage = errorData.error?.message || errorData.error || errorData.message || response.statusText;
+          const details = errorData.error?.details || [];
+          const detailsText = details.length > 0
+            ? ` | Details: ${details.map(d => `${d.field}: ${d.message}`).join('; ')}`
+            : '';
+          throw new Error(`Failed to create session: ${errorMessage}${detailsText}`);
+        }
         const data = await response.json();
         targetSessionId = data.session_id;
       } else {
         // Update existing session config
-        await apiCall(`/stories/${targetSessionId}/configure`, {
+        const configResponse = await apiCall(`/stories/${targetSessionId}/configure`, {
           method: 'POST',
           body: JSON.stringify({
             input: JSON.stringify(fullConfig),
             input_type: 'config'
           })
         });
+
+        if (!configResponse.ok) {
+          const errorData = await configResponse.json().catch(() => ({ error: 'Unknown error' }));
+          const errorMessage = errorData.error?.message || errorData.error || errorData.message || configResponse.statusText;
+          const details = errorData.error?.details || [];
+          const detailsText = details.length > 0
+            ? ` | Details: ${details.map(d => `${d.field}: ${d.message}`).join('; ')}`
+            : '';
+          throw new Error(`Failed to update session config: ${errorMessage}${detailsText}`);
+        }
       }
 
       navigate(`/story/${targetSessionId}`);
