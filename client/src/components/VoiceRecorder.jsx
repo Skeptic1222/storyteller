@@ -20,6 +20,12 @@ function VoiceRecorder({ onTranscript, disabled = false, size = 'normal' }) {
   const whisperSocketRef = useRef(null);
   const turnIdRef = useRef(0);
 
+  // Store onTranscript in ref to avoid socket reconnection on callback changes
+  const onTranscriptRef = useRef(onTranscript);
+  useEffect(() => {
+    onTranscriptRef.current = onTranscript;
+  }, [onTranscript]);
+
   // Connect to Whisper service (only on actual localhost)
   useEffect(() => {
     // Don't attempt connection if not on localhost - Whisper binds to 127.0.0.1 only
@@ -47,8 +53,8 @@ function VoiceRecorder({ onTranscript, disabled = false, size = 'normal' }) {
     const handleTranscription = (data) => {
       console.log('[VoiceRecorder] Transcription received:', data.text);
       setIsProcessing(false);
-      if (data.text && onTranscript) {
-        onTranscript(data.text);
+      if (data.text && onTranscriptRef.current) {
+        onTranscriptRef.current(data.text);
       }
     };
 
@@ -79,7 +85,7 @@ function VoiceRecorder({ onTranscript, disabled = false, size = 'normal' }) {
       socket.off('connect_error', handleConnectError);
       socket.disconnect();
     };
-  }, [onTranscript]);
+  }, []); // Empty deps - socket connection is stable, callback accessed via ref
 
   const startRecording = useCallback(async () => {
     setError(null);

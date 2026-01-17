@@ -244,6 +244,7 @@ async function cleanupOldStreams(maxAgeMs = 24 * 60 * 60 * 1000) {
 async function generateChunkedAudio(text, voiceId, options = {}) {
   const {
     onChunkReady,
+    onChunkError, // New callback for error notification
     ...ttsOptions
   } = options;
 
@@ -251,6 +252,7 @@ async function generateChunkedAudio(text, voiceId, options = {}) {
   const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
 
   const chunks = [];
+  const failedChunks = [];
   let chunkIndex = 0;
 
   for (const sentence of sentences) {
@@ -276,11 +278,31 @@ async function generateChunkedAudio(text, voiceId, options = {}) {
 
       chunkIndex++;
     } catch (error) {
+      const errorInfo = {
+        index: chunkIndex,
+        text: trimmedSentence,
+        error: error.message
+      };
+      failedChunks.push(errorInfo);
       logger.error(`[AudioStreaming] Failed to generate chunk ${chunkIndex}:`, error);
+
+      // Notify caller of failure - FAIL LOUD
+      if (onChunkError) {
+        onChunkError(errorInfo);
+      }
+
+      chunkIndex++;
     }
   }
 
-  return { chunks, totalChunks: chunks.length };
+  // Return comprehensive results including failures
+  return {
+    chunks,
+    totalChunks: chunks.length,
+    failedChunks,
+    totalFailed: failedChunks.length,
+    success: failedChunks.length === 0
+  };
 }
 
 /**

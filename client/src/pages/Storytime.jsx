@@ -43,6 +43,9 @@ function Storytime() {
   const audioChunksRef = useRef([]);
   const streamRef = useRef(null);
 
+  // Ref for handleUserInput to avoid stale closure in socket handler
+  const handleUserInputRef = useRef(null);
+
   // Connect to Whisper on mount (only on actual localhost)
   useEffect(() => {
     // Don't attempt connection if not on localhost - Whisper binds to 127.0.0.1 only
@@ -66,7 +69,10 @@ function Storytime() {
       console.log('[Storytime] Transcription:', data.text);
       if (data.text) {
         setTranscript(data.text);
-        handleUserInput(data.text);
+        // Use ref to avoid stale closure
+        if (handleUserInputRef.current) {
+          handleUserInputRef.current(data.text);
+        }
       }
     };
 
@@ -238,7 +244,7 @@ function Storytime() {
   }, []);
 
   // Handle user input and get AI response
-  const handleUserInput = async (userText) => {
+  const handleUserInput = useCallback(async (userText) => {
     if (!userText.trim()) {
       startListening();
       return;
@@ -293,7 +299,12 @@ function Storytime() {
       await speakMessage("I didn't quite catch that. Could you tell me again?");
       startListening();
     }
-  };
+  }, [sessionId, config, messages, startListening]);
+
+  // Keep ref updated to avoid stale closure in socket handler
+  useEffect(() => {
+    handleUserInputRef.current = handleUserInput;
+  }, [handleUserInput]);
 
   // Start the actual story
   const startStory = async () => {

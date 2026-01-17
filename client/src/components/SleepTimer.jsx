@@ -159,7 +159,8 @@ export const SleepTimerWarning = memo(function SleepTimerWarning({
   onAddTime,
   onDismiss
 }) {
-  if (remainingSeconds > 60) return null;
+  // Early return if not in warning range (undefined > 60 is false, so check explicitly)
+  if (remainingSeconds == null || remainingSeconds <= 0 || remainingSeconds > 60) return null;
 
   return (
     <div className="fixed inset-x-0 bottom-20 z-50 flex justify-center px-4">

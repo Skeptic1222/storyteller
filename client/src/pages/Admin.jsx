@@ -19,6 +19,7 @@ function Admin() {
   const [selectedUser, setSelectedUser] = useState(null);
   const [showTierModal, setShowTierModal] = useState(false);
   const [showBonusModal, setShowBonusModal] = useState(false);
+  const [error, setError] = useState(null);
 
   const tierLabels = {
     free: 'Free',
@@ -33,8 +34,19 @@ function Admin() {
       navigate('/');
       return;
     }
-    loadStats();
-    loadUsers();
+
+    // Load data with proper error tracking
+    const loadData = async () => {
+      setError(null);
+      try {
+        await Promise.all([loadStats(), loadUsers()]);
+      } catch (err) {
+        console.error('[Admin] Failed to load initial data:', err);
+        setError('Failed to load admin data. Please refresh the page.');
+      }
+    };
+
+    loadData();
   }, [isAdmin, navigate]);
 
   const loadStats = async () => {

@@ -56,6 +56,12 @@ export function useSleepTimer(options = {}) {
   // Interval ref
   const intervalRef = useRef(null);
 
+  // Ref for hasWarned to access current value inside interval callbacks
+  const hasWarnedRef = useRef(hasWarned);
+  useEffect(() => {
+    hasWarnedRef.current = hasWarned;
+  }, [hasWarned]);
+
   /**
    * Start the timer
    * @param {number} minutes - Duration in minutes
@@ -82,9 +88,10 @@ export function useSleepTimer(options = {}) {
 
     intervalRef.current = setInterval(() => {
       setRemainingSeconds(prev => {
-        // Check for warning (1 minute remaining)
-        if (prev === 61 && !hasWarned) {
+        // Check for warning (1 minute remaining) - use ref to get current value
+        if (prev === 61 && !hasWarnedRef.current) {
           setHasWarned(true);
+          hasWarnedRef.current = true; // Update ref immediately
           onWarningRef.current?.();
           console.log('[ListeningTimer] Warning: 1 minute remaining');
         }
@@ -102,7 +109,7 @@ export function useSleepTimer(options = {}) {
         return prev - 1;
       });
     }, 1000);
-  }, [hasWarned]);
+  }, []); // No deps needed - all values accessed via refs
 
   /**
    * Stop and reset the timer
@@ -144,8 +151,10 @@ export function useSleepTimer(options = {}) {
 
     intervalRef.current = setInterval(() => {
       setRemainingSeconds(prev => {
-        if (prev === 61 && !hasWarned) {
+        // Use ref to get current value inside interval callback
+        if (prev === 61 && !hasWarnedRef.current) {
           setHasWarned(true);
+          hasWarnedRef.current = true;
           onWarningRef.current?.();
         }
 
@@ -162,7 +171,7 @@ export function useSleepTimer(options = {}) {
     }, 1000);
 
     console.log('[ListeningTimer] Resumed');
-  }, [isActive, isPaused, hasWarned]);
+  }, [isActive, isPaused]); // No hasWarned - accessed via ref
 
   /**
    * Add time to the timer
@@ -174,6 +183,7 @@ export function useSleepTimer(options = {}) {
     const additionalSeconds = minutes * 60;
     setRemainingSeconds(prev => prev + additionalSeconds);
     setHasWarned(false); // Reset warning if we added time
+    hasWarnedRef.current = false; // Update ref immediately
     console.log(`[ListeningTimer] Added ${minutes} minutes`);
   }, [isActive]);
 
