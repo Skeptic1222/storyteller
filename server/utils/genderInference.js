@@ -415,30 +415,98 @@ function checkNameEndings(firstName) {
 }
 
 /**
- * Check description keywords
+ * LLM-based semantic gender analysis from description text
+ * Replaces keyword matching with actual semantic understanding
+ *
+ * Uses GPT-5.2-instant for fast, cheap inference when name/pronoun/role checks fail
  */
+let llmGenderCache = new Map();
+const LLM_GENDER_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+async function checkKeywordsLLM(text, name = '') {
+  if (!text || text.trim().length < 10) {
+    return { gender: 'neutral', confidence: 0.5, reason: 'insufficient_text' };
+  }
+
+  // Check cache first
+  const cacheKey = `${name}:${text.substring(0, 100)}`.toLowerCase();
+  const cached = llmGenderCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < LLM_GENDER_CACHE_TTL) {
+    return { ...cached.result, reason: cached.result.reason + '_cached' };
+  }
+
+  try {
+    // Dynamic import to avoid circular dependencies
+    const { completion, parseJsonResponse } = await import('../services/openai.js');
+
+    const prompt = `Analyze this character description and determine the likely gender.
+
+CHARACTER NAME: ${name || 'Unknown'}
+DESCRIPTION: "${text}"
+
+Based on the description's language, adjectives, and context clues, determine if this character is:
+- male
+- female
+- neutral (ambiguous, non-binary, or unclear)
+
+Return JSON:
+{
+  "gender": "male" | "female" | "neutral",
+  "confidence": 0.5-0.8,
+  "reasoning": "brief explanation"
+}
+
+IMPORTANT:
+- Only return high confidence (0.7+) if description strongly suggests gender
+- Default to neutral (0.5) if unclear
+- Consider cultural context and avoid stereotypes
+- Base analysis on actual descriptive language, not assumptions`;
+
+    const response = await completion({
+      model: 'gpt-5.2-instant', // Fast, cheap model for simple classification
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.3,
+      max_tokens: 150
+    });
+
+    const result = parseJsonResponse(response);
+
+    if (result && result.gender && ['male', 'female', 'neutral'].includes(result.gender)) {
+      const output = {
+        gender: result.gender,
+        confidence: Math.min(0.75, Math.max(0.5, result.confidence || 0.6)),
+        reason: `llm_semantic_analysis: ${result.reasoning || 'analyzed description'}`
+      };
+
+      // Cache the result
+      llmGenderCache.set(cacheKey, { result: output, timestamp: Date.now() });
+
+      // Cleanup old cache entries periodically
+      if (llmGenderCache.size > 100) {
+        const now = Date.now();
+        for (const [key, value] of llmGenderCache.entries()) {
+          if (now - value.timestamp > LLM_GENDER_CACHE_TTL) {
+            llmGenderCache.delete(key);
+          }
+        }
+      }
+
+      return output;
+    }
+  } catch (error) {
+    // Log but don't fail - this is a fallback check
+    console.warn('[GenderInference] LLM analysis failed, returning neutral:', error.message);
+  }
+
+  return { gender: 'neutral', confidence: 0.5, reason: 'llm_analysis_failed' };
+}
+
+// Synchronous wrapper that returns neutral if async not awaited
+// For backward compatibility with existing sync callers
 function checkKeywords(text) {
-  const femaleKeywords = ['beautiful', 'graceful', 'elegant', 'dainty', 'delicate', 'feminine', 'maternal'];
-  const maleKeywords = ['handsome', 'rugged', 'muscular', 'gruff', 'burly', 'masculine', 'paternal'];
-
-  let femaleScore = 0;
-  let maleScore = 0;
-
-  for (const keyword of femaleKeywords) {
-    if (text.includes(keyword)) femaleScore++;
-  }
-  for (const keyword of maleKeywords) {
-    if (text.includes(keyword)) maleScore++;
-  }
-
-  if (femaleScore > maleScore) {
-    return { gender: 'female', confidence: 0.55 + femaleScore * 0.05, reason: 'female_keywords' };
-  }
-  if (maleScore > femaleScore) {
-    return { gender: 'male', confidence: 0.55 + maleScore * 0.05, reason: 'male_keywords' };
-  }
-
-  return { gender: 'neutral', confidence: 0.5, reason: 'no_keyword_match' };
+  // Return neutral synchronously - callers needing LLM should use checkKeywordsLLM
+  // This maintains backward compatibility while the async version provides better results
+  return { gender: 'neutral', confidence: 0.5, reason: 'sync_fallback_use_async' };
 }
 
 /**

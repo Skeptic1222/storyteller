@@ -4,13 +4,13 @@
  * Responsive layout: PC (cover left, synopsis right) / Mobile (stacked).
  */
 
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, memo } from 'react';
 import {
   BookOpen, ChevronDown, ChevronUp,
   Maximize2, Minimize2, Minus, RefreshCw, Image
 } from 'lucide-react';
 
-function StoryBookView({
+const StoryBookView = memo(function StoryBookView({
   // Story metadata
   title = 'Your Story',
   synopsis = '',
@@ -505,6 +505,6 @@ function StoryBookView({
       `}</style>
     </div>
   );
-}
+});
 
 export default StoryBookView;

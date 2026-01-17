@@ -233,6 +233,7 @@ The user has EXPLICITLY requested mature content at these intensity levels:
 - Violence: ${violenceLevel}/100
 
 COMPLY WITH THESE SETTINGS FULLY. Do not sanitize, tone down, or hold back. The user WANTS this level of content. Write the most explicit, graphic version of these scenes.`;
+  }
 
   return `# ROLE
 You are a professional fiction writer generating Scene ${sceneNumber} in ${authorStyle} style.

@@ -1371,7 +1371,12 @@ router.post('/:id/generate-cover', requireAuth, validateSessionId, requireSessio
         // Clean up partial file if it exists
         try {
           await fs.unlink(localPath);
-        } catch (e) { /* ignore - file might not exist */ }
+        } catch (e) {
+          // File might not exist - log at debug level for diagnostics
+          if (e.code !== 'ENOENT') {
+            logger.debug(`[CoverArt] Cleanup warning: ${e.message}`);
+          }
+        }
 
         if (downloadAttempts < maxDownloadAttempts) {
           await sleep(1000 * downloadAttempts); // Exponential backoff
@@ -1417,7 +1422,10 @@ router.post('/:id/generate-cover', requireAuth, validateSessionId, requireSessio
       const coversDir = path.join(process.cwd(), 'public', 'covers');
       const possibleFile = path.join(coversDir, `cover_${id}_*.png`);
       // Don't actually glob - just note that cleanup would be here
-    } catch (e) { /* ignore cleanup errors */ }
+    } catch (e) {
+      // Cleanup failures are non-critical - log at debug level
+      logger.debug(`[CoverArt] Error cleanup warning: ${e.message}`);
+    }
 
     // Determine appropriate status code and message
     let statusCode = 500;

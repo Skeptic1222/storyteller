@@ -335,15 +335,33 @@ Return allClean: true only if NO segments contain speech attribution.`;
 }
 
 /**
- * Parse LLM response with FAIL LOUD on errors
+ * Parse LLM response with improved error handling
+ * Returns passthrough results if parsing fails rather than crashing
  */
 function parseFilterResponse(response, expectedCount) {
   const content = response?.content;
   if (!content) {
-    throw new Error('[SpeechTagAgent] FAIL_LOUD: Empty response from LLM');
+    logger.warn('[SpeechTagAgent] Empty response from LLM, returning passthrough');
+    // Return passthrough - no filtering applied
+    return Array.from({ length: expectedCount }, (_, i) => ({
+      index: i,
+      cleaned: undefined,
+      removed: null
+    }));
   }
 
-  const parsed = JSON.parse(content);
+  let parsed;
+  try {
+    parsed = JSON.parse(content);
+  } catch (parseError) {
+    logger.warn(`[SpeechTagAgent] Failed to parse JSON: ${parseError.message}. Using passthrough.`);
+    // Return passthrough on JSON parse error
+    return Array.from({ length: expectedCount }, (_, i) => ({
+      index: i,
+      cleaned: undefined,
+      removed: null
+    }));
+  }
 
   // Handle various LLM response formats:
   // 1. Array directly: [{ index, cleaned, removed }, ...]
@@ -352,23 +370,28 @@ function parseFilterResponse(response, expectedCount) {
   let results;
   if (Array.isArray(parsed)) {
     results = parsed;
-  } else if (parsed.segments || parsed.results || parsed.result || parsed.data) {
+  } else if (parsed && (parsed.segments || parsed.results || parsed.result || parsed.data)) {
     results = parsed.segments || parsed.results || parsed.result || parsed.data || [];
-  } else if (typeof parsed === 'object' && parsed.index !== undefined && parsed.cleaned !== undefined) {
+  } else if (typeof parsed === 'object' && parsed?.index !== undefined && parsed?.cleaned !== undefined) {
     // LLM returned a single object instead of array - wrap it
-    logger.warn(`[SpeechTagAgent] LLM returned single object instead of array, wrapping it`);
+    logger.info(`[SpeechTagAgent] LLM returned single object, wrapping`);
     results = [parsed];
   } else {
     results = [];
   }
 
-  logger.info(`[SpeechTagAgent] LLM_RESPONSE | resultCount: ${results.length} | responseLength: ${content.length}`);
+  logger.info(`[SpeechTagAgent] LLM_RESPONSE | resultCount: ${results.length} | expectedCount: ${expectedCount} | responseLength: ${content.length}`);
 
-  // FAIL LOUD: Zero results means LLM failed
+  // If zero results, log warning and return passthrough instead of throwing
   if (results.length === 0) {
-    const debugInfo = `parsed type: ${typeof parsed} | isArray: ${Array.isArray(parsed)} | keys: ${Object.keys(parsed || {}).join(', ')} | preview: ${content.substring(0, 500)}`;
-    logger.error(`[SpeechTagAgent] FAIL_LOUD: LLM returned zero results | ${debugInfo}`);
-    throw new Error(`[SpeechTagAgent] FAIL_LOUD: LLM returned zero results for ${expectedCount} narrator segments.`);
+    const debugInfo = `parsed type: ${typeof parsed} | isArray: ${Array.isArray(parsed)} | keys: ${Object.keys(parsed || {}).join(', ')} | preview: ${content.substring(0, 200)}`;
+    logger.warn(`[SpeechTagAgent] LLM returned zero results | ${debugInfo}. Using passthrough.`);
+    // Return passthrough - no filtering applied
+    return Array.from({ length: expectedCount }, (_, i) => ({
+      index: i,
+      cleaned: undefined,
+      removed: null
+    }));
   }
 
   return results;

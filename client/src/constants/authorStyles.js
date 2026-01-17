@@ -7,7 +7,9 @@
 export const PROVIDER_THRESHOLDS = {
   gore: { value: 61, label: 'Venice.ai', icon: '\uD83D\uDD13' },
   romance: { value: 71, label: 'Venice.ai', icon: '\uD83D\uDD13' },
-  adultContent: { value: 50, label: 'Venice.ai', icon: '\uD83D\uDD13' }
+  adultContent: { value: 50, label: 'Venice.ai', icon: '\uD83D\uDD13' },
+  sensuality: { value: 71, label: 'Venice.ai', icon: '\uD83D\uDD13' },
+  explicitness: { value: 71, label: 'Venice.ai', icon: '\uD83D\uDD13' }
 };
 
 // Author styles data organized by category

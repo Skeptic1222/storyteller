@@ -161,7 +161,7 @@ export const DEFAULT_VOICES = {
   primary: DEFAULT_NARRATOR_VOICE_ID,  // George - British, warm, narrative
   dramatic: 'onwK4e9ZLuTAKqWW03F9',    // Daniel - British, formal
   american: 'nPczCjzI2devNBz1zQrb',    // Brian - American, resonant
-  deep: DM_VOICE_ID                     // Callum - Deep, gravelly (used for DM/campaigns)
+  deep: DM_VOICE_ID                     // Callum - Deep, gravelly (authority figures, villains)
 };
 
 // Voice preview samples for different styles
@@ -233,63 +233,22 @@ export const ALL_VOICES = {
   elli: { id: 'MF3mGyEYCl7XYWbV9V6O', name: 'Elli', gender: 'female', style: 'young_energetic', age: 'young_adult' }
 };
 
-// D&D-specific voice assignments
-export const DND_VOICES = {
-  // The best Dungeon Master voice - authoritative, deep, theatrical
-  dungeon_master: ALL_VOICES.callum, // Deep gravelly voice perfect for DM narration
+// NOTE: D&D-specific voice assignments removed (2026-01-15) - DnD mode moved to separate GameMaster project
 
-  // Alternative DM voices based on campaign style
-  dm_epic: ALL_VOICES.arnold,      // Authoritative for epic campaigns
-  dm_mysterious: ALL_VOICES.callum, // Gravelly for dark/horror campaigns
-  dm_friendly: ALL_VOICES.george,   // Warm British for lighter campaigns
-  dm_dramatic: ALL_VOICES.daniel,   // Formal for theatrical campaigns
-
-  // Character archetypes for D&D
-  hero_male: ALL_VOICES.brian,           // Heroic male protagonist
-  hero_female: ALL_VOICES.domi,          // Strong female protagonist
-  warrior: ALL_VOICES.arnold,            // Fighters, paladins, barbarians
-  rogue: ALL_VOICES.adam,                // Rogues, thieves, assassins
-  wizard_male: ALL_VOICES.daniel,        // Wise male spellcasters
-  wizard_female: ALL_VOICES.rachel,      // Wise female spellcasters
-  cleric: ALL_VOICES.george,             // Clerics, priests
-  bard_male: ALL_VOICES.josh,            // Charismatic male bards
-  bard_female: ALL_VOICES.aria,          // Charismatic female bards
-  ranger: ALL_VOICES.brian,              // Rangers, druids
-  villain: ALL_VOICES.callum,            // Main antagonists
-  dragon: ALL_VOICES.callum,             // Dragons and great beasts
-  goblin: ALL_VOICES.elli,               // Goblins, gremlins (sped up in post)
-  elf_male: ALL_VOICES.daniel,           // Elegant elven males
-  elf_female: ALL_VOICES.charlotte,      // Elegant elven females
-  dwarf: ALL_VOICES.arnold,              // Dwarves (gruff)
-  orc: ALL_VOICES.callum,                // Orcs, trolls
-  fairy: ALL_VOICES.bella,               // Fairies, sprites
-  tavern_keeper: ALL_VOICES.antoni,      // Friendly NPCs
-  merchant: ALL_VOICES.sam,              // Neutral merchants
-  guard: ALL_VOICES.josh,                // Town guards
-  noble_male: ALL_VOICES.daniel,         // Noble males
-  noble_female: ALL_VOICES.rachel,       // Noble females
-  child: ALL_VOICES.elli,                // Children NPCs
-  elderly_male: ALL_VOICES.antoni,       // Wise old men
-  elderly_female: ALL_VOICES.rachel,     // Wise old women
-  mysterious: ALL_VOICES.callum,         // Mysterious figures
-  trickster: ALL_VOICES.aria,            // Tricksters, jesters
-  monster: ALL_VOICES.callum             // Generic monsters
-};
-
-// Character voice suggestions based on role
+// Character voice suggestions based on storytelling archetypes
 export const CHARACTER_VOICE_SUGGESTIONS = {
   protagonist_male: [ALL_VOICES.brian.id, ALL_VOICES.george.id, ALL_VOICES.josh.id],
   protagonist_female: [ALL_VOICES.domi.id, ALL_VOICES.charlotte.id, ALL_VOICES.aria.id],
   antagonist: [ALL_VOICES.callum.id, ALL_VOICES.daniel.id, ALL_VOICES.arnold.id],
-  antagonist_female: [ALL_VOICES.domi.id, ALL_VOICES.charlotte.id, ALL_VOICES.aria.id], // Female villains
+  antagonist_female: [ALL_VOICES.domi.id, ALL_VOICES.charlotte.id, ALL_VOICES.aria.id],
   mentor: [ALL_VOICES.george.id, ALL_VOICES.antoni.id, ALL_VOICES.daniel.id],
-  mentor_female: [ALL_VOICES.charlotte.id, ALL_VOICES.domi.id, ALL_VOICES.aria.id], // Wise female mentors
+  mentor_female: [ALL_VOICES.charlotte.id, ALL_VOICES.domi.id, ALL_VOICES.aria.id],
   sidekick: [ALL_VOICES.aria.id, ALL_VOICES.elli.id, ALL_VOICES.sam.id],
-  sidekick_female: [ALL_VOICES.aria.id, ALL_VOICES.elli.id, ALL_VOICES.charlotte.id], // Female sidekicks
-  supporting_male: [ALL_VOICES.brian.id, ALL_VOICES.josh.id, ALL_VOICES.sam.id], // Generic male supporting
-  supporting_female: [ALL_VOICES.aria.id, ALL_VOICES.elli.id, ALL_VOICES.charlotte.id], // Generic female supporting
+  sidekick_female: [ALL_VOICES.aria.id, ALL_VOICES.elli.id, ALL_VOICES.charlotte.id],
+  supporting_male: [ALL_VOICES.brian.id, ALL_VOICES.josh.id, ALL_VOICES.sam.id],
+  supporting_female: [ALL_VOICES.aria.id, ALL_VOICES.elli.id, ALL_VOICES.charlotte.id],
   narrator: [ALL_VOICES.george.id, ALL_VOICES.callum.id, ALL_VOICES.daniel.id],
-  dungeon_master: [ALL_VOICES.callum.id, ALL_VOICES.arnold.id, ALL_VOICES.daniel.id]
+  authority: [ALL_VOICES.callum.id, ALL_VOICES.arnold.id, ALL_VOICES.daniel.id]  // Kings, judges, commanders
 };
 
 // Conversation flow steps

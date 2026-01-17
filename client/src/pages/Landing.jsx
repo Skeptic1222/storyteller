@@ -52,9 +52,7 @@ function Landing() {
 
   // Track Google API ready state
   const [googleReady, setGoogleReady] = useState(false);
-  const [showGoogleButton, setShowGoogleButton] = useState(false);
   const googleInitialized = useRef(false);
-  const googleButtonRef = useRef(null);
 
   // Load Google Sign-In
   useEffect(() => {
@@ -98,11 +96,10 @@ function Landing() {
     };
   }, []);
 
-  const initializeGoogle = () => {
+  const initializeGoogle = async () => {
     if (googleInitialized.current) {
       console.log('[GoogleAuth] Already initialized');
       setGoogleReady(true);
-      setShowGoogleButton(true);
       return;
     }
 
@@ -112,13 +109,8 @@ function Landing() {
     }
 
     try {
-      // Revoke any cached Google session to prevent showing previous user's name
-      if (window.google.accounts.id.revoke) {
-        window.google.accounts.id.revoke('', (done) => {
-          console.log('[GoogleAuth] Revoked cached session');
-        });
-      }
-
+      // Initialize Google Sign-In
+      // Using auto_select: false prevents automatic sign-in with cached credentials
       window.google.accounts.id.initialize({
         client_id: GOOGLE_CLIENT_ID,
         callback: (response) => {
@@ -129,11 +121,11 @@ function Landing() {
         },
         auto_select: false,
         cancel_on_tap_outside: true,
-        prompt: 'select_account'
+        itp_support: true,
+        use_fedcm_for_prompt: false  // Disable FedCM to avoid personalized UI
       });
       googleInitialized.current = true;
       setGoogleReady(true);
-      setShowGoogleButton(true);
       console.log('[GoogleAuth] Initialized successfully');
     } catch (error) {
       console.error('[GoogleAuth] Initialization failed:', error);
@@ -180,8 +172,39 @@ function Landing() {
       return;
     }
 
-    // Standard Google button flow only (no auto-select/one-tap). Ensure button is visible.
-    setShowGoogleButton(true);
+    // Trigger the Google One Tap / account chooser popup directly
+    console.log('[GoogleAuth] Triggering prompt...');
+    setLoginError(null);
+    window.google.accounts.id.prompt((notification) => {
+      console.log('[GoogleAuth] Prompt notification:', notification.getMomentType());
+      if (notification.isNotDisplayed()) {
+        // Prompt couldn't be displayed - fall back to OAuth popup
+        console.log('[GoogleAuth] Prompt not displayed, reason:', notification.getNotDisplayedReason());
+        // Try OAuth 2.0 popup as fallback
+        triggerOAuthPopup();
+      } else if (notification.isSkippedMoment()) {
+        console.log('[GoogleAuth] Prompt skipped, reason:', notification.getSkippedReason());
+      } else if (notification.isDismissedMoment()) {
+        console.log('[GoogleAuth] Prompt dismissed, reason:', notification.getDismissedReason());
+      }
+    });
+  };
+
+  // Fallback OAuth popup for browsers that block One Tap
+  const triggerOAuthPopup = () => {
+    const width = 500;
+    const height = 600;
+    const left = window.screenX + (window.outerWidth - width) / 2;
+    const top = window.screenY + (window.outerHeight - height) / 2;
+
+    const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
+      `client_id=${encodeURIComponent(GOOGLE_CLIENT_ID)}` +
+      `&redirect_uri=${encodeURIComponent(window.location.origin + '/storyteller/auth/google/callback')}` +
+      `&response_type=code` +
+      `&scope=${encodeURIComponent('openid email profile')}` +
+      `&prompt=select_account`;
+
+    window.open(authUrl, 'Google Sign In', `width=${width},height=${height},left=${left},top=${top}`);
   };
 
   const handleDevLogin = async () => {
@@ -222,26 +245,6 @@ function Landing() {
       setDevLoginLoading(false);
     }
   };
-
-  // Render Google button (standard flow only)
-  useEffect(() => {
-    if (showGoogleButton && googleReady && googleButtonRef.current && window.google?.accounts?.id) {
-      console.log('[GoogleAuth] Rendering Google button');
-      googleButtonRef.current.innerHTML = '';
-      window.google.accounts.id.renderButton(
-        googleButtonRef.current,
-        {
-          type: 'standard',
-          theme: 'filled_blue',
-          size: 'large',
-          text: 'signin_with',
-          shape: 'rectangular',
-          logo_alignment: 'left',
-          width: 280
-        }
-      );
-    }
-  }, [showGoogleButton, googleReady]);
 
   const scrollToSection = (ref) => {
     ref.current?.scrollIntoView({ behavior: 'smooth' });
@@ -529,13 +532,6 @@ function Landing() {
 
           {devLoginError && (
             <p className="text-red-400 text-sm mb-4">{devLoginError}</p>
-          )}
-
-          {/* Fallback Google Sign-In button (rendered by Google API) */}
-          {showGoogleButton && (
-            <div className="flex justify-center mb-4">
-              <div ref={googleButtonRef} className="google-signin-button" />
-            </div>
           )}
 
           {/* Trust indicators */}

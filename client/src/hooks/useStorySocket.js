@@ -6,7 +6,7 @@
  * Extracted from Story.jsx for maintainability.
  */
 
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { audioLog, socketLog, sfxLog } from '../utils/clientLogger';
 
 /**
@@ -22,10 +22,6 @@ import { audioLog, socketLog, sfxLog } from '../utils/clientLogger';
  * @param {array} options.pendingChoices - Current pending choices
  * @param {boolean} options.launchActive - Whether launch sequence is active
  */
-
-// Track last progress update for stall detection
-let lastProgressUpdateTime = 0;
-let stallDetectionTimeout = null;
 
 export function useStorySocket({
   socket,
@@ -58,6 +54,11 @@ export function useStorySocket({
   } = stateSetters;
   const { sceneAudioStartedRef } = refs;
   const { continueStory, resetLaunch } = callbacks;
+
+  // P0 FIX: Use refs instead of module-level variables for stall detection
+  // This prevents cross-session interference when multiple sessions exist
+  const lastProgressUpdateTimeRef = useRef(0);
+  const stallDetectionTimeoutRef = useRef(null);
 
   useEffect(() => {
     if (!socket) return;
@@ -92,9 +93,9 @@ export function useStorySocket({
       socketLog.info(`RECV: audio-ready | hasTimings: ${!!data.wordTimings} | wordCount: ${data.wordTimings?.words?.length || 0} | bytes: ${data.audio?.length || 0} | images: ${data.sceneImages?.length || 0}`);
 
       // Clear stall detection since we got audio (generation succeeded)
-      if (stallDetectionTimeout) {
-        clearTimeout(stallDetectionTimeout);
-        stallDetectionTimeout = null;
+      if (stallDetectionTimeoutRef.current) {
+        clearTimeout(stallDetectionTimeoutRef.current);
+        stallDetectionTimeoutRef.current = null;
       }
 
       // Store word timings for karaoke/read-along feature
@@ -136,11 +137,14 @@ export function useStorySocket({
             setSceneAudioStarted(true);
             setIsAudioQueued(false);
 
-            // Trigger SFX
+            // Trigger SFX with actual audio duration for accurate timing
             const currentSfxList = sfxDetailsRef.current?.sfxList;
+            const audioDurationSeconds = data.wordTimings?.total_duration_ms
+              ? data.wordTimings.total_duration_ms / 1000
+              : null;
             if (currentSfxList && currentSfxList.length > 0 && sfxEnabledRef.current) {
-              sfxLog.info(`TRIGGER_SUCCESS | source: onStart_callback | effects: ${currentSfxList.length} | keys: ${currentSfxList.map(s => s.sfx_key || s.sfxKey).join(', ')}`);
-              playSfxWithState(currentSfxList);
+              sfxLog.info(`TRIGGER_SUCCESS | source: onStart_callback | effects: ${currentSfxList.length} | audioDuration: ${audioDurationSeconds}s | keys: ${currentSfxList.map(s => s.sfx_key || s.sfxKey).join(', ')}`);
+              playSfxWithState(currentSfxList, audioDurationSeconds);
             } else {
               sfxLog.info(`TRIGGER_SKIPPED | source: onStart_callback | enabled: ${sfxEnabledRef.current} | sfxList: ${currentSfxList?.length || 0}`);
             }
@@ -190,9 +194,9 @@ export function useStorySocket({
       console.log('[Socket:Recv] EVENT: generating | step:', data?.step, '| percent:', data?.percent, '| message:', data?.message?.substring(0, 40));
 
       // HEARTBEAT: Reset stall detection timer on every progress update
-      lastProgressUpdateTime = Date.now();
-      if (stallDetectionTimeout) {
-        clearTimeout(stallDetectionTimeout);
+      lastProgressUpdateTimeRef.current = Date.now();
+      if (stallDetectionTimeoutRef.current) {
+        clearTimeout(stallDetectionTimeoutRef.current);
       }
 
       setIsGenerating(true);
@@ -204,16 +208,16 @@ export function useStorySocket({
         });
       }
 
-      // STALL DETECTION: Set timeout to detect if no update arrives for 35 seconds
-      stallDetectionTimeout = setTimeout(() => {
-        const timeSinceLastUpdate = Date.now() - lastProgressUpdateTime;
-        if (timeSinceLastUpdate > 30000) {
-          console.error('[Stall Detection] No progress update for 30+ seconds. Generation may be stuck.');
+      // STALL DETECTION: Set timeout to detect if no update arrives for 120 seconds
+      stallDetectionTimeoutRef.current = setTimeout(() => {
+        const timeSinceLastUpdate = Date.now() - lastProgressUpdateTimeRef.current;
+        if (timeSinceLastUpdate > 120000) {
+          console.error('[Stall Detection] No progress update for 120+ seconds. Generation may be stuck.');
           setIsGenerating(false);
           setGenerationProgress({ step: 0, percent: 0, message: '' });
           setAudioError('Story generation is taking too long. Please refresh the page and try again.');
         }
-      }, 35000);
+      }, 125000);
     };
 
     // Handle choice accepted
@@ -247,10 +251,14 @@ export function useStorySocket({
     const handleAudioError = (data) => {
       console.error('[Socket:Recv] EVENT: audio-error | message:', data?.message);
       // Clear stall detection since we got a response
-      if (stallDetectionTimeout) {
-        clearTimeout(stallDetectionTimeout);
-        stallDetectionTimeout = null;
+      if (stallDetectionTimeoutRef.current) {
+        clearTimeout(stallDetectionTimeoutRef.current);
+        stallDetectionTimeoutRef.current = null;
       }
+      // CRITICAL FIX: Clear generation state so progress bar disappears on audio error
+      setIsGenerating(false);
+      setGenerationProgress({ step: 0, percent: 0, message: '' });
+
       const isQuotaError = data.message?.toLowerCase().includes('quota');
       setAudioError(isQuotaError
         ? 'Voice narration unavailable - ElevenLabs credits exhausted. Story text will still display.'
@@ -262,9 +270,9 @@ export function useStorySocket({
     const handleError = (error) => {
       console.error('[Socket:Recv] EVENT: error | message:', error?.message || error);
       // Clear stall detection since we got a response
-      if (stallDetectionTimeout) {
-        clearTimeout(stallDetectionTimeout);
-        stallDetectionTimeout = null;
+      if (stallDetectionTimeoutRef.current) {
+        clearTimeout(stallDetectionTimeoutRef.current);
+        stallDetectionTimeoutRef.current = null;
       }
 
       // Handle "No pending audio" error - happens after server restart
@@ -321,9 +329,9 @@ export function useStorySocket({
     // Cleanup
     return () => {
       // Clear stall detection timeout on unmount
-      if (stallDetectionTimeout) {
-        clearTimeout(stallDetectionTimeout);
-        stallDetectionTimeout = null;
+      if (stallDetectionTimeoutRef.current) {
+        clearTimeout(stallDetectionTimeoutRef.current);
+        stallDetectionTimeoutRef.current = null;
       }
 
       socket.off('intro-audio-ready', handleIntroAudioReady);

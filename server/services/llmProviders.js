@@ -101,6 +101,80 @@ const VIOLENCE_THRESHOLDS = {
 export { GORE_THRESHOLDS, ROMANCE_THRESHOLDS, VIOLENCE_THRESHOLDS };
 
 // ============================================================================
+// P2 FIX: VENICE-SPECIFIC QUALITY PARAMETERS
+// Optimized parameters for reducing repetition and improving creative output
+// ============================================================================
+const VENICE_PARAMS = {
+  temperature: 0.85,          // Slightly higher for creativity
+  frequency_penalty: 0.4,     // Reduce word/phrase repetition
+  presence_penalty: 0.3,      // Encourage topic diversity
+  top_p: 0.92                 // Nucleus sampling for quality
+};
+
+/**
+ * P2 FIX: Detect repetition issues in generated text
+ * @param {string} text - Generated text to analyze
+ * @returns {Object} Repetition analysis with count, warnings, and severity
+ */
+export function detectRepetition(text) {
+  if (!text || text.length < 100) {
+    return { count: 0, warnings: [], severity: 'none' };
+  }
+
+  const warnings = [];
+  let count = 0;
+
+  // Check for repeated sentences
+  const sentences = text.match(/[^.!?]+[.!?]+/g) || [];
+  const sentenceSet = new Set();
+  for (const sentence of sentences) {
+    const normalized = sentence.toLowerCase().trim();
+    if (normalized.length > 20 && sentenceSet.has(normalized)) {
+      count++;
+      if (count === 1) {
+        warnings.push(`Repeated sentence: "${normalized.substring(0, 50)}..."`);
+      }
+    }
+    sentenceSet.add(normalized);
+  }
+
+  // Check for repeated phrases (3+ word sequences)
+  const words = text.toLowerCase().split(/\s+/);
+  const phraseMap = new Map();
+  for (let i = 0; i < words.length - 3; i++) {
+    const phrase = words.slice(i, i + 4).join(' ');
+    if (phrase.length > 15) {
+      const phraseCount = (phraseMap.get(phrase) || 0) + 1;
+      phraseMap.set(phrase, phraseCount);
+      if (phraseCount === 3) {
+        count++;
+        warnings.push(`Phrase repeated 3+ times: "${phrase}"`);
+      }
+    }
+  }
+
+  // Check for repeated paragraph openings
+  const paragraphs = text.split(/\n\s*\n/);
+  const openings = paragraphs.map(p => p.trim().substring(0, 30).toLowerCase());
+  const openingSet = new Set();
+  for (const opening of openings) {
+    if (opening.length > 10 && openingSet.has(opening)) {
+      count++;
+      warnings.push(`Repeated paragraph opening: "${opening}..."`);
+    }
+    openingSet.add(opening);
+  }
+
+  // Determine severity
+  let severity = 'none';
+  if (count >= 5) severity = 'high';
+  else if (count >= 3) severity = 'medium';
+  else if (count >= 1) severity = 'low';
+
+  return { count, warnings: warnings.slice(0, 5), severity };
+}
+
+// ============================================================================
 // PROVIDER CLIENTS
 // ============================================================================
 
@@ -111,13 +185,18 @@ const openaiClient = new OpenAI({
 
 /**
  * Call Venice.ai API
+ * P2 FIX: Uses optimized parameters for better quality and reduced repetition
  */
 async function callVenice(options) {
   const {
     messages,
     model = PROVIDER_CONFIG[PROVIDERS.VENICE].models.creative,
-    temperature = 0.8,
-    max_tokens = 2048
+    temperature = VENICE_PARAMS.temperature,
+    max_tokens = 2048,
+    // P2 FIX: Allow override of Venice params but use optimized defaults
+    frequency_penalty = VENICE_PARAMS.frequency_penalty,
+    presence_penalty = VENICE_PARAMS.presence_penalty,
+    top_p = VENICE_PARAMS.top_p
   } = options;
 
   const apiKey = process.env.VENICE_API_KEY;
@@ -128,6 +207,7 @@ async function callVenice(options) {
   const startTime = Date.now();
 
   try {
+    // P2 FIX: Include quality parameters for Venice
     const response = await fetch(`${PROVIDER_CONFIG[PROVIDERS.VENICE].baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -139,6 +219,9 @@ async function callVenice(options) {
         messages,
         temperature,
         max_tokens,
+        frequency_penalty,  // P2 FIX: Reduce repetition
+        presence_penalty,   // P2 FIX: Encourage diversity
+        top_p,              // P2 FIX: Nucleus sampling
         stream: false
       }),
     });
@@ -345,6 +428,8 @@ export function analyzeContentRequirements(settings) {
   const romance = intensity.romance || 0;
   const scary = intensity.scary || 0;
   const adultContent = intensity.adultContent || 0;
+  const sensuality = intensity.sensuality || 0;
+  const explicitness = intensity.explicitness || 0;
 
   // Children or general audience always use OpenAI
   if (audience !== 'mature') {
@@ -352,26 +437,29 @@ export function analyzeContentRequirements(settings) {
       provider: PROVIDERS.OPENAI,
       reason: 'Non-mature audience uses safe provider',
       requiresVenice: false,
-      intensity: { gore, violence, romance, scary, adultContent }
+      intensity: { gore, violence, romance, scary, adultContent, sensuality, explicitness }
     };
   }
 
   // Check if any intensity exceeds Venice threshold
-  // adultContent > 50 always triggers Venice (explicit sexual content)
+  // Using >= for consistency: 60+ gore, 50+ adultContent triggers Venice for explicit content
+  // FIXED: Changed from > to >= so that boundary values (60 gore, 50 adult) actually trigger Venice
   const requiresVenice =
-    gore > GORE_THRESHOLDS.MODERATE ||
-    violence > VIOLENCE_THRESHOLDS.MODERATE ||
-    romance > ROMANCE_THRESHOLDS.STEAMY ||
-    adultContent > 50;
+    gore >= GORE_THRESHOLDS.MODERATE ||
+    violence >= VIOLENCE_THRESHOLDS.MODERATE ||
+    romance >= ROMANCE_THRESHOLDS.STEAMY ||
+    adultContent >= 50 ||
+    explicitness >= 70 ||
+    sensuality >= 70;
 
   // Estimate provider split for this configuration
   let venicePercentage = 0;
   if (requiresVenice) {
     // Estimate based on how much content likely needs Venice
-    // adultContent > 70 = very explicit, needs Venice for most scenes
-    if (gore > 80 || violence > 80 || romance > 80 || adultContent > 70) {
+    // High explicitness or adultContent > 70 = very explicit, needs Venice for most scenes
+    if (gore > 80 || violence > 80 || romance > 80 || adultContent > 70 || explicitness > 80) {
       venicePercentage = 40; // Very intense - many scenes need Venice
-    } else if (gore > 60 || violence > 60 || romance > 60 || adultContent > 50) {
+    } else if (gore > 60 || violence > 60 || romance > 60 || adultContent > 50 || explicitness > 70 || sensuality > 70) {
       venicePercentage = 25; // Intense - some scenes need Venice
     } else {
       venicePercentage = 10; // Moderate - few scenes need Venice
@@ -381,11 +469,11 @@ export function analyzeContentRequirements(settings) {
   return {
     provider: requiresVenice ? PROVIDERS.VENICE : PROVIDERS.OPENAI,
     reason: requiresVenice
-      ? `Mature content with high intensity (gore:${gore}, violence:${violence}, romance:${romance}, adultContent:${adultContent})`
+      ? `Mature content with high intensity (gore:${gore}, violence:${violence}, romance:${romance}, adultContent:${adultContent}, sensuality:${sensuality}, explicitness:${explicitness})`
       : 'Mature audience with moderate intensity - OpenAI can handle',
     requiresVenice,
     venicePercentage,
-    intensity: { gore, violence, romance, scary, adultContent }
+    intensity: { gore, violence, romance, scary, adultContent, sensuality, explicitness }
   };
 }
 
@@ -516,11 +604,120 @@ Keep the summary to 2-4 sentences.`
 }
 
 // ============================================================================
+// PHASE 5.3: BIDIRECTIONAL FALLBACK - DETECT SELF-CENSORING
+// ============================================================================
+
+/**
+ * Analyze content explicitness to detect self-censoring
+ * Returns a score from 0 (completely tame) to 1 (highly explicit)
+ * Used to detect when OpenAI self-censors mature content
+ */
+export function analyzeExplicitness(content, expectedTypes = []) {
+  if (!content || content.length < 100) {
+    return { score: 0.5, indicators: [], isSelfCensored: false };
+  }
+
+  const text = content.toLowerCase();
+  const indicators = [];
+  let score = 0;
+
+  // Sexual content indicators (for romance/erotica)
+  const sexualIndicators = [
+    { pattern: /\b(moan|groan|gasp|pant)\w*/g, weight: 0.1, type: 'sex' },
+    { pattern: /\b(thrust|penetrat|orgasm|climax)\w*/g, weight: 0.2, type: 'sex' },
+    { pattern: /\b(cock|dick|pussy|cunt|breast|nipple)\w*/g, weight: 0.25, type: 'sex' },
+    { pattern: /\b(naked|nude|undress|strip)\w*/g, weight: 0.1, type: 'sex' },
+    { pattern: /\b(kiss|embrace|caress|stroke)\w*/g, weight: 0.05, type: 'sex' },
+    { pattern: /their bodies (intertwined|joined|pressed)/g, weight: 0.15, type: 'sex' }
+  ];
+
+  // Violence/gore indicators
+  const violenceIndicators = [
+    { pattern: /\b(blood|bleeding|bloody)\w*/g, weight: 0.1, type: 'violence' },
+    { pattern: /\b(stab|slash|cut|wound)\w*/g, weight: 0.15, type: 'violence' },
+    { pattern: /\b(dismember|decapitat|eviscerat|disembowel)\w*/g, weight: 0.25, type: 'gore' },
+    { pattern: /\b(scream|agony|pain|suffer)\w*/g, weight: 0.1, type: 'violence' },
+    { pattern: /\b(kill|murder|death|die|dead)\w*/g, weight: 0.1, type: 'violence' }
+  ];
+
+  // Self-censoring phrases (indicates model refused to generate explicit)
+  const censoringIndicators = [
+    { pattern: /the scene fades? to black/g, weight: -0.3, type: 'censored' },
+    { pattern: /we'll leave the details/g, weight: -0.3, type: 'censored' },
+    { pattern: /let's just say/g, weight: -0.2, type: 'censored' },
+    { pattern: /intimate moment[s]? between them/g, weight: -0.2, type: 'censored' },
+    { pattern: /lost in each other/g, weight: -0.1, type: 'censored' },
+    { pattern: /what happened next .* imagination/g, weight: -0.3, type: 'censored' },
+    { pattern: /I (?:can't|cannot|won't) (?:write|generate|create)/g, weight: -0.5, type: 'censored' },
+    { pattern: /I'm not able to/g, weight: -0.4, type: 'censored' }
+  ];
+
+  const allIndicators = [...sexualIndicators, ...violenceIndicators, ...censoringIndicators];
+
+  for (const { pattern, weight, type } of allIndicators) {
+    const matches = text.match(pattern);
+    if (matches) {
+      const matchCount = Math.min(matches.length, 5); // Cap at 5 to avoid over-scoring
+      score += weight * matchCount;
+      indicators.push({ type, matches: matches.slice(0, 3), contribution: weight * matchCount });
+    }
+  }
+
+  // Normalize score to 0-1 range
+  score = Math.max(0, Math.min(1, score + 0.3)); // 0.3 baseline
+
+  // Determine if self-censored based on expected content types
+  let isSelfCensored = false;
+  if (expectedTypes.includes('sex') && score < 0.3) {
+    isSelfCensored = true;
+  } else if (expectedTypes.includes('gore') && score < 0.25) {
+    isSelfCensored = true;
+  } else if (expectedTypes.includes('violence') && score < 0.2) {
+    isSelfCensored = true;
+  }
+
+  // Check for explicit censoring phrases
+  const hasCensoringPhrases = indicators.some(i => i.type === 'censored');
+  if (hasCensoringPhrases) {
+    isSelfCensored = true;
+  }
+
+  return {
+    score,
+    indicators,
+    isSelfCensored,
+    expectedTypes,
+    censoringPhrases: indicators.filter(i => i.type === 'censored')
+  };
+}
+
+/**
+ * Determine expected content types from settings
+ */
+function getExpectedContentTypes(contentSettings) {
+  const types = [];
+  const intensity = contentSettings?.intensity || {};
+
+  if (intensity.adultContent >= 50 || intensity.romance >= 60) {
+    types.push('sex');
+  }
+  if (intensity.gore >= 60) {
+    types.push('gore');
+  }
+  if (intensity.violence >= 60) {
+    types.push('violence');
+  }
+
+  return types;
+}
+
+// ============================================================================
 // UNIFIED LLM CALL WITH INTELLIGENT ROUTING
 // ============================================================================
 
 /**
  * Main LLM call function with intelligent provider routing
+ * PHASE 5.3: Enhanced with bidirectional fallback (detects self-censoring)
  * @param {Object} options - Call options
  * @returns {Object} Result with content and metadata
  */
@@ -608,6 +805,51 @@ export async function callLLM(options) {
     // Track usage
     if (sessionId) {
       trackProviderUsage(sessionId, result.provider, result.usage, result.model);
+    }
+
+    // PHASE 5.3: Bidirectional fallback - detect self-censoring
+    // If OpenAI was used for mature content, check if it self-censored
+    if (provider === PROVIDERS.OPENAI &&
+        contentSettings?.audience === 'mature' &&
+        agent_category === 'creative') {
+
+      const expectedTypes = getExpectedContentTypes(contentSettings);
+
+      if (expectedTypes.length > 0) {
+        const explicitnessAnalysis = analyzeExplicitness(result.content, expectedTypes);
+
+        if (explicitnessAnalysis.isSelfCensored) {
+          logger.warn(`[LLM] ${agent_name}: OpenAI self-censored mature content (score: ${explicitnessAnalysis.score.toFixed(2)}), retrying with Venice`);
+          logger.debug(`[LLM] Censoring indicators:`, explicitnessAnalysis.censoringPhrases);
+
+          try {
+            const veniceResult = await callVenice({
+              messages,
+              model: 'llama-3.3-70b',
+              temperature: Math.min(temperature + 0.1, 1.0), // Slightly higher temp for creativity
+              max_tokens
+            });
+
+            if (sessionId) {
+              trackProviderUsage(sessionId, PROVIDERS.VENICE, veniceResult.usage, 'llama-3.3-70b');
+            }
+
+            return {
+              ...veniceResult,
+              agent_name,
+              selectedProvider: PROVIDERS.VENICE,
+              selectionReason: 'Bidirectional fallback: OpenAI self-censored',
+              wasSelfCensorFallback: true,
+              originalProvider: PROVIDERS.OPENAI,
+              selfCensorAnalysis: explicitnessAnalysis
+            };
+          } catch (veniceError) {
+            logger.error(`[LLM] ${agent_name}: Venice fallback for self-censor failed: ${veniceError.message}`);
+            // Return original OpenAI result if Venice fails
+            logger.warn(`[LLM] ${agent_name}: Using original OpenAI result despite self-censoring`);
+          }
+        }
+      }
     }
 
     return {
@@ -810,6 +1052,7 @@ export default {
   GORE_THRESHOLDS,
   ROMANCE_THRESHOLDS,
   VIOLENCE_THRESHOLDS,
+  VENICE_PARAMS,           // P2 FIX: Export Venice quality params
   callLLM,
   callVenice,
   callOpenRouter,
@@ -818,6 +1061,8 @@ export default {
   selectProvider,
   obfuscateContent,
   generateSafeSummary,
+  detectRepetition,        // P2 FIX: Export repetition detection
+  analyzeExplicitness,     // PHASE 5.3: Self-censor detection
   isProviderAvailable,
   getProviderStatus,
   getProviderRecommendation

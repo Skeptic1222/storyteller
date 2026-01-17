@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, useCallback, useMemo } from 'react';
+import { createContext, useContext, useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { io } from 'socket.io-client';
 import { SOCKET_PATH } from '../config';
 import { useAuth } from './AuthContext';
@@ -12,48 +12,144 @@ export function SocketProvider({ children }) {
   const [sessionId, setSessionId] = useState(null);
   const { user } = useAuth();
 
+  // Track connection state to prevent premature disconnection
+  const isConnectingRef = useRef(false);
+  const socketRef = useRef(null);
+  const reconnectAttemptsRef = useRef(0);
+  const mountedRef = useRef(true);
+  const maxReconnectAttempts = 15;
+
   useEffect(() => {
+    mountedRef.current = true;
+
+    // Prevent duplicate connections
+    if (socketRef.current?.connected) {
+      console.log('[Socket] SKIP_INIT | already connected');
+      return;
+    }
+
+    // If we have a socket that's connecting or disconnecting, wait for it
+    if (socketRef.current && !socketRef.current.disconnected) {
+      console.log('[Socket] SKIP_INIT | socket exists and not disconnected');
+      return;
+    }
+
+    // Clean up any existing socket before creating new one
+    if (socketRef.current) {
+      console.log('[Socket] Cleaning up existing socket before reconnect');
+      try {
+        socketRef.current.removeAllListeners();
+        socketRef.current.disconnect();
+      } catch (e) {
+        // Ignore cleanup errors
+      }
+      socketRef.current = null;
+    }
+
     const token = getStoredToken();
-    // Connect to socket with explicit configuration
+
+    // Create socket with autoConnect: false, then connect manually
+    // This gives us more control over the connection lifecycle
     const socketInstance = io(window.location.origin, {
       path: SOCKET_PATH,
-      // Try polling first - more reliable through reverse proxies
-      transports: ['polling', 'websocket'],
-      upgrade: true,  // Allow upgrade to websocket after polling connects
+      // Use polling only - more reliable through IIS reverse proxy
+      transports: ['polling'],
+      upgrade: false,             // Don't upgrade to websocket (avoids premature close errors)
       reconnection: true,
       reconnectionDelay: 1000,
-      reconnectionAttempts: 10,
-      // Increase timeouts to handle long-running AI operations (scene generation can take 60-90s)
-      timeout: 30000,            // 30 second connection timeout (reduced to fail faster)
-      ackTimeout: 120000,        // 120 second acknowledgement timeout
-      forceNew: true,            // Always create new connection
-      withCredentials: true,     // Include cookies
+      reconnectionDelayMax: 5000,
+      reconnectionAttempts: maxReconnectAttempts,
+      timeout: 30000,
+      ackTimeout: 120000,
+      forceNew: true,
+      withCredentials: true,
+      autoConnect: false,         // Don't connect automatically
       auth: { token }
     });
 
-    console.log('[Socket] Initializing connection to:', window.location.origin, 'path:', SOCKET_PATH);
+    socketRef.current = socketInstance;
+    isConnectingRef.current = true;
+    console.log('[Socket] Initializing connection to:', window.location.origin, 'path:', SOCKET_PATH, 'hasToken:', !!token);
 
     socketInstance.on('connect', () => {
-      console.log('[Socket] CONNECTED | id:', socketInstance.id);
+      if (!mountedRef.current) return;
+      console.log('[Socket] CONNECTED | id:', socketInstance.id, '| authenticated:', !!token);
+      isConnectingRef.current = false;
+      reconnectAttemptsRef.current = 0;
       setConnected(true);
     });
 
     socketInstance.on('disconnect', (reason) => {
+      if (!mountedRef.current) return;
       console.log('[Socket] DISCONNECTED | reason:', reason);
       setConnected(false);
+
+      // Handle specific disconnect reasons
+      if (reason === 'io server disconnect' && mountedRef.current) {
+        // Server disconnected us - try to reconnect
+        console.log('[Socket] Server initiated disconnect, attempting reconnect...');
+        socketInstance.connect();
+      }
+      // 'io client disconnect' means we called disconnect() - don't auto-reconnect
     });
 
     socketInstance.on('connect_error', (error) => {
-      console.error('[Socket] CONNECTION_ERROR | error:', error?.message || error);
+      if (!mountedRef.current) return;
+      console.error('[Socket] CONNECTION_ERROR | error:', error?.message || error, '| attempt:', reconnectAttemptsRef.current);
+      isConnectingRef.current = false;
       setConnected(false);
+      reconnectAttemptsRef.current++;
+
+      // If we've exceeded max attempts, try a fresh connection after delay
+      if (reconnectAttemptsRef.current >= maxReconnectAttempts && mountedRef.current) {
+        console.log('[Socket] Max reconnect attempts reached, will retry with fresh connection in 10s');
+        setTimeout(() => {
+          if (mountedRef.current) {
+            reconnectAttemptsRef.current = 0;
+            socketInstance.connect();
+          }
+        }, 10000);
+      }
+    });
+
+    socketInstance.on('reconnect', (attemptNumber) => {
+      if (!mountedRef.current) return;
+      console.log('[Socket] RECONNECTED | attempt:', attemptNumber);
+      reconnectAttemptsRef.current = 0;
+      setConnected(true);
+    });
+
+    socketInstance.on('reconnect_attempt', (attemptNumber) => {
+      console.log('[Socket] RECONNECT_ATTEMPT | attempt:', attemptNumber);
+    });
+
+    socketInstance.on('reconnect_failed', () => {
+      console.error('[Socket] RECONNECT_FAILED | all attempts exhausted');
     });
 
     setSocket(socketInstance);
 
+    // Connect manually after all listeners are set up
+    socketInstance.connect();
+
     return () => {
-      socketInstance.disconnect();
+      // Mark as unmounted first to prevent state updates
+      mountedRef.current = false;
+
+      // Clean up socket on unmount
+      if (socketRef.current) {
+        console.log('[Socket] Cleanup - removing listeners and disconnecting');
+        try {
+          socketRef.current.removeAllListeners();
+          socketRef.current.disconnect();
+        } catch (e) {
+          // Ignore cleanup errors silently
+        }
+        socketRef.current = null;
+      }
+      isConnectingRef.current = false;
     };
-  }, []);
+  }, [user?.id]); // Only reconnect when user ID changes, not entire user object
 
   const joinSession = useCallback((id) => {
     if (socket && id) {

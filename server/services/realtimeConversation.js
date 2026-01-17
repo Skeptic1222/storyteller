@@ -9,6 +9,95 @@ import { pool } from '../database/pool.js';
 import { AUTHOR_STYLES_LIST } from './authorStyles.js';
 import smartConfig from './smartConfig.js';
 import { requireSessionOwner } from '../socket/socketAuth.js';
+import { completion, parseJsonResponse } from './openai.js';
+
+/**
+ * LLM-based conversation config extractor
+ * Replaces ALL keyword matching with semantic understanding
+ * Uses a single pass to extract all story preferences from conversation
+ */
+async function extractConfigWithLLM(conversationHistory, sessionId) {
+  if (!conversationHistory || conversationHistory.length === 0) {
+    logger.warn(`[RTC ${sessionId}] No conversation history for LLM extraction`);
+    return null;
+  }
+
+  // Format conversation for analysis
+  const conversationText = conversationHistory
+    .map(m => `${m.role.toUpperCase()}: ${m.content}`)
+    .join('\n');
+
+  const prompt = `Analyze this story configuration conversation and extract all user preferences.
+
+CONVERSATION:
+${conversationText}
+
+Extract ALL of the following from the user's responses (not the AI's questions):
+
+1. GENRE: fantasy, horror, sci-fi, mystery, romance, adventure, comedy, fairy_tale, thriller, or null
+2. STORY_TYPE: "narrative" (linear story) or "cyoa" (choose your own adventure/interactive)
+3. STORY_FORMAT: picture_book, short_story, novella, novel, or series
+4. AUDIENCE: children, general, young_adult, mature, or adult (based on content preferences)
+5. LENGTH: short (5-10 min), medium (15-20 min), or long (30+ min)
+6. MOOD: scary, exciting, funny, dramatic, calm, mysterious, dark, light, intense, or null
+7. VOICE_GENDER: male, female, or null (what narrator gender does the user prefer?)
+8. NARRATOR_STYLE: warm, dramatic, playful, mysterious, or null
+9. MULTI_VOICE: true (user wants different voices for characters) or false (single narrator)
+10. HIDE_SPEECH_TAGS: true (remove "he said", "she asked" when multi-voice) or false
+11. SFX_ENABLED: true (user wants sound effects/ambient audio) or false
+12. SFX_LEVEL: low (subtle), medium (moderate), or high (immersive) - only if sfx_enabled
+13. SPECIFIC_VOICE_NAME: If user mentioned a specific narrator name like "George", "Brian", "Charlotte", "Rachel", "Callum", "Daniel" - otherwise null
+
+Return JSON:
+{
+  "genre": "...",
+  "story_type": "narrative" or "cyoa",
+  "cyoa_enabled": true/false,
+  "story_format": "...",
+  "audience": "...",
+  "length": "...",
+  "mood": "...",
+  "voice_gender": "male"/"female"/null,
+  "narrator_style": "...",
+  "multi_voice": true/false,
+  "hide_speech_tags": true/false,
+  "sfx_enabled": true/false,
+  "sfx_level": "low"/"medium"/"high"/null,
+  "specific_voice_name": "..." or null,
+  "reasoning": "Brief explanation of how these were determined"
+}
+
+IMPORTANT:
+- Only extract preferences the user EXPLICITLY expressed or clearly implied
+- Use null for fields with no clear user preference
+- Pay attention to context and natural language, not just keywords
+- "scary story" implies horror genre AND scary mood
+- "bedtime story" implies children audience and calm mood
+- "epic adventure" implies long length and exciting mood
+- If user says "yes" to multi-voice, set multi_voice: true`;
+
+  try {
+    const response = await completion({
+      model: 'gpt-5.2-instant', // Fast model for config extraction
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.2, // Low temp for consistent extraction
+      max_tokens: 500
+    });
+
+    const result = parseJsonResponse(response);
+
+    if (result && typeof result === 'object') {
+      logger.info(`[RTC ${sessionId}] LLM config extraction successful: ${JSON.stringify(result)}`);
+      return result;
+    }
+
+    logger.warn(`[RTC ${sessionId}] LLM config extraction returned invalid result`);
+    return null;
+  } catch (error) {
+    logger.error(`[RTC ${sessionId}] LLM config extraction failed:`, error.message);
+    return null;
+  }
+}
 
 // Try the base model name - dated versions may have different capabilities
 const OPENAI_REALTIME_URL = 'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview';
@@ -44,7 +133,7 @@ Build a complete STORY PREMISE together that captures:
 REQUIRED QUESTIONS - Ask about ALL of these:
 
 1. STORY TYPE: "Would you like a regular story to listen to, or a choose-your-own-adventure where you make choices that affect the story?"
-   (NOTE: Only offer 'narrative' or 'cyoa' - D&D campaigns are configured separately in the app)
+   (NOTE: Only offer 'narrative' or 'cyoa' story types)
 
 2. GENRE MIX: "What genres should we blend? Fantasy, horror, sci-fi, mystery, romance, adventure, comedy, or fairy tale? We can mix them!"
 
@@ -415,13 +504,46 @@ export class RealtimeConversation {
 
   /**
    * Extract config and save to database (async wrapper)
-   * Uses both rule-based extraction AND AI-powered smart config for best results
+   * Uses LLM-based semantic analysis (primary) with SmartConfig (secondary)
    */
   async extractStoryConfigAndSave() {
-    // Step 1: Rule-based extraction (fast, reliable for explicit mentions)
+    // Step 1: LLM-based extraction - PRIMARY method for all config detection
+    // This replaces all keyword-based detection with semantic understanding
+    try {
+      logger.info(`[RTC ${this.sessionId}] Running LLM-based config extraction...`);
+      const llmConfig = await extractConfigWithLLM(this.conversationHistory, this.sessionId);
+
+      if (llmConfig) {
+        // Apply LLM results directly to storyConfig
+        if (llmConfig.genre) this.storyConfig.genre = llmConfig.genre;
+        if (llmConfig.story_type) this.storyConfig.type = llmConfig.story_type;
+        if (llmConfig.cyoa_enabled !== undefined) this.storyConfig.cyoa_enabled = llmConfig.cyoa_enabled;
+        if (llmConfig.story_format) this.storyConfig.story_format = llmConfig.story_format;
+        if (llmConfig.audience) this.storyConfig.audience = llmConfig.audience;
+        if (llmConfig.length) this.storyConfig.length = llmConfig.length;
+        if (llmConfig.mood) this.storyConfig.mood = llmConfig.mood;
+        if (llmConfig.voice_gender) this.storyConfig.voice_gender = llmConfig.voice_gender;
+        if (llmConfig.narrator_style) this.storyConfig.narrator_style = llmConfig.narrator_style;
+        if (llmConfig.multi_voice !== undefined) this.storyConfig.multi_voice = llmConfig.multi_voice;
+        if (llmConfig.hide_speech_tags !== undefined) this.storyConfig.hide_speech_tags = llmConfig.hide_speech_tags;
+        if (llmConfig.sfx_enabled !== undefined) {
+          this.storyConfig.sfx_enabled = llmConfig.sfx_enabled;
+          if (llmConfig.sfx_level) this.storyConfig.sfx_level = llmConfig.sfx_level;
+        }
+        if (llmConfig.reasoning) {
+          this.storyConfig.llm_config_reasoning = llmConfig.reasoning;
+        }
+
+        logger.info(`[RTC ${this.sessionId}] LLM config extraction applied successfully`);
+      }
+    } catch (error) {
+      logger.warn(`[RTC ${this.sessionId}] LLM config extraction failed:`, error.message);
+    }
+
+    // Step 2: Apply defaults and handle voice assignment (sync operations)
     this.extractStoryConfig();
 
-    // Step 2: AI-powered analysis for nuanced understanding
+    // Step 3: SmartConfig AI analysis for additional enrichment (genres, author style, intensity)
     try {
       const userMessages = this.conversationHistory
         .filter(m => m.role === 'user')
@@ -429,16 +551,13 @@ export class RealtimeConversation {
         .join('. ');
 
       if (userMessages.length > 20) {
-        logger.info(`[RTC ${this.sessionId}] Running SmartConfig AI analysis...`);
+        logger.info(`[RTC ${this.sessionId}] Running SmartConfig AI analysis for enrichment...`);
         const aiResult = await smartConfig.interpretPremise(userMessages, this.storyConfig);
 
         if (aiResult.success && aiResult.suggestedConfig) {
-          // Merge AI suggestions with rule-based config
-          // Rule-based takes priority for explicit mentions (voice, narrator style)
-          // AI supplements with inferred settings (mood, genres, author_style)
           const aiConfig = aiResult.suggestedConfig;
 
-          // Only apply AI-detected values if not already set by rules
+          // Only apply AI-detected values if not already set
           if (!this.storyConfig.mood && aiConfig.mood) {
             this.storyConfig.mood = aiConfig.mood;
             logger.info(`[RTC ${this.sessionId}] SmartConfig detected mood: ${aiConfig.mood}`);
@@ -449,11 +568,11 @@ export class RealtimeConversation {
             logger.info(`[RTC ${this.sessionId}] SmartConfig detected author style: ${aiConfig.author_style}`);
           }
 
-          // Merge genres (AI fills in what rule-based might have missed)
+          // Merge genres
           if (aiConfig.genres) {
             this.storyConfig.genres = {
               ...aiConfig.genres,
-              ...(this.storyConfig.genres || {})  // Rule-based overrides
+              ...(this.storyConfig.genres || {})
             };
             logger.info(`[RTC ${this.sessionId}] SmartConfig detected genres:`, Object.keys(aiConfig.genres));
           }
@@ -472,12 +591,12 @@ export class RealtimeConversation {
             logger.info(`[RTC ${this.sessionId}] SmartConfig recommended narrator style: ${aiConfig.narrator_style}`);
           }
 
-          // Store AI reasoning for debugging/transparency
+          // Store AI reasoning
           this.storyConfig.smart_config_reasoning = aiResult.reasoning;
         }
       }
     } catch (error) {
-      logger.warn(`[RTC ${this.sessionId}] SmartConfig analysis failed, using rule-based only:`, error.message);
+      logger.warn(`[RTC ${this.sessionId}] SmartConfig analysis failed:`, error.message);
     }
 
     await this.saveStoryConfig();
@@ -486,77 +605,16 @@ export class RealtimeConversation {
 
   /**
    * Extract story configuration from conversation history
+   * This sync method handles ONLY:
+   * - Voice name direct lookup (data mapping)
+   * - Character/setting hints (simple regex patterns)
+   * - Voice assignment based on LLM results (already populated by extractStoryConfigAndSave)
+   * - Setting sensible defaults
+   *
+   * ALL semantic analysis is done by extractConfigWithLLM() in extractStoryConfigAndSave()
    */
   extractStoryConfig() {
-    const fullConvo = this.conversationHistory.map(m => m.content).join(' ').toLowerCase();
-    // IMPORTANT: For gender detection, only check USER messages to avoid false matches
-    // from AI questions like "Would you prefer MALE or FEMALE?"
-    const userMessages = this.conversationHistory
-      .filter(m => m.role === 'user')
-      .map(m => m.content)
-      .join(' ')
-      .toLowerCase();
-
-    // Extract genre
-    const genres = ['fantasy', 'horror', 'sci-fi', 'scifi', 'mystery', 'romance', 'adventure', 'comedy', 'fairy tale', 'thriller'];
-    for (const genre of genres) {
-      if (fullConvo.includes(genre)) {
-        this.storyConfig.genre = genre;
-        break;
-      }
-    }
-
-    // Extract type (only narrative or cyoa - D&D is configured separately in the app)
-    if (fullConvo.includes('choose your own') || fullConvo.includes('cyoa') || fullConvo.includes('interactive') || fullConvo.includes('choices')) {
-      this.storyConfig.type = 'cyoa';
-      this.storyConfig.cyoa_enabled = true;
-    } else {
-      this.storyConfig.type = 'narrative';
-      this.storyConfig.cyoa_enabled = false;
-    }
-
-    // Extract story format
-    if (fullConvo.includes('picture book') || fullConvo.includes('children') || fullConvo.includes('bedtime')) {
-      this.storyConfig.story_format = 'picture_book';
-      this.storyConfig.audience = 'children';
-    } else if (fullConvo.includes('novel') || fullConvo.includes('long form') || fullConvo.includes('epic length')) {
-      this.storyConfig.story_format = 'novel';
-    } else if (fullConvo.includes('novella') || fullConvo.includes('novelette')) {
-      this.storyConfig.story_format = 'novella';
-    } else if (fullConvo.includes('series') || fullConvo.includes('multiple parts') || fullConvo.includes('saga')) {
-      this.storyConfig.story_format = 'series';
-    } else {
-      this.storyConfig.story_format = 'short_story';
-    }
-
-    // Extract audience level
-    if (fullConvo.includes('mature') || fullConvo.includes('adult') || fullConvo.includes('dark') || fullConvo.includes('violent') || fullConvo.includes('gore')) {
-      this.storyConfig.audience = 'mature';
-    } else if (fullConvo.includes('family') || fullConvo.includes('kid') || fullConvo.includes('child')) {
-      this.storyConfig.audience = 'children';
-    } else if (!this.storyConfig.audience) {
-      this.storyConfig.audience = 'general';
-    }
-
-    // Extract length
-    if (fullConvo.includes('short') || fullConvo.includes('quick') || fullConvo.includes('5 minute')) {
-      this.storyConfig.length = 'short';
-    } else if (fullConvo.includes('long') || fullConvo.includes('30 minute') || fullConvo.includes('epic')) {
-      this.storyConfig.length = 'long';
-    } else {
-      this.storyConfig.length = 'medium';
-    }
-
-    // Extract mood
-    const moods = ['scary', 'exciting', 'funny', 'dramatic', 'calm', 'mysterious', 'dark', 'light', 'intense'];
-    for (const mood of moods) {
-      if (fullConvo.includes(mood)) {
-        this.storyConfig.mood = mood;
-        break;
-      }
-    }
-
-    // Voice mappings (ElevenLabs voice IDs)
+    // Voice mappings (ElevenLabs voice IDs) - pure data lookup
     const voiceNames = {
       'george': { id: 'JBFqnCBsd6RMkjVDRZzb', gender: 'male', style: 'warm' },
       'brian': { id: 'nPczCjzI2devNBz1zQrb', gender: 'male', style: 'dramatic' },
@@ -584,9 +642,14 @@ export class RealtimeConversation {
       }
     };
 
-    // Extract specific voice name if mentioned (check this FIRST)
-    // CRITICAL: Only check USER messages, not fullConvo! The AI mentions voice names
-    // like "Charlotte" and "Rachel" in its questions, which would falsely match.
+    // Get user messages for regex patterns (not for keyword matching)
+    const userMessages = this.conversationHistory
+      .filter(m => m.role === 'user')
+      .map(m => m.content)
+      .join(' ')
+      .toLowerCase();
+
+    // Check for specific voice name mentioned by user (exact name match, not keyword)
     let voiceFound = false;
     for (const [name, voiceInfo] of Object.entries(voiceNames)) {
       if (userMessages.includes(name)) {
@@ -599,261 +662,7 @@ export class RealtimeConversation {
       }
     }
 
-    // If no specific voice, extract voice gender preference from USER messages only
-    // to avoid matching the AI's question "Would you prefer MALE or FEMALE?"
-    if (!voiceFound) {
-      // Check for strong male indicators in user messages
-      const maleKeywords = [' male', 'male ', 'man ', ' man', 'his voice', ' he ', ' guy', 'gentleman', 'masculine', 'deep voice', 'gravelly', 'rough'];
-      const femaleKeywords = ['female', 'woman', 'her voice', 'lady', 'feminine', 'she ', 'soft voice'];
-
-      let maleScore = 0;
-      let femaleScore = 0;
-
-      for (const kw of maleKeywords) {
-        if (userMessages.includes(kw)) maleScore++;
-      }
-      for (const kw of femaleKeywords) {
-        if (userMessages.includes(kw)) femaleScore++;
-      }
-
-      logger.info(`[RTC ${this.sessionId}] Voice gender scores - Male: ${maleScore}, Female: ${femaleScore}`);
-
-      if (maleScore > femaleScore) {
-        this.storyConfig.voice_gender = 'male';
-        logger.info(`[RTC ${this.sessionId}] Detected male narrator preference from user messages`);
-      } else if (femaleScore > maleScore) {
-        this.storyConfig.voice_gender = 'female';
-        logger.info(`[RTC ${this.sessionId}] Detected female narrator preference from user messages`);
-      } else {
-        // Default to male if no clear preference (user's preference based on feedback)
-        this.storyConfig.voice_gender = 'male';
-        logger.info(`[RTC ${this.sessionId}] No clear gender preference, defaulting to male`);
-      }
-    }
-
-    // Extract narrator style
-    if (fullConvo.includes('warm') || fullConvo.includes('gentle') || fullConvo.includes('soothing') || fullConvo.includes('soft')) {
-      this.storyConfig.narrator_style = 'warm';
-    } else if (fullConvo.includes('dramatic') || fullConvo.includes('theatrical') || fullConvo.includes('epic')) {
-      this.storyConfig.narrator_style = 'dramatic';
-    } else if (fullConvo.includes('playful') || fullConvo.includes('fun') || fullConvo.includes('whimsical')) {
-      this.storyConfig.narrator_style = 'playful';
-    } else if (fullConvo.includes('mysterious') || fullConvo.includes('dark') || fullConvo.includes('spooky')) {
-      this.storyConfig.narrator_style = 'mysterious';
-    }
-
-    // Extract multi-voice narration preference
-    // Keywords that indicate wanting multi-voice
-    const multiVoiceYes = ['multi-voice', 'multi voice', 'multivoice', 'different voices', 'unique voice',
-                           'each character', 'character voices', 'voice act', 'voice-act', 'distinct voices',
-                           'separate voices', 'multiple voices', 'yes to multi', 'yes multi'];
-    const multiVoiceNo = ['single narrator', 'one narrator', 'one voice', 'same voice', 'no multi',
-                          'single voice', 'just one', 'no different'];
-
-    let multiVoiceScore = 0;
-    for (const kw of multiVoiceYes) {
-      if (fullConvo.includes(kw)) multiVoiceScore++;
-    }
-    for (const kw of multiVoiceNo) {
-      if (fullConvo.includes(kw)) multiVoiceScore--;
-    }
-
-    if (multiVoiceScore > 0) {
-      this.storyConfig.multi_voice = true;
-      logger.info(`[RTC ${this.sessionId}] Multi-voice narration enabled`);
-
-      // Check for hide speech tags preference
-      if (fullConvo.includes('hide') && (fullConvo.includes('said') || fullConvo.includes('tag') || fullConvo.includes('speech'))) {
-        this.storyConfig.hide_speech_tags = true;
-        logger.info(`[RTC ${this.sessionId}] Hide speech tags enabled`);
-      } else if (fullConvo.includes('keep') && (fullConvo.includes('said') || fullConvo.includes('tag'))) {
-        this.storyConfig.hide_speech_tags = false;
-      } else {
-        // Default to hiding speech tags when multi-voice is on
-        this.storyConfig.hide_speech_tags = true;
-      }
-    } else if (multiVoiceScore < 0) {
-      this.storyConfig.multi_voice = false;
-      this.storyConfig.hide_speech_tags = false;
-      logger.info(`[RTC ${this.sessionId}] Single narrator mode`);
-    } else {
-      // Default: multi-voice off unless explicitly requested
-      this.storyConfig.multi_voice = false;
-      this.storyConfig.hide_speech_tags = false;
-    }
-
-    // Extract sound effects preference
-    const sfxYes = ['sound effect', 'sound effects', 'sfx', 'ambient', 'atmosphere', 'atmospheric',
-                    'footsteps', 'rain sound', 'immersive', 'audio effects', 'background sounds'];
-    const sfxNo = ['no sound', 'no sfx', 'no effects', 'quiet', 'just voice', 'voice only', 'no ambient'];
-
-    let sfxScore = 0;
-    for (const kw of sfxYes) {
-      if (fullConvo.includes(kw)) sfxScore++;
-    }
-    for (const kw of sfxNo) {
-      if (fullConvo.includes(kw)) sfxScore--;
-    }
-
-    if (sfxScore > 0) {
-      this.storyConfig.sfx_enabled = true;
-
-      // Extract SFX level
-      if (fullConvo.includes('immersive') || fullConvo.includes('lots of') || fullConvo.includes('high') || fullConvo.includes('maximum')) {
-        this.storyConfig.sfx_level = 'high';
-      } else if (fullConvo.includes('moderate') || fullConvo.includes('medium') || fullConvo.includes('some')) {
-        this.storyConfig.sfx_level = 'medium';
-      } else {
-        this.storyConfig.sfx_level = 'low';  // Default to subtle
-      }
-      logger.info(`[RTC ${this.sessionId}] Sound effects enabled at ${this.storyConfig.sfx_level} level`);
-    } else if (sfxScore < 0) {
-      this.storyConfig.sfx_enabled = false;
-      this.storyConfig.sfx_level = 'off';
-      logger.info(`[RTC ${this.sessionId}] Sound effects disabled`);
-    } else {
-      // Default: SFX enabled at low level
-      this.storyConfig.sfx_enabled = true;
-      this.storyConfig.sfx_level = 'low';
-    }
-
-    // Extract author style (if mentioned)
-    const authorKeywords = {
-      // Classic Literature
-      'shakespeare': 'shakespeare',
-      'shakespearean': 'shakespeare',
-      'austen': 'austen',
-      'jane austen': 'austen',
-      'dickens': 'dickens',
-      'charles dickens': 'dickens',
-      'tolkien': 'tolkien',
-      'lord of the rings': 'tolkien',
-      'hemingway': 'hemingway',
-      'stephen king': 'king',
-      'king': 'king',
-      'poe': 'poe',
-      'edgar allan poe': 'poe',
-      'rowling': 'rowling',
-      'harry potter': 'rowling',
-      'orwell': 'orwell',
-      'twain': 'twain',
-      'mark twain': 'twain',
-      'dostoevsky': 'dostoevsky',
-      'tolstoy': 'tolstoy',
-      'fitzgerald': 'fitzgerald',
-      'great gatsby': 'fitzgerald',
-      'wilde': 'wilde',
-      'oscar wilde': 'wilde',
-      'vonnegut': 'vonnegut',
-      'kafka': 'kafka',
-      'homer': 'homer',
-      'christie': 'christie',
-      'agatha christie': 'christie',
-      'stevenson': 'stevenson',
-      'woolf': 'woolf',
-      'marquez': 'marquez',
-      'dumas': 'dumas',
-      'steinbeck': 'steinbeck',
-      'faulkner': 'faulkner',
-      'salinger': 'salinger',
-      'nabokov': 'nabokov',
-      // Sword & Sorcery
-      'howard': 'howard',
-      'robert e. howard': 'howard',
-      'robert howard': 'howard',
-      'conan': 'howard',
-      'de camp': 'decamp',
-      'decamp': 'decamp',
-      'l. sprague de camp': 'decamp',
-      'sprague de camp': 'decamp',
-      'lin carter': 'carter',
-      'carter': 'carter',
-      'moorcock': 'moorcock',
-      'michael moorcock': 'moorcock',
-      'elric': 'moorcock',
-      'eternal champion': 'moorcock',
-      // Science Fiction
-      'asimov': 'asimov',
-      'isaac asimov': 'asimov',
-      'foundation': 'asimov',
-      'le guin': 'leguin',
-      'leguin': 'leguin',
-      'ursula le guin': 'leguin',
-      'ursula k. le guin': 'leguin',
-      'earthsea': 'leguin',
-      'heinlein': 'heinlein',
-      'robert heinlein': 'heinlein',
-      'herbert': 'herbert',
-      'frank herbert': 'herbert',
-      'dune': 'herbert',
-      'clarke': 'clarke',
-      'arthur c. clarke': 'clarke',
-      'arthur clarke': 'clarke',
-      'bradbury': 'bradbury',
-      'ray bradbury': 'bradbury',
-      'fahrenheit 451': 'bradbury',
-      'martian chronicles': 'bradbury',
-      'philip k. dick': 'dick',
-      'philip dick': 'dick',
-      'pkd': 'dick',
-      'butler': 'butler',
-      'octavia butler': 'butler',
-      'octavia e. butler': 'butler',
-      'banks': 'banks',
-      'iain banks': 'banks',
-      'iain m. banks': 'banks',
-      'culture series': 'banks',
-      // Epic Fantasy
-      'donaldson': 'donaldson',
-      'stephen donaldson': 'donaldson',
-      'stephen r. donaldson': 'donaldson',
-      'thomas covenant': 'donaldson',
-      'sanderson': 'sanderson',
-      'brandon sanderson': 'sanderson',
-      'cosmere': 'sanderson',
-      'stormlight': 'sanderson',
-      'mistborn': 'sanderson',
-      'rothfuss': 'rothfuss',
-      'patrick rothfuss': 'rothfuss',
-      'name of the wind': 'rothfuss',
-      'kingkiller': 'rothfuss',
-      'hobb': 'hobb',
-      'robin hobb': 'hobb',
-      'farseer': 'hobb',
-      'assassin': 'hobb',
-      'martin': 'martin',
-      'george martin': 'martin',
-      'george r. r. martin': 'martin',
-      'george r.r. martin': 'martin',
-      'game of thrones': 'martin',
-      'song of ice and fire': 'martin',
-      'jordan': 'jordan',
-      'robert jordan': 'jordan',
-      'wheel of time': 'jordan',
-      'gaiman': 'gaiman',
-      'neil gaiman': 'gaiman',
-      'sandman': 'gaiman',
-      'american gods': 'gaiman',
-      'pratchett': 'pratchett',
-      'terry pratchett': 'pratchett',
-      'discworld': 'pratchett',
-      // Horror & Weird Fiction
-      'lovecraft': 'lovecraft',
-      'h.p. lovecraft': 'lovecraft',
-      'hp lovecraft': 'lovecraft',
-      'cthulhu': 'lovecraft',
-      'cosmic horror': 'lovecraft'
-    };
-
-    for (const [keyword, styleKey] of Object.entries(authorKeywords)) {
-      if (fullConvo.includes(keyword)) {
-        this.storyConfig.author_style = styleKey;
-        logger.info(`[RTC ${this.sessionId}] Detected author style: ${styleKey}`);
-        break;
-      }
-    }
-
-    // If we have gender but no specific voice, assign default based on gender and style
+    // If we have gender from LLM but no specific voice, assign default based on gender and style
     if (!voiceFound && this.storyConfig.voice_gender) {
       const gender = this.storyConfig.voice_gender;
       const style = this.storyConfig.narrator_style || 'default';
@@ -872,22 +681,30 @@ export class RealtimeConversation {
       logger.info(`[RTC ${this.sessionId}] No voice preference detected, defaulting to George (male)`);
     }
 
-    // CRITICAL: Capture user's raw story request for the planner
-    // This ensures specific character requests like "Conan" or "a dragon princess" are passed through
+    // Set sensible defaults for any fields not populated by LLM
+    if (!this.storyConfig.type) this.storyConfig.type = 'narrative';
+    if (this.storyConfig.cyoa_enabled === undefined) this.storyConfig.cyoa_enabled = false;
+    if (!this.storyConfig.story_format) this.storyConfig.story_format = 'short_story';
+    if (!this.storyConfig.audience) this.storyConfig.audience = 'general';
+    if (!this.storyConfig.length) this.storyConfig.length = 'medium';
+    if (this.storyConfig.multi_voice === undefined) this.storyConfig.multi_voice = false;
+    if (this.storyConfig.hide_speech_tags === undefined) this.storyConfig.hide_speech_tags = false;
+    if (this.storyConfig.sfx_enabled === undefined) {
+      this.storyConfig.sfx_enabled = true;
+      this.storyConfig.sfx_level = 'low';
+    }
+
+    // Capture user's raw story request for the planner
     const userStoryRequest = this.conversationHistory
       .filter(m => m.role === 'user')
       .map(m => m.content)
       .join(' ');
     this.storyConfig.story_request = userStoryRequest;
 
-    // Extract character hints from user messages
-    // Look for named characters and character types
+    // Extract character hints using regex patterns (simple pattern matching is acceptable)
     const characterPatterns = [
-      // Named characters from famous works
       /\b(conan|aragorn|frodo|gandalf|harry|hermione|sherlock|watson|dracula|frankenstein)\b/gi,
-      // Character types
       /\b(dragon|princess|prince|knight|wizard|witch|warrior|pirate|vampire|werewolf|elf|dwarf|orc|goblin|fairy|demon|angel|ghost|zombie|robot|alien|detective|spy|assassin|thief|merchant|king|queen|emperor|empress)\b/gi,
-      // Descriptive characters
       /\b(brave|young|old|wise|evil|dark|noble|fallen|lost|wandering|mysterious|ancient)\s+(hero|heroine|warrior|mage|knight|prince|princess|king|queen|stranger|traveler)\b/gi
     ];
 
@@ -898,14 +715,12 @@ export class RealtimeConversation {
         characterHints.push(...matches.map(m => m.toLowerCase()));
       }
     }
-
-    // Deduplicate and store
     this.storyConfig.character_hints = [...new Set(characterHints)];
     if (characterHints.length > 0) {
       logger.info(`[RTC ${this.sessionId}] Extracted character hints: ${characterHints.join(', ')}`);
     }
 
-    // Extract setting hints
+    // Extract setting hints using regex patterns
     const settingPatterns = [
       /\b(forest|castle|dungeon|cave|mountain|ocean|sea|desert|city|village|kingdom|realm|space|planet|ship|island|swamp|jungle|arctic|underground|underwater)\b/gi,
       /\b(medieval|futuristic|modern|ancient|victorian|steampunk|cyberpunk|post-apocalyptic|magical|enchanted|haunted|cursed)\b/gi
@@ -920,7 +735,6 @@ export class RealtimeConversation {
     }
     this.storyConfig.setting_hints = [...new Set(settingHints)];
 
-    // Note: saveStoryConfig is now called from extractStoryConfigAndSave() async wrapper
     logger.info(`[RTC ${this.sessionId}] Extracted config:`, this.storyConfig);
   }
 

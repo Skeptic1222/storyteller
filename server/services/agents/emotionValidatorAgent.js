@@ -65,9 +65,20 @@ function mergeDeliveryTags(existing, incoming, maxTags = 4) {
 
 /**
  * Build the system prompt for emotion detection
+ * @param {boolean} includeNarrator - Whether to include narrator segment analysis
  */
-function buildSystemPrompt() {
-  return `You are an expert voice director for audiobook narration. Your job is to analyze dialogue segments and determine the most appropriate emotional delivery for each line.
+function buildSystemPrompt(includeNarrator = false) {
+  const narratorSection = includeNarrator ? `
+
+NARRATOR SEGMENTS:
+- Narrator lines carry the story's emotional weight through pacing and tone
+- Match narrator delivery to scene content - action scenes need energy, quiet moments need softness
+- Consider what just happened or is about to happen in dialogue
+- Transitions ("Meanwhile...", "Later that night...") should feel distinct from action ("The blade struck true!")
+- Use tags like [ominously], [with building tension], [gently], [urgently], [with wonder]
+- Narrator lines SHOULD vary in emotion throughout a scene - don't make them all the same` : '';
+
+  return `You are an expert voice director for audiobook narration. Your job is to analyze ${includeNarrator ? 'all segments (dialogue AND narrator)' : 'dialogue segments'} and determine the most appropriate emotional delivery for each line.
 
 You must consider:
 1. **Story Context**: Genre, overall tone, target audience
@@ -98,6 +109,12 @@ IMPORTANT RULES:
 - Scene mood affects all characters - a horror scene makes even casual lines feel tense
 - Match intensity to genre - children's stories stay lighter, horror goes darker
 
+AUDIENCE-SPECIFIC CONSTRAINTS:
+- **Kids/Children**: Use warm, playful, excited, tender emotions primarily. Avoid horror/threatening/angry extremes.
+- **General/Family**: Full emotional range but keep intensity appropriate for family viewing.
+- **Mature/Adult**: Full emotional range including intense horror, threatening, and dramatic extremes.
+  Can use darker, more visceral delivery. Scene mood should push boundaries when appropriate.${narratorSection}
+
 ElevenLabs v3 Audio Tags:
 - Also output a short "delivery" field per line as 0-4 bracket tags, e.g. "[breathlessly][long pause]" or "".
 - Keep tags actor-like and minimal; avoid over-tagging.
@@ -106,8 +123,9 @@ ElevenLabs v3 Audio Tags:
 
 /**
  * Build the user prompt for batch emotion detection
+ * @param {boolean} includeNarrator - Whether to include narrator segment analysis
  */
-function buildUserPrompt(segments, context) {
+function buildUserPrompt(segments, context, includeNarrator = false) {
   const { genre, mood, audience, sceneDescription, characters } = context;
 
   // Build character reference
@@ -128,17 +146,25 @@ function buildUserPrompt(segments, context) {
     });
   }
 
-  // Build segments list
-  let segmentList = '\nDIALOGUE SEGMENTS TO ANALYZE:\n';
+  // Build segments list - include narrator if requested
+  const segmentLabel = includeNarrator ? 'ALL SEGMENTS TO ANALYZE' : 'DIALOGUE SEGMENTS TO ANALYZE';
+  let segmentList = `\n${segmentLabel}:\n`;
   segments.forEach((seg, idx) => {
-    if (seg.speaker !== 'narrator') {
-      segmentList += `\n[${idx}] Speaker: ${seg.speaker}`;
+    if (includeNarrator || seg.speaker !== 'narrator') {
+      const speakerLabel = seg.speaker === 'narrator' ? 'NARRATOR' : seg.speaker;
+      segmentList += `\n[${idx}] Speaker: ${speakerLabel}`;
       if (seg.attribution) {
         segmentList += `\n    Attribution: "${seg.attribution}"`;
       }
-      segmentList += `\n    Dialogue: ${seg.text}`;
+      // Truncate long narrator segments to save tokens
+      const textPreview = seg.text.length > 200 ? seg.text.substring(0, 200) + '...' : seg.text;
+      segmentList += `\n    Text: ${textPreview}`;
     }
   });
+
+  const narratorInstruction = includeNarrator
+    ? 'Include BOTH dialogue AND narrator segments. For narrator, focus on pacing and tone variety.'
+    : 'Only include dialogue segments (skip narrator segments).';
 
   return `STORY CONTEXT:
 - Genre: ${genre || 'general fiction'}
@@ -148,17 +174,17 @@ function buildUserPrompt(segments, context) {
 ${characterInfo}
 ${segmentList}
 
-For each dialogue segment [index], respond with a JSON object containing:
+For each segment [index], respond with a JSON object containing:
 {
   "emotions": [
-    { "index": 0, "speaker": "CharacterName", "emotion": "chosen_emotion", "delivery": "[tag][tag]", "reasoning": "brief explanation" },
+    { "index": 0, "speaker": "CharacterName or NARRATOR", "emotion": "chosen_emotion", "delivery": "[tag][tag]", "reasoning": "brief explanation" },
     ...
   ]
 }
 
-Only include dialogue segments (skip narrator segments). Choose the single most appropriate emotion from the preset list.
+${narratorInstruction} Choose the single most appropriate emotion from the preset list.
 
-The "delivery" field should be either "" or a concatenation of bracket tags like "[whispers][nervously]".`;
+The "delivery" field should be either "" or a concatenation of bracket tags like "[whispers][nervously]" or "[with building tension][ominously]".`;
 }
 
 /**
@@ -172,22 +198,29 @@ The "delivery" field should be either "" or a concatenation of bracket tags like
  * @param {string} context.sceneDescription - Brief description of current scene
  * @param {Array} context.characters - Character information array
  * @param {string} sessionId - Session ID for tracking
+ * @param {Object} options - Additional options
+ * @param {boolean} options.includeNarrator - Whether to analyze narrator segments (default: false)
  * @returns {Promise<Array>} Segments with emotion field added
  */
-export async function detectEmotionsForSegments(segments, context, sessionId = null) {
-  // Filter to only dialogue segments (not narrator)
-  const dialogueSegments = segments.filter(seg => seg.speaker !== 'narrator');
+export async function detectEmotionsForSegments(segments, context, sessionId = null, options = {}) {
+  const { includeNarrator = false } = options;
 
-  if (dialogueSegments.length === 0) {
-    logger.info('[EmotionValidator] No dialogue segments to analyze');
+  // Filter segments based on options
+  const targetSegments = includeNarrator
+    ? segments
+    : segments.filter(seg => seg.speaker !== 'narrator');
+
+  if (targetSegments.length === 0) {
+    logger.info('[EmotionValidator] No segments to analyze');
     return segments; // Return unchanged
   }
 
-  logger.info(`[EmotionValidator] Analyzing ${dialogueSegments.length} dialogue segments for session ${sessionId}`);
+  const segmentType = includeNarrator ? 'all' : 'dialogue';
+  logger.info(`[EmotionValidator] Analyzing ${targetSegments.length} ${segmentType} segments for session ${sessionId}`);
 
   try {
-    const systemPrompt = buildSystemPrompt();
-    const userPrompt = buildUserPrompt(segments, context);
+    const systemPrompt = buildSystemPrompt(includeNarrator);
+    const userPrompt = buildUserPrompt(segments, context, includeNarrator);
 
     logger.info(`[EmotionValidator] Calling LLM for emotion detection (utility model)`);
 
@@ -237,7 +270,23 @@ export async function detectEmotionsForSegments(segments, context, sessionId = n
     const DELIVERY_EMOTIONS = ['whispered', 'hushed', 'murmured', 'shouted', 'yelled', 'bellowed'];
 
     const enhancedSegments = segments.map((seg, idx) => {
+      // Handle narrator segments - only if includeNarrator is true
       if (seg.speaker === 'narrator') {
+        if (!includeNarrator) {
+          return { ...seg, emotion: 'neutral', llmValidated: false };
+        }
+        // Apply LLM emotion to narrator segment
+        const emotionData = emotionMap.get(idx);
+        if (emotionData) {
+          logger.debug(`[EmotionValidator] Narrator[${idx}]: ${emotionData.emotion} | delivery: ${emotionData.delivery || 'none'}`);
+          return {
+            ...seg,
+            emotion: emotionData.emotion,
+            delivery: emotionData.delivery || '',
+            emotionReasoning: emotionData.reasoning,
+            llmValidated: true
+          };
+        }
         return { ...seg, emotion: 'neutral', llmValidated: false };
       }
 

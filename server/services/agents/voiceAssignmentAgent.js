@@ -56,7 +56,7 @@ function getSuitabilityHints(voice, category) {
   // Based on style
   if (voice.style === 'warm') hints.push('friendly characters', 'mentors', 'kind figures');
   if (voice.style === 'authoritative') hints.push('leaders', 'authority figures', 'villains', 'heroic commanders', 'warlords');
-  if (voice.style === 'gravelly') hints.push('rugged characters', 'warriors', 'dungeon masters', 'barbarians', 'sword & sorcery heroes');
+  if (voice.style === 'gravelly') hints.push('rugged characters', 'warriors', 'authority figures', 'barbarians', 'sword & sorcery heroes');
   if (voice.style === 'deep') hints.push('serious characters', 'deep thinkers', 'antagonists', 'heroic fantasy protagonists', 'gladiators');
   if (voice.style === 'crisp') hints.push('professional characters', 'narrators');
   if (voice.style === 'raspy') hints.push('mysterious characters', 'rogues', 'shadowy figures', 'battle-scarred warriors');
@@ -138,8 +138,9 @@ If you CANNOT make a valid assignment (e.g., more characters than available voic
 
 /**
  * Build the user prompt with all context
+ * @param {Array} excludedVoices - Voice IDs to exclude (already assigned to other characters)
  */
-function buildUserPrompt(characters, storyContext, narratorVoiceId, voiceLibrary) {
+function buildUserPrompt(characters, storyContext, narratorVoiceId, voiceLibrary, excludedVoices = []) {
   const { genre, mood, synopsis, audience, themes, setting } = storyContext;
 
   // Find narrator voice details
@@ -159,9 +160,10 @@ function buildUserPrompt(characters, storyContext, narratorVoiceId, voiceLibrary
     };
   });
 
-  // Build available voices by gender
-  const maleVoices = voiceLibrary.filter(v => v.gender === 'male' && v.voice_id !== narratorVoiceId);
-  const femaleVoices = voiceLibrary.filter(v => v.gender === 'female' && v.voice_id !== narratorVoiceId);
+  // Build available voices by gender, excluding narrator and already-assigned voices
+  const excludedSet = new Set([narratorVoiceId, ...excludedVoices]);
+  const maleVoices = voiceLibrary.filter(v => v.gender === 'male' && !excludedSet.has(v.voice_id));
+  const femaleVoices = voiceLibrary.filter(v => v.gender === 'female' && !excludedSet.has(v.voice_id));
 
   return `STORY CONTEXT:
 - Genre: ${genre || 'general fiction'}
@@ -371,10 +373,11 @@ function validateAssignments(assignments, characters, narratorVoiceId, voiceLibr
  * @param {Object} storyContext - Story context (genre, mood, synopsis, etc.)
  * @param {string} narratorVoiceId - The narrator's voice ID (must not be assigned to characters)
  * @param {string} sessionId - Session ID for tracking
+ * @param {Array<string>} excludedVoices - Voice IDs to exclude (already assigned to other characters)
  * @returns {Object} Map of {characterName: voiceId}
  * @throws Error if voice assignment fails (PREMIUM - no fallbacks)
  */
-export async function assignVoicesByLLM(characters, storyContext, narratorVoiceId, sessionId = null) {
+export async function assignVoicesByLLM(characters, storyContext, narratorVoiceId, sessionId = null, excludedVoices = []) {
   if (!characters || characters.length === 0) {
     logger.warn('[VoiceAssignment] No characters provided');
     return {};
@@ -386,10 +389,16 @@ export async function assignVoicesByLLM(characters, storyContext, narratorVoiceI
   const voiceLibrary = buildVoiceLibrary();
 
   // Pre-validation: Do we have enough voices?
+  // Filter out narrator voice AND any excluded voices (already assigned to other characters)
+  const excludedSet = new Set([narratorVoiceId, ...excludedVoices]);
   const maleCharacters = characters.filter(c => c.gender === 'male' || !c.gender);
   const femaleCharacters = characters.filter(c => c.gender === 'female');
-  const maleVoices = voiceLibrary.filter(v => v.gender === 'male' && v.voice_id !== narratorVoiceId);
-  const femaleVoices = voiceLibrary.filter(v => v.gender === 'female' && v.voice_id !== narratorVoiceId);
+  const maleVoices = voiceLibrary.filter(v => v.gender === 'male' && !excludedSet.has(v.voice_id));
+  const femaleVoices = voiceLibrary.filter(v => v.gender === 'female' && !excludedSet.has(v.voice_id));
+
+  if (excludedVoices.length > 0) {
+    logger.info(`[VoiceAssignment] Excluding ${excludedVoices.length} already-assigned voices from pool`);
+  }
 
   logger.info(`[VoiceAssignment] Character breakdown: ${maleCharacters.length} male/unknown, ${femaleCharacters.length} female`);
   logger.info(`[VoiceAssignment] Available voices: ${maleVoices.length} male, ${femaleVoices.length} female (excluding narrator)`);
@@ -409,7 +418,7 @@ export async function assignVoicesByLLM(characters, storyContext, narratorVoiceI
 
   try {
     const systemPrompt = buildSystemPrompt();
-    const userPrompt = buildUserPrompt(characters, storyContext, narratorVoiceId, voiceLibrary);
+    const userPrompt = buildUserPrompt(characters, storyContext, narratorVoiceId, voiceLibrary, excludedVoices);
 
     logger.info(`[VoiceAssignment] Calling LLM for intelligent voice casting...`);
 

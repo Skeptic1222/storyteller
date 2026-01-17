@@ -132,8 +132,12 @@ export function ThemeProvider({ children }) {
   // Text layout setter
   const setTextLayout = useCallback((layout) => {
     const validLayouts = ['vertical', 'horizontal', 'modal'];
+    console.log('[ThemeContext] setTextLayout called with:', layout, '| valid:', validLayouts.includes(layout));
     if (validLayouts.includes(layout)) {
-      setPrefs(prev => ({ ...prev, textLayout: layout }));
+      setPrefs(prev => {
+        console.log('[ThemeContext] Updating textLayout from', prev.textLayout, 'to', layout);
+        return { ...prev, textLayout: layout };
+      });
     }
   }, []);
 

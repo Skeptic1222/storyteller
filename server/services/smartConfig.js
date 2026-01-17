@@ -688,7 +688,9 @@ class SmartConfigEngine {
         : this.analyzeKeywords(text);
 
       // Step 3: Generate config from analysis
-      const suggestedConfig = this.generateConfig(keywordAnalysis, null, currentConfig);
+      // P1 FIX: Pass llmAnalysis as the AI analysis parameter (was incorrectly passing null)
+      // This ensures narrator moods, voice preferences, and other LLM-derived settings are used
+      const suggestedConfig = this.generateConfig(keywordAnalysis, llmAnalysis, currentConfig);
 
       // Use LLM reasoning if available, otherwise use keyword reasoning
       const reasoning = llmAnalysis
@@ -1161,18 +1163,31 @@ Return ONLY valid JSON, no markdown, no explanation.`;
     config.mood = aiAnalysis?.mood || keywordAnalysis.mood || currentConfig.mood || 'calm';
 
     // Set format - AI takes precedence for semantic understanding
+    // CRITICAL FIX: Always set story_type based on format (cyoa vs narrative)
     if (aiAnalysis?.format) {
       config.story_format = aiAnalysis.format;
       if (aiAnalysis.format === 'cyoa') {
         config.story_type = 'cyoa';
         config.cyoa_enabled = true;
+      } else {
+        // All other formats are narrative stories
+        config.story_type = 'narrative';
+        config.cyoa_enabled = false;
       }
     } else if (keywordAnalysis.format) {
       config.story_format = keywordAnalysis.format;
       if (keywordAnalysis.format === 'cyoa') {
         config.story_type = 'cyoa';
         config.cyoa_enabled = true;
+      } else {
+        // All other formats are narrative stories
+        config.story_type = 'narrative';
+        config.cyoa_enabled = false;
       }
+    } else {
+      // No format detected - default to narrative
+      config.story_type = config.story_type || 'narrative';
+      config.cyoa_enabled = false;
     }
 
     // Set audience - if EITHER AI or keywords detect mature, use mature (safety first)
@@ -1216,11 +1231,14 @@ Return ONLY valid JSON, no markdown, no explanation.`;
       config
     );
 
-    // Recommend voice based on genre, mood, audience, and style
+    // Recommend voice based on genre, mood, audience, style, AND LLM narrator inference
+    // LLM narrator recommendations are highest priority - they understand "Conan should have a gruff masculine narrator"
     const voiceRec = this.recommendVoice(config.narrator_style, {
       genres: config.genres,
       mood: config.mood,
-      audience: config.audience
+      audience: config.audience,
+      // LLM narrator inference from configAnalyzer
+      narratorRecommendation: aiAnalysis?.narrator || null
     });
     if (voiceRec) {
       config.recommended_voice = voiceRec;
@@ -1532,14 +1550,27 @@ Return ONLY valid JSON, no markdown, no explanation.`;
 
   /**
    * Recommend narrator style based on story type
+   * FIX: Now considers violence and gore intensity, not just scary
    */
   recommendNarratorStyle(storyType, config) {
     const rules = NARRATOR_STYLE_RULES[storyType] || NARRATOR_STYLE_RULES.adventure;
+    const intensity = config.intensity || {};
 
-    // If config has intensity settings that suggest certain styles
-    if (config.intensity?.scary > 60) {
+    // FIX: Check for ANY dark/horror-appropriate intensity setting
+    // Violence-heavy, gore-heavy, or scary stories all need dark narration
+    const isDarkContent = (intensity.scary > 60) ||
+                          (intensity.violence > 60) ||
+                          (intensity.gore > 50) ||
+                          (intensity.scary > 40 && intensity.violence > 40);  // Combined moderate settings
+
+    if (isDarkContent) {
+      this.logger.debug(`[SmartConfig] Dark content detected | scary: ${intensity.scary} | violence: ${intensity.violence} | gore: ${intensity.gore}`);
+      // Prefer horror narrator for truly dark content, mysterious for moderate
+      if (intensity.gore > 50 || intensity.scary > 70) {
+        if (!rules.avoid.includes('horror')) return 'horror';
+      }
       if (!rules.avoid.includes('mysterious')) return 'mysterious';
-      if (!rules.avoid.includes('horror')) return 'horror';
+      if (!rules.avoid.includes('dramatic')) return 'dramatic';
     }
 
     if (config.mood === 'funny' && !rules.avoid.includes('playful')) {
@@ -1552,10 +1583,39 @@ Return ONLY valid JSON, no markdown, no explanation.`;
 
   /**
    * Recommend voice based on genre, mood, audience, and narrator style
-   * Priority: genre-specific > mood-based > style-based > default
+   * Priority: LLM narrator inference > genre-specific > mood-based > style-based > default
    */
   recommendVoice(narratorStyle, options = {}) {
-    const { genres = {}, mood = null, audience = null, preferredGender = null } = options;
+    const { genres = {}, mood = null, audience = null, preferredGender = null, narratorRecommendation = null } = options;
+
+    // =======================================================================
+    // HIGHEST PRIORITY: LLM Narrator Inference
+    // The LLM understands context like "Conan story = gruff masculine narrator"
+    // This is the key insight: fans of specific genres expect specific voices
+    // =======================================================================
+    if (narratorRecommendation && narratorRecommendation.preferred_gender) {
+      this.logger.info(`[SmartConfig] LLM Narrator Inference: gender=${narratorRecommendation.preferred_gender}, style=${narratorRecommendation.voice_style}, tone="${narratorRecommendation.tone_descriptors}"`);
+      this.logger.info(`[SmartConfig] LLM Reasoning: ${narratorRecommendation.reasoning}`);
+
+      // Map LLM characteristics to genre voice recommendations
+      const llmGender = narratorRecommendation.preferred_gender; // masculine, feminine, neutral
+      const llmStyle = narratorRecommendation.voice_style; // dramatic, warm, mysterious, etc.
+      const llmChars = narratorRecommendation.characteristics || [];
+
+      // Try to find a matching voice from genre recommendations based on LLM guidance
+      const voiceMatch = this.findVoiceByLLMGuidance(llmGender, llmStyle, llmChars, genres);
+      if (voiceMatch) {
+        this.logger.info(`[SmartConfig] Selected LLM-guided voice: ${voiceMatch.name} (${voiceMatch.reason})`);
+        return {
+          voice_id: voiceMatch.voice_id,
+          name: voiceMatch.name,
+          style: narratorStyle,
+          gender: voiceMatch.gender,
+          reason: `LLM inference: ${narratorRecommendation.tone_descriptors || voiceMatch.reason}`,
+          llm_guided: true
+        };
+      }
+    }
 
     // Find the dominant genre (highest score)
     let dominantGenre = null;
@@ -1569,18 +1629,36 @@ Return ONLY valid JSON, no markdown, no explanation.`;
 
     this.logger.info(`[SmartConfig] Voice selection - dominant genre: ${dominantGenre} (${highestScore}), mood: ${mood}, audience: ${audience}`);
 
-    // Special case: bedtime mode or children's audience
-    if (audience === 'children' || mood === 'calm') {
-      const bedtimeVoices = GENRE_VOICE_RECOMMENDATIONS.bedtime || GENRE_VOICE_RECOMMENDATIONS.children;
-      if (bedtimeVoices) {
-        const voice = preferredGender === 'male' ? bedtimeVoices.male || bedtimeVoices.secondary : bedtimeVoices.primary;
-        this.logger.info(`[SmartConfig] Selected bedtime/children voice: ${voice.name}`);
+    // CRITICAL: Check audience FIRST - children-only voices should NEVER be used for mature content
+    // Children's voices like Matilda are inappropriate for mature/horror stories
+    if (audience === 'children') {
+      const childVoices = GENRE_VOICE_RECOMMENDATIONS.children || GENRE_VOICE_RECOMMENDATIONS.bedtime;
+      if (childVoices) {
+        const voice = preferredGender === 'male' ? childVoices.male || childVoices.secondary : childVoices.primary;
+        this.logger.info(`[SmartConfig] Selected children's voice: ${voice.name}`);
         return {
           voice_id: voice.voice_id,
           name: voice.name,
           style: narratorStyle,
           gender: voice.gender,
-          reason: voice.reason
+          reason: 'Children audience - using child-appropriate voice'
+        };
+      }
+    }
+
+    // Only use calm/bedtime voices for NON-MATURE audiences
+    // This prevents horror stories from getting Matilda just because mood is "calm"
+    if (mood === 'calm' && audience !== 'mature') {
+      const bedtimeVoices = GENRE_VOICE_RECOMMENDATIONS.bedtime;
+      if (bedtimeVoices) {
+        const voice = preferredGender === 'male' ? bedtimeVoices.male || bedtimeVoices.secondary : bedtimeVoices.primary;
+        this.logger.info(`[SmartConfig] Selected calm voice for non-mature: ${voice.name}`);
+        return {
+          voice_id: voice.voice_id,
+          name: voice.name,
+          style: narratorStyle,
+          gender: voice.gender,
+          reason: 'Calm mood with non-mature audience'
         };
       }
     }
@@ -1665,13 +1743,139 @@ Return ONLY valid JSON, no markdown, no explanation.`;
       return { voice_id: voiceMap.female, style: narratorStyle, gender: 'female' };
     }
 
-    // Default to male for most styles, female for warm/whimsical
-    const femalePreferred = ['warm', 'whimsical'].includes(narratorStyle);
+    // P1 FIX: Default to male for most genres, only use female for specific genres
+    // Previously defaulted to female for "warm" styles, which caused wrong narrator for adult/horror/action stories
+    const maleGenres = ['horror', 'scifi', 'fantasy', 'adventure', 'mystery', 'thriller', 'action', 'epic'];
+    const femaleGenres = ['romance', 'fairytale', 'ya', 'contemporary'];
+
+    // Determine default gender based on dominant genre
+    let defaultGender = 'male'; // Default to male for most stories
+    if (dominantGenre && femaleGenres.includes(dominantGenre)) {
+      defaultGender = 'female';
+    } else if (audience === 'children' && narratorStyle === 'warm') {
+      defaultGender = 'female'; // Warm children's stories can use female narrator
+    }
+
+    this.logger.info(`[SmartConfig] Fallback voice selection: style=${narratorStyle}, genre=${dominantGenre}, defaultGender=${defaultGender}`);
+
     return {
-      voice_id: femalePreferred ? voiceMap.female : voiceMap.male,
+      voice_id: defaultGender === 'female' ? voiceMap.female : voiceMap.male,
       style: narratorStyle,
-      gender: femalePreferred ? 'female' : 'male'
+      gender: defaultGender,
+      reason: `Fallback: ${defaultGender} voice for ${dominantGenre || narratorStyle} content`
     };
+  }
+
+  /**
+   * Find a voice based on LLM narrator guidance
+   * Maps LLM characteristics to available ElevenLabs voices
+   *
+   * @param {string} llmGender - 'masculine', 'feminine', or 'neutral'
+   * @param {string} llmStyle - 'dramatic', 'warm', 'mysterious', 'epic', 'horror', 'noir', etc.
+   * @param {string[]} llmChars - Characteristics like ['deep', 'gravelly', 'commanding']
+   * @param {Object} genres - Genre scores from config
+   * @returns {Object|null} Voice recommendation or null
+   */
+  findVoiceByLLMGuidance(llmGender, llmStyle, llmChars, genres) {
+    // Map LLM style to best matching genre category
+    // FIX: Don't map "dramatic" to adventure - dramatic fits multiple genres
+    // Instead, use genre scores to determine the best match for dramatic stories
+    const styleToGenre = {
+      'dramatic': null,  // FIX: Removed adventure mapping - use genre context instead
+      'epic': 'fantasy',
+      'warm': 'fairytale',
+      'mysterious': 'mystery',
+      'horror': 'horror',
+      'dark': 'horror',        // FIX: Added dark style for horror
+      'sinister': 'horror',    // FIX: Added sinister style for horror
+      'tense': 'thriller',     // FIX: Added tense style for thriller
+      'suspenseful': 'thriller', // FIX: Added suspenseful for thriller
+      'noir': 'mystery',
+      'playful': 'humor',
+      'whimsical': 'fairytale',
+      'calm': 'fairytale'
+    };
+
+    // Map LLM characteristics to specific voices
+    // This is the key - characteristics like "gravelly" or "commanding" point to specific voices
+    const charToVoice = {
+      'gravelly': { voice_id: 'N2lVS1w4EtoT3dr4eOWO', name: 'Callum', gender: 'male', reason: 'Gravelly Transatlantic voice' },
+      'gruff': { voice_id: 'N2lVS1w4EtoT3dr4eOWO', name: 'Callum', gender: 'male', reason: 'Gruff commanding presence' },
+      'raspy': { voice_id: 'yoZ06aMxZJJ28mfd3POQ', name: 'Sam', gender: 'male', reason: 'Raspy American voice' },
+      'deep': { voice_id: 'TxGEqnHWrfWFTfGW9XjX', name: 'Josh', gender: 'male', reason: 'Deep resonant voice' },
+      'commanding': { voice_id: 'N2lVS1w4EtoT3dr4eOWO', name: 'Callum', gender: 'male', reason: 'Commanding authoritative voice' },
+      'authoritative': { voice_id: 'onwK4e9ZLuTAKqWW03F9', name: 'Daniel', gender: 'male', reason: 'Authoritative narrator' },
+      'warm': { voice_id: 'XrExE9yKIg1WjnnlVkGX', name: 'Matilda', gender: 'female', reason: 'Warm nurturing voice' },
+      'gentle': { voice_id: 'EXAVITQu4vr4xnSDxMaL', name: 'Sarah', gender: 'female', reason: 'Soft and reassuring' },
+      'soothing': { voice_id: 'XrExE9yKIg1WjnnlVkGX', name: 'Matilda', gender: 'female', reason: 'Warm soothing voice' },
+      'rich': { voice_id: 'JBFqnCBsd6RMkjVDRZzb', name: 'George', gender: 'male', reason: 'Rich resonant baritone' },
+      'silky': { voice_id: 'XB0fDUnXU5powFXDhCwa', name: 'Charlotte', gender: 'female', reason: 'Silky mysterious voice' },
+      'seductive': { voice_id: 'XB0fDUnXU5powFXDhCwa', name: 'Charlotte', gender: 'female', reason: 'Seductive and mysterious' }
+    };
+
+    // First, check for characteristic matches (highest priority - most specific)
+    if (llmChars && llmChars.length > 0) {
+      for (const char of llmChars) {
+        const charLower = char.toLowerCase();
+        if (charToVoice[charLower]) {
+          const voice = charToVoice[charLower];
+          // Verify gender preference matches (masculine->male, feminine->female)
+          const genderMatch =
+            llmGender === 'neutral' ||
+            (llmGender === 'masculine' && voice.gender === 'male') ||
+            (llmGender === 'feminine' && voice.gender === 'female');
+
+          if (genderMatch) {
+            this.logger.info(`[SmartConfig] LLM characteristic "${char}" matched voice: ${voice.name}`);
+            return voice;
+          }
+        }
+      }
+    }
+
+    // Second, try style-based matching OR use genre scores if style maps to null
+    // FIX: Don't default to adventure - use actual genre scores from the config
+    let matchedGenre = styleToGenre[llmStyle];
+
+    // If style doesn't map directly (e.g., "dramatic" which fits many genres),
+    // determine genre from the actual genre scores
+    if (!matchedGenre && genres) {
+      const dominantFromScores = Object.entries(genres)
+        .filter(([_, score]) => score > 40)  // Only consider significant genres
+        .sort((a, b) => b[1] - a[1])[0]?.[0];
+      matchedGenre = dominantFromScores;
+      this.logger.debug(`[SmartConfig] Style "${llmStyle}" has no direct mapping, using genre score: ${matchedGenre}`);
+    }
+
+    // FIX: Default to mystery (neutral) instead of adventure if no genre found
+    matchedGenre = matchedGenre || 'mystery';
+    const genreVoices = GENRE_VOICE_RECOMMENDATIONS[matchedGenre];
+
+    if (genreVoices) {
+      // Select based on LLM gender preference
+      if (llmGender === 'feminine' && genreVoices.female) {
+        return genreVoices.female;
+      } else if (llmGender === 'masculine') {
+        return genreVoices.primary || genreVoices.secondary;
+      } else {
+        // Neutral - use genre default
+        return genreVoices.primary;
+      }
+    }
+
+    // Third, fall back to genre from config
+    const dominantGenre = Object.entries(genres || {})
+      .sort((a, b) => b[1] - a[1])[0]?.[0];
+
+    if (dominantGenre && GENRE_VOICE_RECOMMENDATIONS[dominantGenre]) {
+      const dg = GENRE_VOICE_RECOMMENDATIONS[dominantGenre];
+      if (llmGender === 'feminine' && dg.female) {
+        return dg.female;
+      }
+      return dg.primary;
+    }
+
+    return null;
   }
 
   /**

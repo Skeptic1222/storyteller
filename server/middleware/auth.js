@@ -81,12 +81,31 @@ export async function authenticateSocketToken(token) {
  */
 export async function authenticateToken(req, res, next) {
   try {
+    let token = null;
+
+    // Try headers first (preferred)
     const authHeader =
       req.headers.authorization ||
       req.headers['x-authorization'] ||
       req.headers['x-auth-token'] ||
       req.headers['x-access-token'];
-    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
+    token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
+
+    // Debug logging for auth attempts
+    if (req.path && req.path.includes('api')) {
+      logger.debug(`[Auth] Path: ${req.path}, Header token: ${token ? 'present' : 'missing'}, NODE_ENV: ${NODE_ENV}`);
+    }
+
+    // SECURITY: Fallback to query parameter ONLY in strict development mode
+    // This is for IIS proxy testing when headers are stripped - never used in production
+    const isStrictDev = NODE_ENV === 'development' && !process.env.PRODUCTION_LIKE;
+    if (isStrictDev && (!token || token === 'null' || token === 'undefined')) {
+      token = req.query?.token || req.query?.auth_token;
+      if (token) {
+        // SECURITY: Don't log token length in case logs are exposed
+        logger.debug(`[Auth] Using token from query parameter (dev only)`);
+      }
+    }
 
     if (!token || token === 'null' || token === 'undefined') {
       req.user = null;

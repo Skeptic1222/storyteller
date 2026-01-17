@@ -391,10 +391,12 @@ export class RecordingService {
    * Get all recordings for a session
    */
   async getSessionRecordings(sessionId) {
+    // DB LIMIT PROTECTION: Limit recordings to 50 max per session
     const result = await pool.query(`
       SELECT * FROM story_recordings
       WHERE story_session_id = $1
       ORDER BY recording_started_at DESC
+      LIMIT 50
     `, [sessionId]);
     return result.rows;
   }
@@ -403,10 +405,12 @@ export class RecordingService {
    * Get segments for a recording
    */
   async getSegments(recordingId) {
+    // DB LIMIT PROTECTION: Limit segments to 500 max per recording
     const result = await pool.query(`
       SELECT * FROM recording_segments
       WHERE recording_id = $1
       ORDER BY sequence_index ASC
+      LIMIT 500
     `, [recordingId]);
     return result.rows;
   }

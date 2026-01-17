@@ -255,7 +255,12 @@ Style: Professional book cover art, cinematic lighting, rich colors, NO TEXT on 
         const https = await import('https');
 
         const coversDir = path.join(process.cwd(), 'public', 'covers');
-        await fs.mkdir(coversDir, { recursive: true }).catch(() => {});
+        await fs.mkdir(coversDir, { recursive: true }).catch(err => {
+          // Directory might already exist or permission issue - log for diagnostics
+          if (err.code !== 'EEXIST') {
+            logger.warn(`[Socket] Failed to create covers directory: ${err.message}`);
+          }
+        });
 
         const filename = `cover_${session_id}_${Date.now()}.png`;
         const localPath = path.join(coversDir, filename);

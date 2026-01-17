@@ -1,22 +1,22 @@
 /**
  * LaunchScreen Component
- * Pre-narration launch screen with sequential validation progress
- * and visual indicators.
+ * Progress overlay for story generation with HUD-style status displays.
  *
  * Features:
  * - Sequential stage indicators with retry capability
- * - Cover art display with regeneration option
- * - Stats summary panel
  * - HUD-style panels for agent status and usage tracking
+ * - Floating "Begin Chapter" action bar when ready
  *
- * Simplified flow (v2): Generate -> Ready -> Play (no countdown)
+ * Note: Cover art and synopsis are now displayed in BookPageLayout (unified reader).
+ * This component only handles progress/status overlay.
  */
 
-import { useState, useEffect, useCallback, useRef, memo } from 'react';
+import { useState, memo, useEffect, useRef } from 'react';
 import {
   Mic, Volume2, Image, Shield, Check, X, AlertCircle,
   Loader2, Play, ChevronDown, Users, Clock, Sparkles,
-  RefreshCw, RotateCcw, Activity, DollarSign, ZoomIn, Minus
+  RefreshCw, RotateCcw, Activity, DollarSign, BookOpen,
+  Pen, UserPlus, Wand2, Star, Zap, Timer
 } from 'lucide-react';
 
 // Import HUD components
@@ -388,31 +388,15 @@ const ReadyToPlaySection = memo(function ReadyToPlaySection({
         </div>
       )}
 
-      {/* Main Action Row - Auto-Play toggle, Begin Chapter, SFX toggle, Cancel */}
-      <div className="flex items-center gap-2">
-        {/* Auto-Play Toggle - Left side, sliding pill style */}
-        <div className="flex items-center gap-2 px-3 py-2 bg-slate-800/80 rounded-xl border border-slate-700">
-          <button
-            onClick={() => onAutoplayChange?.(!autoplayEnabled)}
-            className={`w-10 h-6 rounded-full transition-all flex-shrink-0 ${
-              autoplayEnabled ? 'bg-green-500' : 'bg-slate-600'
-            }`}
-            title={autoplayEnabled ? 'Auto-play enabled' : 'Auto-play disabled'}
-          >
-            <div className={`w-5 h-5 rounded-full bg-white shadow transition-transform ${
-              autoplayEnabled ? 'translate-x-[18px]' : 'translate-x-0.5'
-            }`} />
-          </button>
-          <span className="text-slate-400 text-xs whitespace-nowrap">Auto-Play</span>
-        </div>
-
-        {/* Begin Chapter Button - Center, takes available space */}
+      {/* Main Action Row - Responsive layout for mobile */}
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+        {/* Top row on mobile: Begin Chapter Button (full width) */}
         <button
           onClick={handleStartClick}
           disabled={isStarting}
           className={`flex-1 px-4 py-3 rounded-xl bg-gradient-to-r from-golden-400 to-amber-500
                      text-slate-900 font-semibold shadow-lg shadow-golden-400/20
-                     transition-all flex items-center justify-center gap-2
+                     transition-all flex items-center justify-center gap-2 order-first sm:order-none
                      ${isStarting ? 'opacity-80 cursor-wait' : 'hover:from-golden-300 hover:to-amber-400'}`}
         >
           {isStarting ? (
@@ -428,30 +412,49 @@ const ReadyToPlaySection = memo(function ReadyToPlaySection({
           )}
         </button>
 
-        {/* SFX Toggle - Right side, sliding pill style */}
-        <div className="flex items-center gap-2 px-3 py-2 bg-slate-800/80 rounded-xl border border-slate-700">
-          <button
-            onClick={onSfxToggle}
-            className={`w-10 h-6 rounded-full transition-all flex-shrink-0 ${
-              sfxEnabled ? 'bg-cyan-500' : 'bg-slate-600'
-            }`}
-            title={sfxEnabled ? 'Sound effects enabled' : 'Sound effects disabled'}
-          >
-            <div className={`w-5 h-5 rounded-full bg-white shadow transition-transform ${
-              sfxEnabled ? 'translate-x-[18px]' : 'translate-x-0.5'
-            }`} />
-          </button>
-          <span className="text-slate-400 text-xs whitespace-nowrap">SFX</span>
-        </div>
+        {/* Bottom row on mobile: Toggles and Cancel */}
+        <div className="flex items-center justify-between sm:justify-start gap-2">
+          {/* Auto-Play Toggle */}
+          <div className="flex items-center gap-2 px-3 py-2 bg-slate-800/80 rounded-xl border border-slate-700">
+            <button
+              onClick={() => onAutoplayChange?.(!autoplayEnabled)}
+              className={`w-10 h-6 rounded-full transition-all flex-shrink-0 ${
+                autoplayEnabled ? 'bg-green-500' : 'bg-slate-600'
+              }`}
+              title={autoplayEnabled ? 'Auto-play enabled' : 'Auto-play disabled'}
+            >
+              <div className={`w-5 h-5 rounded-full bg-white shadow transition-transform ${
+                autoplayEnabled ? 'translate-x-[18px]' : 'translate-x-0.5'
+              }`} />
+            </button>
+            <span className="text-slate-400 text-xs whitespace-nowrap hidden sm:inline">Auto-Play</span>
+          </div>
 
-        {/* Cancel Button - Far right */}
-        <button
-          onClick={onCancel}
-          className="px-3 py-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-400
-                     hover:bg-slate-700 hover:text-slate-200 transition-colors text-sm"
-        >
-          Cancel
-        </button>
+          {/* SFX Toggle */}
+          <div className="flex items-center gap-2 px-3 py-2 bg-slate-800/80 rounded-xl border border-slate-700">
+            <button
+              onClick={onSfxToggle}
+              className={`w-10 h-6 rounded-full transition-all flex-shrink-0 ${
+                sfxEnabled ? 'bg-cyan-500' : 'bg-slate-600'
+              }`}
+              title={sfxEnabled ? 'Sound effects enabled' : 'Sound effects disabled'}
+            >
+              <div className={`w-5 h-5 rounded-full bg-white shadow transition-transform ${
+                sfxEnabled ? 'translate-x-[18px]' : 'translate-x-0.5'
+              }`} />
+            </button>
+            <span className="text-slate-400 text-xs whitespace-nowrap hidden sm:inline">SFX</span>
+          </div>
+
+          {/* Cancel Button */}
+          <button
+            onClick={onCancel}
+            className="px-3 py-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-400
+                       hover:bg-slate-700 hover:text-slate-200 transition-colors text-sm"
+          >
+            Cancel
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -463,10 +466,6 @@ const ReadyToPlaySection = memo(function ReadyToPlaySection({
  */
 const LaunchScreen = memo(function LaunchScreen({
   isVisible,
-  coverUrl,
-  title,
-  synopsis,
-  showStoryPreview = true,
   stats,
   stageStatuses = {},
   stageDetails = {},
@@ -485,12 +484,7 @@ const LaunchScreen = memo(function LaunchScreen({
   canRetryStages = {},
   retryingStage,
   onRetryStage,
-  // Cover regeneration props
-  isRegeneratingCover,
-  onRegenerateCover,
-  // Other regeneration props
-  isRegeneratingSynopsis = false,
-  onRegenerateSynopsis,
+  // Regeneration props (for HUD panels)
   isRegeneratingSfx = false,
   onRegenerateSfx,
   isRegeneratingVoices = false,
@@ -516,9 +510,6 @@ const LaunchScreen = memo(function LaunchScreen({
   formatCost = (cost) => cost ? `$${cost.toFixed(4)}` : '$0.00',
   formatTokens = (tokens) => tokens ? tokens.toString() : '0',
   formatCharacters = (chars) => chars ? chars.toString() : '0',
-  // Text display props
-  showText = false,
-  storyText = '',
   // Detailed progress log for technical info
   detailedProgressLog = [],
   // Initial generation phase props (before launch sequence starts)
@@ -526,14 +517,81 @@ const LaunchScreen = memo(function LaunchScreen({
   generationProgress = { step: 0, percent: 0, message: '' },
   launchProgress = { percent: 0, message: '', stage: null }
 }) {
-  // State for fullscreen cover modal
-  const [showCoverFullscreen, setShowCoverFullscreen] = useState(false);
-
-  // State for cover minimized (thumbnail mode)
-  const [coverMinimized, setCoverMinimized] = useState(false);
-
   // State for detailed progress panel expansion
   const [progressLogExpanded, setProgressLogExpanded] = useState(true);
+
+  // Elapsed time tracking for user engagement
+  const startTimeRef = useRef(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+
+  // Check if all stages are pending (needed for timer logic)
+  const allStagesPendingForTimer = Object.values(stageStatuses).every(
+    status => status === STATUS.PENDING
+  );
+
+  // Track elapsed time when generation is active
+  useEffect(() => {
+    // Start timer when generation begins
+    if ((isGenerating || !allStagesPendingForTimer) && !startTimeRef.current) {
+      startTimeRef.current = Date.now();
+    }
+
+    // Stop tracking when ready to play
+    if (isReadyToPlay) {
+      return;
+    }
+
+    // Update elapsed time every second
+    const interval = setInterval(() => {
+      if (startTimeRef.current) {
+        const elapsed = Math.floor((Date.now() - startTimeRef.current) / 1000);
+        setElapsedSeconds(elapsed);
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [isGenerating, isReadyToPlay, allStagesPendingForTimer]);
+
+  // Reset timer when component becomes visible for a new generation
+  useEffect(() => {
+    if (isVisible && !isReadyToPlay) {
+      // Only reset if we're starting fresh (all stages pending and not generating yet)
+      if (allStagesPendingForTimer && !isGenerating) {
+        startTimeRef.current = null;
+        setElapsedSeconds(0);
+      }
+    }
+  }, [isVisible, isReadyToPlay, allStagesPendingForTimer, isGenerating]);
+
+  // Format elapsed time as MM:SS
+  const formatElapsedTime = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  // P2 FIX: Calculate estimated time remaining (ETA) based on progress and elapsed time
+  // Uses exponential smoothing to avoid wild fluctuations
+  const calculateETA = (percent, elapsed) => {
+    // Only calculate ETA if we have meaningful progress (>5%) and elapsed time (>10s)
+    if (percent <= 5 || elapsed < 10) return null;
+
+    // Estimate total time based on current progress rate
+    const estimatedTotal = (elapsed / percent) * 100;
+    const remaining = Math.max(0, estimatedTotal - elapsed);
+
+    // Cap at reasonable maximum (15 minutes = 900 seconds)
+    const cappedRemaining = Math.min(remaining, 900);
+
+    // Don't show if less than 5 seconds remaining
+    if (cappedRemaining < 5) return null;
+
+    // Format as "~Xm" or "~Xs" for brevity
+    if (cappedRemaining >= 60) {
+      return `~${Math.ceil(cappedRemaining / 60)}m`;
+    }
+    return `~${Math.round(cappedRemaining)}s`;
+  };
 
   // Don't render if not visible
   if (!isVisible) return null;
@@ -604,254 +662,34 @@ const LaunchScreen = memo(function LaunchScreen({
     statsNarratorCount: stats?.narratorCount,
     statsSfxCount: stats?.sfxCount,
     statsTitle: stats?.title,
-    statsSynopsis: stats?.synopsis,
+    statsSynopsis: stats?.synopsis?.substring(0, 50),
     sfxDetails: sfxDetails ? { sfxCount: sfxDetails.sfxCount, sfxListLength: sfxDetails.sfxList?.length } : null,
-    characterVoicesCount: characterVoices?.length,
-    title,
-    synopsis: synopsis?.substring(0, 50)
+    characterVoicesCount: characterVoices?.length
   });
 
   return (
     <div className="max-w-3xl mx-auto w-full animate-fade-in px-4 flex flex-col" style={{ maxHeight: 'calc(100vh - 120px)' }}>
-      {/* Newspaper-Style Story Display - Cover floats left, content wraps around */}
-      {/* ONLY show when ready to play - prevents cover appearing before progress bar finishes */}
-      {/* This ensures the reveal happens AFTER all generation stages complete */}
-      {showStoryPreview && isReadyToPlay && (coverUrl || coverProgress.coverUrl || title || synopsis) && (
-        <div className="launch-story-container mb-4 p-4 bg-slate-800/50 rounded-2xl border border-slate-700 overflow-y-auto flex-1" style={{ maxHeight: '60vh', minHeight: '200px' }}>
-          <div className="story-flow-content overflow-hidden">
-            {/* Floating Cover Art - Text wraps around it */}
-            {(coverUrl || coverProgress.coverUrl) && !coverMinimized && (
-            <div className="story-cover-float relative group">
-              {/* Book cover styling with spine effect - CLICKABLE for fullscreen */}
-              <div
-                className="relative cursor-pointer"
-                style={{ perspective: '1000px' }}
-                onClick={() => setShowCoverFullscreen(true)}
-                role="button"
-                tabIndex={0}
-                onKeyDown={(e) => e.key === 'Enter' && setShowCoverFullscreen(true)}
-              >
-                {/* Book spine shadow */}
-                <div className="absolute left-0 top-2 bottom-2 w-3 bg-gradient-to-r from-black/40 to-transparent rounded-l-sm z-10" />
-
-                {/* Cover image with book-like styling */}
-                <img
-                  src={coverUrl || coverProgress.coverUrl}
-                  alt={title || 'Story Cover'}
-                  className="cover-image object-cover shadow-2xl border-2 border-slate-600"
-                  style={{
-                    borderRadius: '4px 12px 12px 4px',
-                    boxShadow: '8px 8px 20px rgba(0,0,0,0.5), -2px 0 8px rgba(0,0,0,0.3)'
-                  }}
-                />
-
-                {/* Minimize cover icon - top right, shows on hover */}
-                {/* Click anywhere else on cover opens fullscreen */}
-                <button
-                  onClick={(e) => { e.stopPropagation(); setCoverMinimized(true); }}
-                  className="absolute top-2 right-2 p-1.5 rounded-lg bg-slate-800/80 text-slate-400 hover:text-white hover:bg-slate-700 opacity-0 group-hover:opacity-100 transition-all z-20"
-                  title="Minimize cover"
-                >
-                  <Minus className="w-4 h-4" />
-                </button>
-
-                {/* Regenerate cover button - bottom left, stops propagation to prevent fullscreen */}
-                {onRegenerateCover && (
-                  <button
-                    onClick={(e) => { e.stopPropagation(); onRegenerateCover(); }}
-                    disabled={isRegeneratingCover}
-                    className={`
-                      absolute bottom-2 left-2 p-2 rounded-lg transition-all z-20
-                      ${isRegeneratingCover
-                        ? 'bg-slate-800/90 cursor-wait'
-                        : 'bg-slate-800/70 hover:bg-slate-700/90 opacity-0 group-hover:opacity-100'}
-                    `}
-                    title="Regenerate cover art"
-                  >
-                    {isRegeneratingCover ? (
-                      <Loader2 className="w-4 h-4 text-golden-400 animate-spin" />
-                    ) : (
-                      <RefreshCw className="w-4 h-4 text-slate-300" />
-                    )}
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Minimized cover thumbnail - top left corner */}
-          {(coverUrl || coverProgress.coverUrl) && coverMinimized && (
-            <button
-              onClick={() => setCoverMinimized(false)}
-              className="float-left mr-3 mb-2 w-12 h-16 rounded-lg overflow-hidden border-2 border-slate-600 hover:border-golden-400 transition-colors shadow-lg"
-              title="Expand cover"
-            >
-              <img
-                src={coverUrl || coverProgress.coverUrl}
-                alt="Story Cover"
-                className="w-full h-full object-cover"
-              />
-            </button>
-          )}
-
-          {/* Title - flows around cover */}
-          {title && (
-            <h1 className="text-2xl md:text-3xl font-bold mb-3 gradient-text">
-              {title}
-            </h1>
-          )}
-
-          {/* Story Details Badge - narrative style, author, mood */}
-          <div className="flex flex-wrap gap-2 mb-3">
-            {stats?.storyType && (
-              <span className="px-2 py-1 bg-slate-700 rounded text-slate-300 text-xs">
-                {stats.storyType}
-              </span>
-            )}
-            {stats?.authorStyle && (
-              <span className="px-2 py-1 bg-amber-500/20 rounded text-amber-400 text-xs">
-                Style: {stats.authorStyle}
-              </span>
-            )}
-            {stats?.narratorStyle && (
-              <span className="px-2 py-1 bg-purple-500/20 rounded text-purple-400 text-xs">
-                {stats.narratorStyle.charAt(0).toUpperCase() + stats.narratorStyle.slice(1)} Tone
-              </span>
-            )}
-          </div>
-
-          {/* Synopsis - flows around cover */}
-          {synopsis && (
-            <div className="relative group mb-4">
-              <p className="text-slate-300 text-sm md:text-base leading-relaxed italic">
-                {synopsis}
-              </p>
-              {onRegenerateSynopsis && (
-                <button
-                  onClick={onRegenerateSynopsis}
-                  disabled={isRegeneratingSynopsis}
-                  className={`
-                    inline-block ml-2 p-1 rounded transition-all opacity-0 group-hover:opacity-100
-                    ${isRegeneratingSynopsis
-                      ? 'bg-slate-800/90 cursor-wait'
-                      : 'bg-slate-800/80 hover:bg-slate-700'
-                    }
-                  `}
-                  title="Regenerate synopsis"
-                >
-                  <RefreshCw className={`w-3 h-3 text-slate-400 ${isRegeneratingSynopsis ? 'animate-spin' : ''}`} />
-                </button>
-              )}
-            </div>
-          )}
-
-          {/* Story Text - flows around cover (newspaper style) */}
-          {showText && storyText && (
-            <div className="story-text-flow">
-              <p className="text-slate-100 text-base leading-relaxed whitespace-pre-wrap font-serif">
-                {storyText}
-              </p>
-            </div>
-          )}
-        </div>
-      </div>
-      )}
-
-      {/* CSS for newspaper-style float layout */}
-      <style>{`
-        /* Container for flow content */
-        .story-flow-content {
-          overflow: hidden; /* Contain floats */
-        }
-
-        /* PC Layout (min-width: 768px) - Cover floats left, content wraps */
-        @media (min-width: 768px) {
-          .story-cover-float {
-            float: left;
-            margin-right: 1.5rem;
-            margin-bottom: 1rem;
-            shape-outside: margin-box;
-          }
-          .cover-image {
-            width: 200px;
-            height: 280px;
-          }
-        }
-
-        /* Large screens - bigger cover */
-        @media (min-width: 1024px) {
-          .story-cover-float {
-            margin-right: 2rem;
-          }
-          .cover-image {
-            width: 220px;
-            height: 308px;
-          }
-        }
-
-        /* Mobile Portrait (max-width: 767px) - Cover centered above content */
-        @media (max-width: 767px) {
-          .story-cover-float {
-            float: none;
-            display: flex;
-            justify-content: center;
-            margin-bottom: 1.5rem;
-          }
-          .cover-image {
-            width: 160px;
-            height: 220px;
-          }
-          .story-flow-content {
-            text-align: center;
-          }
-          .story-flow-content h1,
-          .story-flow-content p,
-          .story-flow-content .story-text-flow {
-            text-align: left;
-          }
-          .story-flow-content > div:first-child {
-            text-align: center;
-          }
-        }
-
-        /* Mobile Landscape - Smaller float */
-        @media (max-width: 767px) and (orientation: landscape) {
-          .story-cover-float {
-            float: left;
-            margin-right: 1rem;
-            margin-bottom: 0.5rem;
-          }
-          .cover-image {
-            width: 120px;
-            height: 168px;
-          }
-          .story-flow-content {
-            text-align: left;
-          }
-        }
-      `}</style>
-
       {/* ENHANCED FULL-WIDTH PROGRESS SECTION - Shows during generation, launch, and deferred audio */}
       {((showHUD && (!isReadyToPlay || isPlaybackPreparing)) || isGenerating) && (
         <div className="mb-6 -mx-4 px-4 md:-mx-8 md:px-8 lg:-mx-12 lg:px-12">
           {/* Main Progress Container - Full Width */}
           <div className="bg-gradient-to-b from-slate-800/95 to-slate-900/95 rounded-2xl border border-slate-600 overflow-hidden shadow-2xl">
-            {/* Header with animated gradient */}
-            <div className="relative px-6 py-4 bg-gradient-to-r from-golden-500/10 via-amber-500/5 to-golden-500/10 border-b border-slate-700">
+            {/* Header with animated gradient - responsive padding */}
+            <div className="relative px-3 sm:px-6 py-3 sm:py-4 bg-gradient-to-r from-golden-500/10 via-amber-500/5 to-golden-500/10 border-b border-slate-700">
               <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-golden-400/5 via-transparent to-transparent" />
-              <div className="relative flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="relative">
-                    <Sparkles className="w-8 h-8 text-golden-400" />
+              <div className="relative flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+                  <div className="relative flex-shrink-0">
+                    <Sparkles className="w-6 h-6 sm:w-8 sm:h-8 text-golden-400" />
                     <div className="absolute inset-0 animate-ping">
-                      <Sparkles className="w-8 h-8 text-golden-400/30" />
+                      <Sparkles className="w-6 h-6 sm:w-8 sm:h-8 text-golden-400/30" />
                     </div>
                   </div>
-                  <div>
-                    <h2 className="text-2xl font-bold text-golden-400">
+                  <div className="min-w-0">
+                    <h2 className="text-lg sm:text-2xl font-bold text-golden-400 truncate">
                       {isPlaybackPreparing ? 'Preparing Narration' : 'Creating Your Story'}
                     </h2>
-                    <p className="text-slate-400 text-sm">
+                    <p className="text-slate-400 text-xs sm:text-sm truncate">
                       {isPlaybackPreparing
                         ? playbackMessage
                         : (useGenerationProgress
@@ -861,43 +699,80 @@ const LaunchScreen = memo(function LaunchScreen({
                     </p>
                   </div>
                 </div>
-                <div className="text-right">
-                  <div className="text-4xl font-bold text-golden-400">
+                <div className="text-right flex-shrink-0">
+                  <div className="text-2xl sm:text-4xl font-bold text-golden-400">
                     {/* Use generationProgress during initial generation, stageStatuses during launch */}
                     {Math.round(effectiveDisplayPercent)}%
                   </div>
-                  <div className="text-slate-500 text-xs">
-                    {isPlaybackPreparing ? 'Narrating' : (useGenerationProgress ? 'Generating' : 'Complete')}
+                  {/* P2 FIX: Improved timing display with ETA */}
+                  <div className="flex flex-col items-end gap-0.5">
+                    <div className="flex items-center gap-1 sm:gap-2 text-slate-500 text-[10px] sm:text-xs">
+                      <span className="hidden sm:inline">{isPlaybackPreparing ? 'Narrating' : (useGenerationProgress ? 'Generating' : 'Complete')}</span>
+                      {elapsedSeconds > 0 && !isReadyToPlay && (
+                        <span className="flex items-center gap-0.5 sm:gap-1 text-slate-400">
+                          <Timer className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
+                          {formatElapsedTime(elapsedSeconds)}
+                        </span>
+                      )}
+                    </div>
+                    {/* ETA display - only show when progress is meaningful */}
+                    {(() => {
+                      const eta = calculateETA(effectiveDisplayPercent, elapsedSeconds);
+                      return eta && !isReadyToPlay ? (
+                        <span className="text-[9px] sm:text-[10px] text-golden-400/70 flex items-center gap-1">
+                          <Clock className="w-2 h-2 sm:w-2.5 sm:h-2.5" />
+                          <span className="hidden xs:inline">ETA:</span> {eta}
+                        </span>
+                      ) : null;
+                    })()}
                   </div>
                 </div>
               </div>
             </div>
 
-            {/* Full-Width Progress Bar with Milestone Markers */}
+            {/* Full-Width Progress Bar with Milestone Markers - Enhanced Visual Design */}
             {/* Responsive padding: more on desktop, less on mobile to maximize bar width */}
             <div className="px-2 sm:px-4 py-4 border-b border-slate-700/50 overflow-visible">
               {/* Responsive margins: reduced to give more space for labels. overflow-visible for edge labels */}
               <div className="relative mx-4 sm:mx-8 md:mx-12 lg:mx-16 overflow-visible">
-                {/* Background track - z-0 to stay behind badges */}
-                <div className="relative z-0 w-full h-3 sm:h-4 bg-slate-700 rounded-full overflow-hidden">
-                  {/* Animated progress fill with smooth easing */}
+                {/* Ambient glow behind the progress bar */}
+                <div
+                  className="absolute -inset-2 rounded-full blur-xl opacity-40 transition-all duration-1000"
+                  style={{
+                    background: `linear-gradient(90deg, transparent, rgba(251, 191, 36, 0.5) ${effectiveDisplayPercent}%, transparent ${effectiveDisplayPercent + 5}%)`,
+                    width: '100%'
+                  }}
+                />
+
+                {/* Background track with inner glow - z-0 to stay behind badges */}
+                <div className="relative z-0 w-full h-4 sm:h-5 bg-gradient-to-b from-slate-800 to-slate-700 rounded-full overflow-hidden shadow-inner border border-slate-600/50">
+                  {/* Animated progress fill with enhanced gradient */}
                   <div
-                    className="h-full bg-gradient-to-r from-golden-400 via-amber-400 to-golden-500 relative"
+                    className="h-full bg-gradient-to-r from-amber-500 via-golden-400 to-yellow-400 relative shadow-lg"
                     style={{
                       width: `${effectiveDisplayPercent}%`,
-                      transition: 'width 1s cubic-bezier(0.4, 0, 0.2, 1)'
+                      transition: 'width 0.8s cubic-bezier(0.4, 0, 0.2, 1)',
+                      boxShadow: '0 0 20px rgba(251, 191, 36, 0.5), inset 0 1px 0 rgba(255,255,255,0.3)'
                     }}
                   >
-                    {/* Shimmer effect */}
-                    <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent animate-shimmer" />
+                    {/* Multiple shimmer layers for depth */}
+                    <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent animate-shimmer" />
+                    <div className="absolute inset-0 bg-gradient-to-b from-white/20 to-transparent" />
+                    {/* Pulsing leading edge */}
+                    <div className="absolute right-0 top-0 bottom-0 w-4 bg-gradient-to-l from-white/40 to-transparent animate-pulse" />
                   </div>
                 </div>
 
                 {/* Milestone Badges - z-20 to stay above progress bar */}
                 {useGenerationProgress ? (
-                  /* Generation Phase Milestones */
+                  /* Generation Phase Milestones with unique icons */
                   <div className="absolute inset-0 z-20 flex items-center justify-between">
-                    {['Planning', 'Writing', 'Characters', 'Finalizing'].map((phase, index) => {
+                    {[
+                      { name: 'Planning', icon: BookOpen, shortName: 'Plan' },
+                      { name: 'Writing', icon: Pen, shortName: 'Write' },
+                      { name: 'Characters', icon: UserPlus, shortName: 'Cast' },
+                      { name: 'Finalizing', icon: Wand2, shortName: 'Magic' }
+                    ].map((phase, index) => {
                       const position = ((index + 1) / 4) * 100;
                       const phasePercent = (index + 1) * 25;
                       const isComplete = generationPercent >= phasePercent;
@@ -905,35 +780,51 @@ const LaunchScreen = memo(function LaunchScreen({
                       // Adjust label position for edge badges to prevent cutoff
                       const isRightEdge = position >= 90;
                       const labelAlign = isRightEdge ? 'right-0' : 'left-1/2 -translate-x-1/2';
+                      const PhaseIcon = phase.icon;
 
                       return (
                         <div
-                          key={phase}
+                          key={phase.name}
                           className="absolute transform -translate-x-1/2"
                           style={{ left: `${position}%` }}
                         >
+                          {/* Particle ring for active milestone */}
+                          {isActive && (
+                            <>
+                              <div className="absolute inset-0 -m-3 rounded-full border-2 border-golden-400/40 animate-ping" />
+                              <div className="absolute inset-0 -m-2 rounded-full border border-golden-400/60 animate-pulse" />
+                              {/* Floating sparkles around active badge */}
+                              <div className="absolute -top-3 left-1/2 transform -translate-x-1/2">
+                                <Star className="w-2 h-2 text-golden-300 animate-bounce" style={{ animationDelay: '0ms' }} />
+                              </div>
+                              <div className="absolute -bottom-3 left-1/2 transform -translate-x-1/2">
+                                <Zap className="w-2 h-2 text-amber-300 animate-bounce" style={{ animationDelay: '150ms' }} />
+                              </div>
+                            </>
+                          )}
                           <div className={`
-                            w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center border-2 sm:border-3 transition-all duration-500
+                            relative w-9 h-9 sm:w-11 sm:h-11 rounded-full flex items-center justify-center border-2 sm:border-3 transition-all duration-500
                             ${isComplete
-                              ? 'bg-green-500 border-green-400 shadow-lg shadow-green-500/50 scale-110'
+                              ? 'bg-gradient-to-br from-green-400 to-emerald-600 border-green-300 shadow-lg shadow-green-500/60 scale-110'
                               : isActive
-                                ? 'bg-golden-500 border-golden-400 shadow-lg shadow-golden-500/50 animate-pulse scale-110'
-                                : 'bg-slate-700 border-slate-600'}
+                                ? 'bg-gradient-to-br from-golden-400 to-amber-600 border-golden-300 shadow-lg shadow-golden-500/60 scale-115'
+                                : 'bg-gradient-to-br from-slate-600 to-slate-800 border-slate-500'}
                           `}>
                             {isComplete ? (
-                              <Check className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
+                              <Check className="w-4 h-4 sm:w-5 sm:h-5 text-white drop-shadow" />
                             ) : isActive ? (
-                              <Loader2 className="w-4 h-4 sm:w-5 sm:h-5 text-white animate-spin" />
+                              <Loader2 className="w-4 h-4 sm:w-5 sm:h-5 text-white animate-spin drop-shadow" />
                             ) : (
-                              <Sparkles className="w-4 h-4 sm:w-5 sm:h-5 text-slate-400" />
+                              <PhaseIcon className="w-4 h-4 sm:w-5 sm:h-5 text-slate-300" />
                             )}
                           </div>
                           <div className={`
-                            absolute top-10 sm:top-12 transform whitespace-nowrap text-[10px] sm:text-xs font-medium
+                            absolute top-11 sm:top-13 transform whitespace-nowrap text-[9px] sm:text-xs font-semibold tracking-wide
                             ${labelAlign}
-                            ${isComplete ? 'text-green-400' : isActive ? 'text-golden-400' : 'text-slate-500'}
+                            ${isComplete ? 'text-green-400' : isActive ? 'text-golden-400 animate-pulse' : 'text-slate-500'}
                           `}>
-                            {phase}
+                            <span className="hidden sm:inline">{phase.name}</span>
+                            <span className="sm:hidden">{phase.shortName}</span>
                           </div>
                         </div>
                       );
@@ -959,26 +850,33 @@ const LaunchScreen = memo(function LaunchScreen({
                           className="absolute transform -translate-x-1/2"
                           style={{ left: '0%' }}
                         >
+                          {/* Particle effects for active state */}
+                          {craftingState === 'active' && (
+                            <>
+                              <div className="absolute inset-0 -m-3 rounded-full border-2 border-golden-400/40 animate-ping" />
+                              <div className="absolute inset-0 -m-2 rounded-full border border-golden-400/60 animate-pulse" />
+                            </>
+                          )}
                           <div className={`
-                            w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center border-2 sm:border-3 transition-all duration-500
+                            relative w-9 h-9 sm:w-11 sm:h-11 rounded-full flex items-center justify-center border-2 sm:border-3 transition-all duration-500
                             ${craftingState === 'complete'
-                              ? 'bg-green-500 border-green-400 shadow-lg shadow-green-500/50 scale-110'
+                              ? 'bg-gradient-to-br from-green-400 to-emerald-600 border-green-300 shadow-lg shadow-green-500/60 scale-110'
                               : craftingState === 'active'
-                                ? 'bg-golden-500 border-golden-400 shadow-lg shadow-golden-500/50 animate-pulse scale-110'
-                                : 'bg-slate-700 border-slate-600'}
+                                ? 'bg-gradient-to-br from-golden-400 to-amber-600 border-golden-300 shadow-lg shadow-golden-500/60 scale-115'
+                                : 'bg-gradient-to-br from-slate-600 to-slate-800 border-slate-500'}
                           `}>
                             {craftingState === 'complete' ? (
-                              <Check className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
+                              <Check className="w-4 h-4 sm:w-5 sm:h-5 text-white drop-shadow" />
                             ) : craftingState === 'active' ? (
-                              <Loader2 className="w-4 h-4 sm:w-5 sm:h-5 text-white animate-spin" />
+                              <Loader2 className="w-4 h-4 sm:w-5 sm:h-5 text-white animate-spin drop-shadow" />
                             ) : (
-                              <Sparkles className="w-4 h-4 sm:w-5 sm:h-5 text-slate-400" />
+                              <BookOpen className="w-4 h-4 sm:w-5 sm:h-5 text-slate-300" />
                             )}
                           </div>
                           {/* Label aligned to left edge to prevent cutoff */}
                           <div className={`
-                            absolute top-10 sm:top-12 left-0 whitespace-nowrap text-[10px] sm:text-xs font-medium
-                            ${craftingState === 'complete' ? 'text-green-400' : craftingState === 'active' ? 'text-golden-400' : 'text-slate-500'}
+                            absolute top-11 sm:top-13 left-0 whitespace-nowrap text-[9px] sm:text-xs font-semibold tracking-wide
+                            ${craftingState === 'complete' ? 'text-green-400' : craftingState === 'active' ? 'text-golden-400 animate-pulse' : 'text-slate-500'}
                           `}>
                             <span className="hidden sm:inline">Crafting Story</span>
                             <span className="sm:hidden">Story</span>
@@ -1005,6 +903,7 @@ const LaunchScreen = memo(function LaunchScreen({
                         cover: 'Cover',
                         qa: 'QA'
                       };
+                      const isActive = status === STATUS.IN_PROGRESS;
 
                     return (
                       <div
@@ -1012,32 +911,43 @@ const LaunchScreen = memo(function LaunchScreen({
                         className="absolute transform -translate-x-1/2"
                         style={{ left: `${position}%` }}
                       >
+                        {/* Particle effects for active state */}
+                        {isActive && (
+                          <>
+                            <div className="absolute inset-0 -m-3 rounded-full border-2 border-golden-400/40 animate-ping" />
+                            <div className="absolute inset-0 -m-2 rounded-full border border-golden-400/60 animate-pulse" />
+                            {/* Floating sparkles around active badge */}
+                            <div className="absolute -top-3 left-1/2 transform -translate-x-1/2">
+                              <Star className="w-2 h-2 text-golden-300 animate-bounce" />
+                            </div>
+                          </>
+                        )}
                         <div className={`
-                          w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center border-2 sm:border-3 transition-all duration-500
+                          relative w-9 h-9 sm:w-11 sm:h-11 rounded-full flex items-center justify-center border-2 sm:border-3 transition-all duration-500
                           ${status === STATUS.SUCCESS
-                            ? 'bg-green-500 border-green-400 shadow-lg shadow-green-500/50 scale-110'
+                            ? 'bg-gradient-to-br from-green-400 to-emerald-600 border-green-300 shadow-lg shadow-green-500/60 scale-110'
                             : status === STATUS.IN_PROGRESS
-                              ? 'bg-golden-500 border-golden-400 shadow-lg shadow-golden-500/50 animate-pulse scale-110'
+                              ? 'bg-gradient-to-br from-golden-400 to-amber-600 border-golden-300 shadow-lg shadow-golden-500/60 scale-115'
                               : status === STATUS.ERROR
-                                ? 'bg-red-500 border-red-400 shadow-lg shadow-red-500/50'
-                                : 'bg-slate-700 border-slate-600'}
+                                ? 'bg-gradient-to-br from-red-400 to-red-600 border-red-300 shadow-lg shadow-red-500/60'
+                                : 'bg-gradient-to-br from-slate-600 to-slate-800 border-slate-500'}
                         `}>
                           {status === STATUS.SUCCESS ? (
-                            <Check className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
+                            <Check className="w-4 h-4 sm:w-5 sm:h-5 text-white drop-shadow" />
                           ) : status === STATUS.IN_PROGRESS ? (
-                            <Loader2 className="w-4 h-4 sm:w-5 sm:h-5 text-white animate-spin" />
+                            <Loader2 className="w-4 h-4 sm:w-5 sm:h-5 text-white animate-spin drop-shadow" />
                           ) : status === STATUS.ERROR ? (
-                            <X className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
+                            <X className="w-4 h-4 sm:w-5 sm:h-5 text-white drop-shadow" />
                           ) : (
-                            <Icon className="w-4 h-4 sm:w-5 sm:h-5 text-slate-400" />
+                            <Icon className="w-4 h-4 sm:w-5 sm:h-5 text-slate-300" />
                           )}
                         </div>
                         {/* Stage label below badge - responsive with short names on mobile */}
                         <div className={`
-                          absolute top-10 sm:top-12 transform whitespace-nowrap text-[10px] sm:text-xs font-medium
+                          absolute top-11 sm:top-13 transform whitespace-nowrap text-[9px] sm:text-xs font-semibold tracking-wide
                           ${labelAlign}
                           ${status === STATUS.SUCCESS ? 'text-green-400' :
-                            status === STATUS.IN_PROGRESS ? 'text-golden-400' :
+                            status === STATUS.IN_PROGRESS ? 'text-golden-400 animate-pulse' :
                             status === STATUS.ERROR ? 'text-red-400' : 'text-slate-500'}
                         `}>
                           <span className="hidden sm:inline">{config?.name}</span>
@@ -1054,47 +964,52 @@ const LaunchScreen = memo(function LaunchScreen({
             </div>
 
             {/* Current Activity Panel - What's happening RIGHT NOW */}
-            <div className="px-6 py-4 bg-slate-900/50 border-b border-slate-700/50">
-              <div className="flex items-start gap-4">
-                {/* Animated activity indicator */}
+            {/* P2 FIX: Improved mobile padding and activity indicator sizing */}
+            <div className="px-3 sm:px-6 py-3 sm:py-4 bg-slate-900/50 border-b border-slate-700/50">
+              <div className="flex items-start gap-3 sm:gap-4">
+                {/* Animated activity indicator - smaller on mobile */}
                 <div className="relative flex-shrink-0">
-                  <div className="w-16 h-16 rounded-xl bg-gradient-to-br from-golden-400/20 to-amber-500/20 flex items-center justify-center border border-golden-500/30">
-                    <Loader2 className="w-8 h-8 text-golden-400 animate-spin" />
+                  <div className="w-12 h-12 sm:w-16 sm:h-16 rounded-xl bg-gradient-to-br from-golden-400/20 to-amber-500/20 flex items-center justify-center border border-golden-500/30">
+                    <Loader2 className="w-6 h-6 sm:w-8 sm:h-8 text-golden-400 animate-spin" />
                   </div>
-                  <div className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-green-500 animate-pulse border-2 border-slate-900" />
+                  <div className="absolute -top-1 -right-1 w-3 h-3 sm:w-4 sm:h-4 rounded-full bg-green-500 animate-pulse border-2 border-slate-900" />
                 </div>
 
-                <div className="flex-1">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-golden-400 font-bold text-lg">
+                {/* P2 FIX: Improved mobile text sizing and truncation */}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1 flex-wrap">
+                    <span className="text-golden-400 font-bold text-base sm:text-lg truncate">
                       {currentActivityLabel}
                     </span>
-                    <span className="px-2 py-0.5 bg-golden-500/20 text-golden-400 text-xs rounded-full animate-pulse">
+                    <span className="px-1.5 sm:px-2 py-0.5 bg-golden-500/20 text-golden-400 text-[10px] sm:text-xs rounded-full animate-pulse flex-shrink-0">
                       Active
                     </span>
                   </div>
-                  <p className="text-slate-300 text-sm mb-2 line-clamp-2">
+                  <p className="text-slate-300 text-xs sm:text-sm mb-2 line-clamp-2">
                     {currentActivityMessage}
                   </p>
 
                   {/* Sub-progress for current stage */}
-                  <div className="flex items-center gap-3">
-                    <div className="flex-1 h-2 bg-slate-700 rounded-full overflow-hidden">
+                  <div className="flex items-center gap-2 sm:gap-3">
+                    <div className="flex-1 h-1.5 sm:h-2 bg-slate-700 rounded-full overflow-hidden">
                       <div className="h-full bg-golden-400 rounded-full animate-pulse" style={{ width: `${activityProgressPercent}%` }} />
                     </div>
-                    <Activity className="w-4 h-4 text-golden-400 animate-pulse" />
+                    <Activity className="w-3 h-3 sm:w-4 sm:h-4 text-golden-400 animate-pulse flex-shrink-0" />
                   </div>
                 </div>
               </div>
             </div>
 
             {/* AI Agents Activity Grid - Show what each agent is doing with counts */}
-            <div className="px-6 py-4">
-              <h3 className="text-slate-300 font-semibold mb-3 flex items-center gap-2">
+            {/* P2 FIX: Improved mobile padding */}
+            <div className="px-3 sm:px-6 py-3 sm:py-4">
+              <h3 className="text-slate-300 font-semibold mb-2 sm:mb-3 flex items-center gap-2 text-sm sm:text-base">
                 <Users className="w-4 h-4 text-purple-400" />
                 AI Agents at Work
               </h3>
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              {/* P2 FIX: Improved responsive grid for better mobile portrait/landscape */}
+              {/* Portrait: 2 cols, Landscape: 3 cols, Tablet: 4 cols, Desktop: 5 cols */}
+              <div className="grid grid-cols-2 landscape:grid-cols-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 sm:gap-3">
                 {/* Story Generation Agent - Shows story creation status */}
                 {/* Story is IN_PROGRESS when isGenerating but launch hasn't started yet */}
                 {/* Story is SUCCESS when launch sequence has started (story must be complete) */}
@@ -1376,8 +1291,8 @@ const LaunchScreen = memo(function LaunchScreen({
             </div>
           )}
 
-          {/* Action Buttons */}
-          {!hasError && (
+          {/* Action Buttons - Only show inline button when NOT isReadyToPlay (floating bar handles it then) */}
+          {!hasError && !isReadyToPlay && (
             <div className="mt-4 space-y-3">
               {allStagesComplete && onStartPlayback && (
                 <button
@@ -1576,8 +1491,8 @@ const LaunchScreen = memo(function LaunchScreen({
             </div>
           )}
 
-          {/* Action buttons - Start Story when ready, Cancel otherwise */}
-          {!hasError && (
+          {/* Action buttons - Only show inline when NOT isReadyToPlay (floating bar handles it then) */}
+          {!hasError && !isReadyToPlay && (
             <div className="space-y-3">
               {/* Start Chapter Button - shows when all stages complete */}
               {allStagesComplete && onStartPlayback && (
@@ -1618,109 +1533,58 @@ const LaunchScreen = memo(function LaunchScreen({
         </div>
       )}
 
-      {/* Ready to Play UI - shows immediately when ready (no countdown) */}
-      {isReadyToPlay && (
-        <ReadyToPlaySection
-          stats={stats}
-          characterVoices={characterVoices}
-          voiceSummary={voiceSummary}
-          usage={usage}
-          formatCost={formatCost}
-          formatTokens={formatTokens}
-          formatCharacters={formatCharacters}
-          sfxDetails={sfxDetails}
-          autoplayEnabled={autoplayEnabled}
-          onAutoplayChange={onAutoplayChange}
-          sfxEnabled={sfxEnabled}
-          onSfxToggle={onSfxToggle}
-          onStartPlayback={onStartPlayback}
-          onCancel={onCancel}
-          chapterNumber={chapterNumber}
-        />
+      {/* Ready to Play UI - floating bottom bar when ready */}
+      {/* P2 FIX: Hide Begin Chapter button when audio is generating (after user clicked Begin Chapter) */}
+      {isReadyToPlay && !isGeneratingAudio && !isAudioQueued && (
+        <div className="fixed bottom-4 sm:bottom-6 left-1/2 transform -translate-x-1/2 z-50 w-full max-w-2xl px-3 sm:px-4">
+          <div className="bg-slate-900/95 backdrop-blur-sm rounded-2xl p-3 sm:p-4 border border-slate-700 shadow-2xl">
+            <ReadyToPlaySection
+            stats={stats}
+            characterVoices={characterVoices}
+            voiceSummary={voiceSummary}
+            usage={usage}
+            formatCost={formatCost}
+            formatTokens={formatTokens}
+            formatCharacters={formatCharacters}
+            sfxDetails={sfxDetails}
+            autoplayEnabled={autoplayEnabled}
+            onAutoplayChange={onAutoplayChange}
+            sfxEnabled={sfxEnabled}
+            onSfxToggle={onSfxToggle}
+            onStartPlayback={onStartPlayback}
+            onCancel={onCancel}
+            chapterNumber={chapterNumber}
+            />
+          </div>
+        </div>
       )}
 
-      {/* Fullscreen Cover Art Modal */}
-      {showCoverFullscreen && (coverUrl || coverProgress.coverUrl) && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-sm animate-fade-in"
-          onClick={() => setShowCoverFullscreen(false)}
-          role="dialog"
-          aria-modal="true"
-          aria-label="Cover art fullscreen view"
-        >
-          {/* Close button */}
-          <button
-            onClick={() => setShowCoverFullscreen(false)}
-            className="absolute top-4 right-4 p-3 rounded-full bg-slate-800/80 hover:bg-slate-700 transition-colors z-10"
-            aria-label="Close fullscreen view"
-          >
-            <X className="w-6 h-6 text-white" />
-          </button>
-
-          {/* Cover image container */}
-          <div
-            className="relative max-w-[90vw] max-h-[90vh] animate-scale-in"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Full-size cover image */}
-            <img
-              src={coverUrl || coverProgress.coverUrl}
-              alt={title || 'Story Cover'}
-              className="max-w-full max-h-[85vh] object-contain rounded-lg shadow-2xl"
-              style={{
-                boxShadow: '0 0 60px rgba(0,0,0,0.8), 0 0 100px rgba(0,0,0,0.5)'
-              }}
-            />
-
-            {/* Title overlay at bottom */}
-            {title && (
-              <div className="absolute bottom-0 left-0 right-0 p-6 bg-gradient-to-t from-black/80 to-transparent rounded-b-lg">
-                <h2
-                  className="text-white text-2xl md:text-3xl font-bold text-center"
-                  style={{
-                    textShadow: '0 2px 10px rgba(0,0,0,0.9)',
-                    fontFamily: 'Georgia, "Palatino Linotype", serif',
-                    letterSpacing: '0.03em'
-                  }}
-                >
-                  {title}
-                </h2>
+      {/* Audio Generation Status - shown when Begin Chapter was clicked and audio is generating */}
+      {isReadyToPlay && (isGeneratingAudio || isAudioQueued) && (
+        <div className="fixed bottom-4 sm:bottom-6 left-1/2 transform -translate-x-1/2 z-50 w-full max-w-2xl px-3 sm:px-4">
+          <div className="bg-slate-900/95 backdrop-blur-sm rounded-2xl p-3 sm:p-4 border border-slate-700 shadow-2xl">
+            <div className="flex items-center justify-center gap-3 text-slate-200">
+              <Loader2 className="w-5 h-5 animate-spin text-golden-400" />
+              <span className="font-medium">
+                {audioGenerationStatus?.message || 'Generating audio...'}
+              </span>
+            </div>
+            {audioGenerationStatus?.percent > 0 && (
+              <div className="mt-3 w-full bg-slate-700 rounded-full h-2 overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-golden-400 to-amber-500 rounded-full transition-all duration-300"
+                  style={{ width: `${audioGenerationStatus.percent}%` }}
+                />
               </div>
             )}
-
-            {/* Regenerate button in fullscreen */}
-            {onRegenerateCover && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (isRegeneratingCover) return; // Don't close modal while regenerating
-                  onRegenerateCover();
-                  setShowCoverFullscreen(false);
-                }}
-                disabled={isRegeneratingCover}
-                className={`
-                  absolute top-4 left-4 flex items-center gap-2 px-4 py-2 rounded-lg transition-all
-                  ${isRegeneratingCover
-                    ? 'bg-slate-800/90 cursor-wait text-slate-400'
-                    : 'bg-slate-800/80 hover:bg-slate-700 text-white'
-                  }
-                `}
-                title="Regenerate cover art"
-              >
-                {isRegeneratingCover ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <RefreshCw className="w-4 h-4" />
-                )}
-                <span className="text-sm font-medium">Regenerate</span>
-              </button>
-            )}
+            <button
+              onClick={onCancel}
+              className="mt-3 w-full px-4 py-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-400
+                         hover:bg-slate-700 hover:text-slate-200 transition-colors text-sm"
+            >
+              Cancel
+            </button>
           </div>
-
-          {/* Click anywhere to close hint */}
-          <p className="absolute bottom-4 left-1/2 transform -translate-x-1/2 text-slate-500 text-sm">
-            Click anywhere to close
-          </p>
         </div>
       )}
     </div>

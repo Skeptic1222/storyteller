@@ -5,6 +5,15 @@ export default {
     "./src/**/*.{js,ts,jsx,tsx}",
   ],
   theme: {
+    // Custom breakpoints including xs for small mobile devices
+    screens: {
+      'xs': '375px',    // Small mobile (iPhone SE, etc.)
+      'sm': '640px',    // Default Tailwind sm
+      'md': '768px',    // Default Tailwind md
+      'lg': '1024px',   // Default Tailwind lg
+      'xl': '1280px',   // Default Tailwind xl
+      '2xl': '1536px',  // Default Tailwind 2xl
+    },
     extend: {
       colors: {
         'narrimo': {

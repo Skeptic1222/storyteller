@@ -8,7 +8,8 @@
 
 import axios from 'axios';
 import crypto from 'crypto';
-import { writeFileSync, existsSync, mkdirSync, readFileSync, accessSync, constants } from 'fs';
+import { existsSync, mkdirSync, accessSync, constants } from 'fs';
+import { readFile, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
@@ -681,6 +682,13 @@ export class SoundEffectsService {
       return [];
     }
 
+    // P1 FIX: Only generate SFX if explicitly enabled in context
+    // This prevents SFX generation when user says "no sound effects"
+    if (context?.sfx_enabled !== true) {
+      logger.info('[SFX] Skipping - SFX not explicitly enabled in context');
+      return [];
+    }
+
     const detected = this.detectSceneSFX(sceneText, context);
 
     if (detected.length === 0) {
@@ -747,7 +755,7 @@ export class SoundEffectsService {
             'UPDATE sfx_cache SET access_count = access_count + 1, last_accessed_at = NOW() WHERE prompt_hash = $1',
             [hash]
           );
-          return readFileSync(filePath);
+          return await readFile(filePath);
         }
       }
 
@@ -776,9 +784,9 @@ export class SoundEffectsService {
     const filename = `${hash}.mp3`;
     const filePath = join(SFX_CACHE_DIR, filename);
 
-    // Step 1: Write file to disk
+    // Step 1: Write file to disk (async to avoid blocking event loop)
     try {
-      writeFileSync(filePath, audioBuffer);
+      await writeFile(filePath, audioBuffer);
       logger.info(`[SFX] Cached audio file: ${filename} (${audioBuffer.length} bytes)`);
     } catch (fileError) {
       logger.error(`[SFX] Failed to write cache file: ${filePath}`, {

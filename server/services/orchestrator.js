@@ -127,6 +127,110 @@ import { validateAndReconcileSpeakers } from './agents/speakerValidationAgent.js
 import { convertDialogueMapToSegments } from './agents/dialogueSegmentUtils.js';
 import { filterSpeechTagsWithLLM } from './agents/speechTagFilterAgent.js';
 import { extractSpeakers, stripTags, parseTaggedProse } from './agents/tagParser.js';
+import { directVoiceActing } from './agents/voiceDirectorAgent.js';
+
+// P1 FIX: Minimum word count for chapters to ensure quality content
+// Picture books use a lower threshold (150 words), all others use 1500
+const MIN_CHAPTER_WORDS = {
+  picture_book: 150,
+  short_story: 1000,
+  default: 1500
+};
+
+/**
+ * Get minimum word count for story format
+ * @param {string} storyFormat - Story format from config
+ * @returns {number} Minimum word count
+ */
+function getMinWordCount(storyFormat) {
+  return MIN_CHAPTER_WORDS[storyFormat] || MIN_CHAPTER_WORDS.default;
+}
+
+/**
+ * Check if scene text meets minimum word count
+ * @param {string} text - Scene text
+ * @param {string} storyFormat - Story format
+ * @returns {{ passes: boolean, wordCount: number, minRequired: number }}
+ */
+function checkMinimumWordCount(text, storyFormat = 'default') {
+  const wordCount = text?.split(/\s+/).filter(w => w.length > 0).length || 0;
+  const minRequired = getMinWordCount(storyFormat);
+  return {
+    passes: wordCount >= minRequired,
+    wordCount,
+    minRequired
+  };
+}
+
+/**
+ * Validate chapter length and request regeneration if too short
+ * FIX: Chapters were reported as 4-5x too short - this adds retry logic
+ *
+ * @param {string} text - Scene text to validate
+ * @param {string} storyFormat - Story format (default, short_story, picture_book)
+ * @param {Function} regenerateFunc - Async function to regenerate content
+ * @param {Object} context - Additional context for regeneration
+ * @param {number} maxAttempts - Maximum regeneration attempts (default 2)
+ * @returns {Promise<{content: string, attempt: number, isRegenerated: boolean, wordCount: number}>}
+ */
+async function validateAndRegenerateIfShort(text, storyFormat, regenerateFunc, context = {}, maxAttempts = 2) {
+  const minWords = getMinWordCount(storyFormat);
+  let currentText = text;
+  let attempt = 0;
+
+  while (attempt < maxAttempts) {
+    const wordCount = currentText?.split(/\s+/).filter(w => w.length > 0).length || 0;
+
+    if (wordCount >= minWords) {
+      if (attempt > 0) {
+        logger.info(`[ValidateRegenerate] SUCCESS after ${attempt} regeneration(s) | wordCount: ${wordCount} | minRequired: ${minWords}`);
+      }
+      return {
+        content: currentText,
+        attempt: attempt + 1,
+        isRegenerated: attempt > 0,
+        wordCount
+      };
+    }
+
+    attempt++;
+
+    if (attempt < maxAttempts && regenerateFunc) {
+      logger.warn(`[ValidateRegenerate] REGENERATING | wordCount: ${wordCount} | minRequired: ${minWords} | attempt: ${attempt}/${maxAttempts}`);
+
+      try {
+        // Call regeneration function with enhanced context
+        const enhancedContext = {
+          ...context,
+          isRetryAttempt: true,
+          previousWordCount: wordCount,
+          minRequiredWords: minWords,
+          retryReason: `Chapter was ${wordCount} words but needs at least ${minWords} words`
+        };
+
+        currentText = await regenerateFunc(enhancedContext);
+      } catch (regenError) {
+        logger.error(`[ValidateRegenerate] Regeneration attempt ${attempt} failed: ${regenError.message}`);
+        break;
+      }
+    } else if (!regenerateFunc) {
+      logger.warn(`[ValidateRegenerate] No regenerate function provided, cannot retry`);
+      break;
+    }
+  }
+
+  // Final word count check
+  const finalWordCount = currentText?.split(/\s+/).filter(w => w.length > 0).length || 0;
+  logger.warn(`[ValidateRegenerate] FINAL | wordCount: ${finalWordCount} | minRequired: ${minWords} | attempts: ${attempt} | passed: ${finalWordCount >= minWords}`);
+
+  return {
+    content: currentText,
+    attempt: attempt,
+    isRegenerated: attempt > 0,
+    wordCount: finalWordCount,
+    passedMinimum: finalWordCount >= minWords
+  };
+}
 
 /**
  * Extract dialogue from hybrid pipeline content for multi-voice audio
@@ -282,12 +386,35 @@ export class Orchestrator {
 
   /**
    * Emit progress event if callback is registered
+   * Enhanced with timing data for accurate progress bar
    */
   emitProgress(phase, detail = null) {
-    logger.debug(`[Orchestrator] PROGRESS | sessionId: ${this.sessionId} | phase: ${phase}`);
+    const timestamp = Date.now();
+    const elapsed = this._progressStartTime ? timestamp - this._progressStartTime : 0;
+
+    // Log with timing for backend analysis
+    logger.info(`[Orchestrator] PROGRESS | sessionId: ${this.sessionId} | phase: ${phase} | elapsed: ${elapsed}ms${detail ? ` | ${detail}` : ''}`);
+
     if (this.onProgress && typeof this.onProgress === 'function') {
       this.onProgress(phase, detail);
     }
+  }
+
+  /**
+   * Start progress tracking timer
+   */
+  startProgressTimer() {
+    this._progressStartTime = Date.now();
+    logger.info(`[Orchestrator] ========== GENERATION STARTED | sessionId: ${this.sessionId} ==========`);
+  }
+
+  /**
+   * Log elapsed time for a sub-operation
+   */
+  logTiming(operation, startTime) {
+    const duration = Date.now() - startTime;
+    logger.info(`[Orchestrator] TIMING | ${operation} | duration: ${duration}ms`);
+    return duration;
   }
 
   /**
@@ -403,8 +530,13 @@ export class Orchestrator {
   async generateNextScene(voiceId = null, options = {}) {
     const { deferAudio = false } = options;
 
-    this.emitProgress('loading');
+    // Start progress timer for accurate elapsed tracking
+    this.startProgressTimer();
+
+    this.emitProgress('loading', 'Starting session load');
+    const loadStartTime = Date.now();
     await this.loadSession();
+    this.logTiming('loadSession', loadStartTime);
 
     if (!this.outline) {
       throw new Error('No outline found. Generate outline first.');
@@ -443,21 +575,42 @@ export class Orchestrator {
     // Analyze user's intent to ensure Venice.ai generates appropriately explicit content
     const intensitySettings = this.session.config_json?.intensity || {};
     const audienceSetting = this.session.config_json?.audience || 'general';
-    const adultContentSetting = intensitySettings.adultContent ?? intensitySettings.romance ?? 0;
-    const useHybridPipeline = audienceSetting === 'mature' && adultContentSetting >= 50;
 
-    logger.info(`[Orchestrator] HYBRID CHECK | audience: ${audienceSetting} | adultContent: ${adultContentSetting} | intensity: ${JSON.stringify(intensitySettings)} | useHybrid: ${useHybridPipeline}`);
+    // P1 FIX: Check ALL intensity settings, not just adultContent/romance
+    // Violence and gore ALSO need Venice.ai for graphic content
+    const adultContentSetting = intensitySettings.adultContent || 0;
+    const romanceSetting = intensitySettings.romance || 0;
+    const violenceSetting = intensitySettings.violence || 0;
+    const goreSetting = intensitySettings.gore || 0;
+
+    // Trigger hybrid pipeline for ANY high-intensity mature content
+    const useHybridPipeline = audienceSetting === 'mature' && (
+      adultContentSetting >= 50 ||
+      romanceSetting >= 50 ||
+      violenceSetting >= 60 ||
+      goreSetting >= 60
+    );
+
+    const triggerReason = adultContentSetting >= 50 ? 'adultContent' :
+                          romanceSetting >= 50 ? 'romance' :
+                          violenceSetting >= 60 ? 'violence' :
+                          goreSetting >= 60 ? 'gore' : 'none';
+
+    logger.info(`[Orchestrator] HYBRID CHECK | audience: ${audienceSetting} | adult:${adultContentSetting} romance:${romanceSetting} violence:${violenceSetting} gore:${goreSetting} | useHybrid: ${useHybridPipeline} | trigger: ${triggerReason}`);
 
     let intentAnalysis = null;
     if (useHybridPipeline) {
-      this.emitProgress('analyzing_intent');
+      this.emitProgress('analyzing_intent', 'Analyzing content intent');
+      const intentStartTime = Date.now();
       const userPrompt = this.session.config_json?.custom_prompt || this.session.config_json?.premise || this.outline?.synopsis || '';
       intentAnalysis = await validateUserIntent(userPrompt, this.session.config_json);
+      this.logTiming('validateUserIntent', intentStartTime);
       logger.info(`[Orchestrator] HYBRID PIPELINE | Intent analyzed: ${intentAnalysis.summary || 'Explicit content requested'}`);
     }
 
     // Generate scene with dialogue
-    this.emitProgress('generating');
+    this.emitProgress('generating', 'Starting scene generation (this may take 2-5 minutes)');
+    const sceneGenStartTime = Date.now();
     const scenePreferences = buildScenePreferences({
       config: this.session.config_json,
       isFinal,
@@ -474,17 +627,21 @@ export class Orchestrator {
     }
 
     // ★ HYBRID PIPELINE DECISION ★
-    // For high explicit content (adultContent >= 80), use the full hybrid pipeline
+    // For high explicit content, use the full hybrid pipeline
     // which has Venice.ai generate with tags, then OpenAI polishes non-explicit sections
+    // P1 FIX: Include violence and gore in the full hybrid pipeline trigger
     const useFullHybridPipeline = useHybridPipeline &&
-                                   (intensitySettings.adultContent >= 80 || intensitySettings.romance >= 80) &&
+                                   (intensitySettings.adultContent >= 80 ||
+                                    intensitySettings.romance >= 80 ||
+                                    intensitySettings.violence >= 80 ||
+                                    intensitySettings.gore >= 80) &&
                                    intentAnalysis?.requiresExplicit;
 
     let sceneResult;
 
     if (useFullHybridPipeline) {
       // ★ HYBRID PIPELINE: Venice + Tag Extraction + OpenAI Polish + Restore ★
-      logger.info(`[Orchestrator] ★ USING FULL HYBRID PIPELINE for explicit content (adultContent: ${intensitySettings.adultContent})`);
+      logger.info(`[Orchestrator] ★ USING FULL HYBRID PIPELINE for explicit content | adult:${intensitySettings.adultContent} romance:${intensitySettings.romance} violence:${intensitySettings.violence} gore:${intensitySettings.gore}`);
       this.emitProgress('hybrid_generating');
 
       // Build the scene generation prompt
@@ -570,7 +727,65 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
     const proseFormat = sceneResult.prose_format || 'position_based';
     const preComputedSegments = sceneResult.segments || null;
 
+    this.logTiming('generateSceneWithDialogue', sceneGenStartTime);
+    this.emitProgress('scene_generated', `Scene generated with ${sceneDialogueMap.length} dialogue entries`);
     logger.info(`[Orchestrator] Scene generated with ${sceneDialogueMap.length} dialogue entries, format: ${proseFormat}`);
+
+    // P1 FIX: Check minimum word count and regenerate if too short
+    const storyFormat = this.session.config_json?.story_format || 'default';
+
+    // Create regeneration callback that can generate a longer chapter
+    const regenerateChapter = async (enhancedContext) => {
+      logger.info(`[Orchestrator] REGENERATING chapter for length | reason: ${enhancedContext.retryReason}`);
+
+      // Enhance preferences with explicit length requirements
+      const lengthEnhancedPreferences = {
+        ...scenePreferences,
+        minimumWords: enhancedContext.minRequiredWords,
+        lengthInstruction: `CRITICAL: The previous generation was only ${enhancedContext.previousWordCount} words but this chapter MUST be at least ${enhancedContext.minRequiredWords} words. Write a FULL chapter with rich detail, expanded dialogue, deeper character introspection, vivid scene descriptions, and thorough development of the plot. Do NOT abbreviate or summarize - write every moment in full prose.`,
+        isRetryForLength: true
+      };
+
+      // Skip hybrid pipeline for regeneration - use normal flow for better control
+      const regenResult = await generateSceneWithDialogue({
+        outline: {
+          title: this.outline?.title,
+          setting: this.outline?.setting,
+          acts: this.outline?.acts,
+          synopsis: this.storyBibleContext?.synopsis?.synopsis || this.outline?.synopsis
+        },
+        sceneIndex,
+        previousScene,
+        characters: this.characters,
+        preferences: lengthEnhancedPreferences,
+        lorebookContext,
+        storyBible: this.storyBible,
+        contextSummary: this.contextSummary,
+        complexity,
+        sessionId: this.sessionId,
+        storyBibleContext: this.isAdvancedMode ? buildAdvancedModeContext(this.storyBibleContext, this.lore) : null
+      });
+
+      return regenResult.content;
+    };
+
+    // Validate and regenerate if needed (max 2 attempts)
+    const validationResult = await validateAndRegenerateIfShort(
+      rawText,
+      storyFormat,
+      regenerateChapter,
+      { sceneIndex, sessionId: this.sessionId },
+      2
+    );
+
+    // Update rawText with potentially regenerated content
+    rawText = validationResult.content;
+
+    if (validationResult.isRegenerated) {
+      logger.info(`[Orchestrator] Chapter regenerated for length | finalWordCount: ${validationResult.wordCount} | attempts: ${validationResult.attempt}`);
+    } else {
+      logger.info(`[Orchestrator] Word count OK | wordCount: ${validationResult.wordCount} | minRequired: ${getMinWordCount(storyFormat)}`);
+    }
 
     // Check if mature content with high adult content - skip OpenAI-based validation
     const intensityConfig = this.session.config_json?.intensity || {};
@@ -583,14 +798,15 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
     if (isMatureWithExplicitContent) {
       logger.info(`[Orchestrator] SKIPPING story validation for mature content (adultContent: ${adultContentLevelCheck})`);
     }
-    const validationResult = skipValidation ? { valid: true, fixed: false } : await validateStoryText(rawText, { outline: this.outline, characters: this.characters }, this.sessionId);
+    const storyValidationResult = skipValidation ? { valid: true, fixed: false } : await validateStoryText(rawText, { outline: this.outline, characters: this.characters }, this.sessionId);
 
-    if (!validationResult.valid && validationResult.fixed) {
-      rawText = validationResult.text;
+    if (!storyValidationResult.valid && storyValidationResult.fixed) {
+      rawText = storyValidationResult.text;
     }
 
-    // Run parallel agent checks
-    this.emitProgress('validating');
+    // Run parallel agent checks (safety, lore, polish, facts)
+    this.emitProgress('validating', 'Running content validation agents');
+    const validationStartTime = Date.now();
     const audience = this.session.config_json?.audience || 'general';
     const intensity = this.session.config_json?.intensity || {};
     const effectiveLimits = calculateEffectiveLimits(intensity, audience);
@@ -610,15 +826,33 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
       storyFacts = {}; // Skip fact extraction for now
     } else {
       // Normal flow - run all utility agents
-      [safetyResult, loreCheck, polishedText, storyFacts] = await Promise.all([
+      // ERROR HANDLING FIX: Use Promise.allSettled so one failing agent doesn't crash story generation
+      const agentResults = await Promise.allSettled([
         checkSafety(rawText, { ...effectiveLimits, audience }, this.sessionId),
         checkLoreConsistency(rawText, { characters: this.characters, setting: this.outline.setting, previousEvents: previousScene, storyBible: this.storyBible }, this.sessionId),
         willUseMultiVoice ? Promise.resolve(rawText) : polishForNarration(rawText, { narrator_style: this.session.config_json?.narrator_style || 'warm', bedtime_mode: this.session.bedtime_mode }, this.sessionId),
         extractStoryFacts(rawText, { outline: this.outline, characters: this.characters }, this.sessionId)
       ]);
+
+      // Process results with safe defaults for failures
+      safetyResult = agentResults[0].status === 'fulfilled' ? agentResults[0].value : { safe: true, concerns: [], exceeded_limits: {} };
+      loreCheck = agentResults[1].status === 'fulfilled' ? agentResults[1].value : { consistent: true, issues: [] };
+      polishedText = agentResults[2].status === 'fulfilled' ? agentResults[2].value : rawText;
+      storyFacts = agentResults[3].status === 'fulfilled' ? agentResults[3].value : {};
+
+      // Log any agent failures
+      const agentNames = ['checkSafety', 'checkLoreConsistency', 'polishForNarration', 'extractStoryFacts'];
+      agentResults.forEach((r, i) => {
+        if (r.status === 'rejected') {
+          logger.warn(`[Orchestrator] ${agentNames[i]} failed:`, r.reason?.message || r.reason);
+        } else {
+          logger.info(`[Orchestrator] ${agentNames[i]} completed successfully`);
+        }
+      });
     }
 
-    this.emitProgress('polishing');
+    this.logTiming('validationAgents (parallel)', validationStartTime);
+    this.emitProgress('polishing', 'Processing validation results');
 
     // Process results
     if (!safetyResult.safe) {
@@ -639,7 +873,8 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
     // Generate choices if CYOA
     let choices = [];
     if (this.session.cyoa_enabled && !isFinal && sceneIndex > 0) {
-      this.emitProgress('choices');
+      this.emitProgress('choices', 'Generating story choices');
+      const choicesStartTime = Date.now();
       const cyoaSettings = this.session.config_json?.cyoa_settings || {};
       const choiceResult = await generateChoices(finalText, {
         outline: this.outline,
@@ -649,13 +884,15 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
         is_near_ending: sceneIndex >= targetScenes - 2
       }, this.sessionId);
       choices = choiceResult.choices || [];
+      this.logTiming('generateChoices', choicesStartTime);
     }
 
     const mood = determineMood(finalText);
     const displayText = stripTags(finalText);
 
-    // Save scene
-    this.emitProgress('saving');
+    // Save scene to database
+    this.emitProgress('saving', 'Saving scene to database');
+    const saveStartTime = Date.now();
     const scene = await saveScene({
       sessionId: this.sessionId,
       sceneIndex,
@@ -663,13 +900,15 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
       displayText,
       mood
     });
+    this.logTiming('saveScene', saveStartTime);
 
     // Speaker validation (C+E architecture)
     let dialogueMap = sceneDialogueMap;
 
     if (this.characters.length > 0 && dialogueMap.length > 0) {
       try {
-        this.emitProgress('validating_speakers');
+        this.emitProgress('validating_speakers', 'Validating speaker assignments');
+        const speakerValidationStartTime = Date.now();
 
         const storyContext = {
           genre: this.session.config_json?.genre || 'general fiction',
@@ -681,16 +920,18 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
         };
 
         // Campaign mode removed - migrated to GameMaster project (2026-01-08)
-        const narratorVoiceId = getEffectiveVoiceId({ voiceId: null, config: this.session.config_json, isCampaign: false });
+        const narratorVoiceId = getEffectiveVoiceId({ voiceId: null, config: this.session.config_json });
 
         const speakerValidationResult = await validateAndReconcileSpeakers(this.sessionId, dialogueMap, sceneNewCharacters, this.characters, storyContext, narratorVoiceId);
 
         if (speakerValidationResult.createdCharacters.length > 0) {
           this.characters = [...this.characters, ...speakerValidationResult.createdCharacters];
         }
+        this.logTiming('validateAndReconcileSpeakers', speakerValidationStartTime);
 
         const speakersExtracted = proseFormat === 'tag_based' ? extractSpeakers(rawText) : dialogueMap.map(d => d.speaker).filter((v, i, a) => a.indexOf(v) === i);
         await saveDialogueMap({ sceneId: scene.id, dialogueMap, proseFormat, speakersExtracted });
+        logger.info(`[Orchestrator] Dialogue map saved with ${dialogueMap.length} entries`);
 
       } catch (validationError) {
         logger.error(`[SpeakerValidation] CRITICAL FAILURE: ${validationError.message}`);
@@ -716,7 +957,7 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
     let audioBuffer;
 
     // Campaign mode removed - migrated to GameMaster project (2026-01-08)
-    const effectiveVoiceId = getEffectiveVoiceId({ voiceId, config: this.session.config_json, isCampaign: false });
+    const effectiveVoiceId = getEffectiveVoiceId({ voiceId, config: this.session.config_json });
     const shouldRecord = this.recordingEnabled;
 
     // Initialize recording
@@ -771,9 +1012,9 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
       }
     }
 
-    // Generate SFX
+    // Generate SFX - P1 FIX: Only generate when EXPLICITLY enabled
     let sceneSfx = [];
-    if (this.session.config_json?.sfx_enabled !== false && sfxService.enabled) {
+    if (this.session.config_json?.sfx_enabled === true && sfxService.enabled) {
       sceneSfx = await this._generateSFX(scene.id, finalText, mood, wordTimings);
     }
 
@@ -782,7 +1023,10 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
       await this._addRecordingSegment(scene, sceneIndex, audioBuffer, audioUrl, wordTimings, finalText, sceneSfx, choices, mood, isFinal);
     }
 
-    logger.info(`[Orchestrator] OUTPUT | sceneId: ${scene.id} | sceneIndex: ${sceneIndex} | multiVoice: ${willUseMultiVoice} | sfxCount: ${sceneSfx.length}`);
+    // Log final completion with total elapsed time
+    const totalElapsed = this._progressStartTime ? Date.now() - this._progressStartTime : 0;
+    logger.info(`[Orchestrator] ========== GENERATION COMPLETE ==========`);
+    logger.info(`[Orchestrator] OUTPUT | sceneId: ${scene.id} | sceneIndex: ${sceneIndex} | multiVoice: ${willUseMultiVoice} | sfxCount: ${sceneSfx.length} | totalElapsed: ${totalElapsed}ms`);
 
     return {
       id: scene.id,
@@ -831,6 +1075,42 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
 
     logSegmentAnalysis(segments, finalText);
 
+    // P1 FIX: Enhance dialogue segments with voice direction for better emotion/prosody
+    try {
+      const storyContext = {
+        title: this.session.title || this.outline?.title,
+        genres: this.session.config_json?.genres || {},
+        mood: this.session.config_json?.mood || 'neutral',
+        audience: this.session.config_json?.audience || 'general',
+        characters: this.characters
+      };
+
+      // Only direct dialogue segments (narrator handled separately)
+      const dialogueSegments = segments.filter(s => s.type === 'dialogue' || s.type === 'DIALOGUE');
+      if (dialogueSegments.length > 0) {
+        const directions = await directVoiceActing(segments, storyContext, this.sessionId);
+
+        // Apply directions to segments
+        if (directions && directions.length > 0) {
+          for (const direction of directions) {
+            const targetSegment = segments.find(s =>
+              s.text?.substring(0, 50) === direction.text?.substring(0, 50)
+            );
+            if (targetSegment && direction.audio_tags) {
+              targetSegment.audio_tags = direction.audio_tags;
+              targetSegment.stability = direction.stability;
+              targetSegment.style_exaggeration = direction.style;
+              targetSegment.voiceDirected = true;
+            }
+          }
+          logger.info(`[Orchestrator] Voice direction applied to ${directions.length} segments`);
+        }
+      }
+    } catch (error) {
+      // Don't fail the whole audio generation - just log and continue with defaults
+      logger.warn(`[Orchestrator] Voice direction failed, using defaults: ${error.message}`);
+    }
+
     // Get voice assignments
     const existingAssignments = await pool.query(
       'SELECT c.name, cva.elevenlabs_voice_id FROM character_voice_assignments cva JOIN characters c ON c.id = cva.character_id WHERE cva.story_session_id = $1',
@@ -845,14 +1125,16 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
         // ★ TARGETED REPAIR - Don't nuke everything!
         logger.warn(`[VoiceValidation] Validation failed, attempting repair: ${validation.errors.join('; ')}`);
 
-        // Find and fix specific problems
+        // Find and fix specific problems - track which need reassignment
         const fixedVoices = { ...characterVoices };
+        const needsReassignment = []; // Track removed characters for partial reassignment
         let hadProblems = false;
 
         // Fix 1: Remove characters using narrator voice
         for (const [charName, voiceId] of Object.entries(fixedVoices)) {
           if (voiceId === effectiveVoiceId) {
             logger.info(`[VoiceValidation] Removing ${charName} (was using narrator voice ${voiceId})`);
+            needsReassignment.push(charName);
             delete fixedVoices[charName];
             hadProblems = true;
           }
@@ -862,6 +1144,7 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
         for (const [charName, voiceId] of Object.entries(fixedVoices)) {
           if (!voiceId) {
             logger.info(`[VoiceValidation] Removing ${charName} (had null/undefined voice)`);
+            needsReassignment.push(charName);
             delete fixedVoices[charName];
             hadProblems = true;
           }
@@ -885,16 +1168,45 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
             logger.info(`[VoiceValidation] Resolving duplicate voice ${voiceId.slice(-4)}: keeping ${keep}, removing ${remove.join(', ')}`);
 
             for (const charName of remove) {
+              needsReassignment.push(charName);
               delete fixedVoices[charName];
               hadProblems = true;
             }
           }
         }
 
-        // Use fixed assignments if we had issues, otherwise clear for reassignment
+        // Use fixed assignments and request partial reassignment for removed characters
         if (hadProblems && Object.keys(fixedVoices).length > 0) {
           characterVoices = fixedVoices;
-          logger.info(`[VoiceValidation] Repair successful: kept ${Object.keys(fixedVoices).length} valid assignments`);
+          logger.info(`[VoiceValidation] Repair successful: kept ${Object.keys(fixedVoices).length} valid, ${needsReassignment.length} need reassignment`);
+
+          // Partial reassignment: get new voices for removed characters
+          if (needsReassignment.length > 0) {
+            const charactersToReassign = this.characters.filter(c =>
+              needsReassignment.includes(c.name.toLowerCase())
+            );
+            if (charactersToReassign.length > 0) {
+              const storyContext = buildVoiceAssignmentContext({ session: this.session, outline: this.outline, characters: this.characters });
+              const newAssignments = await assignVoicesByLLM(charactersToReassign, storyContext, effectiveVoiceId, this.sessionId, Object.values(fixedVoices));
+
+              // Merge new assignments with existing
+              for (const [charName, voiceId] of Object.entries(newAssignments)) {
+                if (voiceId && voiceId !== effectiveVoiceId) {
+                  characterVoices[charName] = voiceId;
+                  // Also save to DB
+                  const char = this.characters.find(c => c.name.toLowerCase() === charName);
+                  if (char) {
+                    await pool.query(`
+                      INSERT INTO character_voice_assignments (story_session_id, character_id, elevenlabs_voice_id)
+                      VALUES ($1, $2, $3)
+                      ON CONFLICT (story_session_id, character_id) DO UPDATE SET elevenlabs_voice_id = $3
+                    `, [this.sessionId, char.id, voiceId]);
+                  }
+                }
+              }
+              logger.info(`[VoiceValidation] Partial reassignment complete: ${Object.keys(newAssignments).length} new assignments`);
+            }
+          }
         } else {
           // If no assignments remain after repair, clear for full reassignment
           logger.info(`[VoiceValidation] No valid assignments after repair, requesting full reassignment`);
@@ -1191,7 +1503,7 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
       };
     }
 
-    const effectiveVoiceId = getEffectiveVoiceId({ voiceId, config: this.session.config_json, isCampaign: false });
+    const effectiveVoiceId = getEffectiveVoiceId({ voiceId, config: this.session.config_json });
     const useMultiVoice = shouldUseMultiVoice({ config: this.session.config_json, characters: this.characters });
     const normalizedStyle = normalizeStyleValue(this.session.config_json?.narratorStyleSettings?.style);
     const onProgress = typeof options?.onProgress === 'function' ? options.onProgress : null;

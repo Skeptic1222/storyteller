@@ -5,7 +5,7 @@
  * Uses ThemeContext for unified theme management across pages
  */
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import {
   ArrowLeft,
@@ -91,6 +91,7 @@ export default function Reader() {
   const readingStartRef = useRef(null);
   const wordRefs = useRef(new Map());
   const exportModalTriggeredRef = useRef(false);
+  const autoPlayTimeoutRef = useRef(null);  // Track autoplay timeout for cleanup
   const currentScene = scenes[currentSceneIndex];
 
   const getAuthHeaders = useCallback(() => {
@@ -231,6 +232,11 @@ export default function Reader() {
     return () => {
       // Save progress on unmount
       saveProgress();
+      // Clear autoplay timeout to prevent memory leak
+      if (autoPlayTimeoutRef.current) {
+        clearTimeout(autoPlayTimeoutRef.current);
+        autoPlayTimeoutRef.current = null;
+      }
     };
   }, [storyId]);
 
@@ -327,13 +333,19 @@ export default function Reader() {
 
   const handleAudioEnded = useCallback(() => {
     setIsPlaying(false);
+    // Clear any existing autoplay timeout
+    if (autoPlayTimeoutRef.current) {
+      clearTimeout(autoPlayTimeoutRef.current);
+      autoPlayTimeoutRef.current = null;
+    }
     if (autoPlayNext && currentSceneIndex < scenes.length - 1) {
       nextScene();
-      setTimeout(() => {
+      autoPlayTimeoutRef.current = setTimeout(() => {
         if (audioRef.current) {
           audioRef.current.play();
           setIsPlaying(true);
         }
+        autoPlayTimeoutRef.current = null;
       }, 500);
     }
   }, [autoPlayNext, currentSceneIndex, scenes.length, nextScene]);
@@ -563,7 +575,7 @@ export default function Reader() {
     );
   }
 
-  const progress = ((currentSceneIndex + 1) / scenes.length) * 100;
+  const progress = scenes.length > 0 ? ((currentSceneIndex + 1) / scenes.length) * 100 : 0;
 
   return (
     <div
@@ -764,56 +776,49 @@ export default function Reader() {
           lineHeight: lineHeight,
           textAlign: 'justify'
         }}>
-          {/* Render with word-by-word karaoke highlighting if word_timings available */}
-          {useMemo(() => {
-            if (syncHighlight && currentScene?.word_timings?.words) {
-              return (
-                <div style={{ marginBottom: '1.5em' }}>
-                  {currentScene.word_timings.words.map((word, i) => {
-                    const isCurrentWord = i === currentWordIndex;
-                    const isOnCurrentLine = i >= currentLineStart && i <= currentLineEnd && currentLineStart >= 0;
+          {syncHighlight && currentScene?.word_timings?.words ? (
+            <div style={{ marginBottom: '1.5em' }}>
+              {currentScene.word_timings.words.map((word, i) => {
+                const isCurrentWord = i === currentWordIndex;
+                const isOnCurrentLine = i >= currentLineStart && i <= currentLineEnd && currentLineStart >= 0;
 
-                    return (
-                      <span
-                        key={i}
-                        ref={(el) => {
-                          if (el) wordRefs.current.set(i, el);
-                          else wordRefs.current.delete(i);
-                        }}
-                        style={{
-                          backgroundColor: isCurrentWord
-                            ? colors.accent
-                            : isOnCurrentLine
-                              ? colors.highlight
-                              : 'transparent',
-                          color: isCurrentWord ? '#fff' : colors.text,
-                          padding: isCurrentWord
-                            ? `${Math.round(fontSize * 0.1)}px ${Math.round(fontSize * 0.2)}px`
-                            : isOnCurrentLine
-                              ? `${Math.round(fontSize * 0.05)}px 0`
-                              : '0',
-                          borderRadius: `${Math.round(fontSize * 0.15)}px`,
-                          transition: 'background-color 0.15s, color 0.15s',
-                          display: 'inline'
-                        }}
-                      >
-                        {word.text}
-                        {/* Add space after word */}
-                        {i < currentScene.word_timings.words.length - 1 ? ' ' : ''}
-                      </span>
-                    );
-                  })}
-                </div>
-              );
-            }
-
-            // Fallback to paragraph-based rendering when no word timings
-            return stripAllTags(currentScene?.polished_text || '')?.split('\n').map((paragraph, i) => (
+                return (
+                  <span
+                    key={i}
+                    ref={(el) => {
+                      if (el) wordRefs.current.set(i, el);
+                      else wordRefs.current.delete(i);
+                    }}
+                    style={{
+                      backgroundColor: isCurrentWord
+                        ? colors.accent
+                        : isOnCurrentLine
+                          ? colors.highlight
+                          : 'transparent',
+                      color: isCurrentWord ? '#fff' : colors.text,
+                      padding: isCurrentWord
+                        ? `${Math.round(fontSize * 0.1)}px ${Math.round(fontSize * 0.2)}px`
+                        : isOnCurrentLine
+                          ? `${Math.round(fontSize * 0.05)}px 0`
+                          : '0',
+                      borderRadius: `${Math.round(fontSize * 0.15)}px`,
+                      transition: 'background-color 0.15s, color 0.15s',
+                      display: 'inline'
+                    }}
+                  >
+                    {word.text}
+                    {i < currentScene.word_timings.words.length - 1 ? ' ' : ''}
+                  </span>
+                );
+              })}
+            </div>
+          ) : (
+            stripAllTags(currentScene?.polished_text || '')?.split('\n').map((paragraph, i) => (
               <p key={i} style={{ marginBottom: '1.5em' }}>
                 {paragraph}
               </p>
-            ));
-          }, [syncHighlight, currentScene?.word_timings?.words, currentWordIndex, currentLineStart, currentLineEnd, colors.accent, colors.highlight, colors.text, fontSize, currentScene?.polished_text])}
+            ))
+          )}
         </div>
 
         {/* CYOA Choices */}

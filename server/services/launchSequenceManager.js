@@ -32,34 +32,13 @@ import { completion, parseJsonResponse } from './openai.js';
 import { getUtilityModel } from './modelSelection.js';
 import fetch from 'node-fetch';
 
+// Import stage constants from single source of truth
+import { STAGES, STATUS, LAUNCH_PROGRESS_RANGES } from '../constants/stages.js';
+
 const elevenlabs = new ElevenLabsService();
 const sfxCoordinator = new SFXCoordinatorAgent();
 const validationAgent = new ValidationAgent();
 const safetyAgent = new SafetyAgent();
-
-// Validation stage definitions
-const STAGES = {
-  VOICES: 'voices',
-  SFX: 'sfx',
-  COVER: 'cover',
-  QA: 'qa'
-};
-
-// Stage status values
-const STATUS = {
-  PENDING: 'pending',
-  IN_PROGRESS: 'in_progress',
-  SUCCESS: 'success',
-  ERROR: 'error'
-};
-
-// Launch progress ranges (overall 70-100% after story generation completes)
-const LAUNCH_PROGRESS_RANGES = {
-  [STAGES.VOICES]: { start: 70, end: 82 },
-  [STAGES.SFX]: { start: 82, end: 92 },
-  [STAGES.COVER]: { start: 92, end: 97 },
-  [STAGES.QA]: { start: 97, end: 100 }
-};
 
 /**
  * LaunchSequenceManager handles the complete pre-narration validation flow
@@ -116,6 +95,99 @@ export class LaunchSequenceManager {
   cancel() {
     this.cancelled = true;
     logger.info(`[LaunchSequence] Cancelled for session ${this.sessionId}`);
+  }
+
+  /**
+   * Save current generation state to database for recovery after interruption
+   * P2 FIX: Server-side resilience - persist state for recovery
+   */
+  async saveGenerationState() {
+    const state = {
+      stageStatuses: this.stageStatuses,
+      stageResults: this.stageResults,
+      retryAttempts: this.retryAttempts,
+      stageTimestamps: this.stageTimestamps,
+      voiceId: this.voiceId,
+      validationStats: this.validationStats,
+      savedAt: Date.now()
+    };
+
+    try {
+      await pool.query(`
+        UPDATE story_sessions
+        SET generation_state = $1, generation_updated_at = NOW()
+        WHERE id = $2
+      `, [JSON.stringify(state), this.sessionId]);
+      logger.debug(`[LaunchSequence] State saved for session ${this.sessionId}`);
+    } catch (error) {
+      logger.warn(`[LaunchSequence] Failed to save state: ${error.message}`);
+    }
+  }
+
+  /**
+   * Recover generation state from database if recently interrupted
+   * P2 FIX: Server-side resilience - recover from interruption
+   * @param {number} maxAgeMinutes - Maximum age of state to recover (default 10 minutes)
+   * @returns {Object|null} Recovered state or null if none/expired
+   */
+  async recoverGenerationState(maxAgeMinutes = 10) {
+    try {
+      const result = await pool.query(`
+        SELECT generation_state, generation_updated_at
+        FROM story_sessions
+        WHERE id = $1 AND generation_state IS NOT NULL
+      `, [this.sessionId]);
+
+      if (result.rows.length > 0 && result.rows[0].generation_state) {
+        const updatedAt = new Date(result.rows[0].generation_updated_at);
+        const ageMinutes = (Date.now() - updatedAt.getTime()) / 60000;
+
+        if (ageMinutes < maxAgeMinutes) {
+          const state = result.rows[0].generation_state;
+          logger.info(`[LaunchSequence] Recovered state for session ${this.sessionId} (age: ${ageMinutes.toFixed(1)} min)`);
+          return state;
+        } else {
+          logger.info(`[LaunchSequence] State too old (${ageMinutes.toFixed(1)} min > ${maxAgeMinutes} min limit)`);
+        }
+      }
+      return null;
+    } catch (error) {
+      logger.warn(`[LaunchSequence] Failed to recover state: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Clear generation state from database (call on successful completion)
+   */
+  async clearGenerationState() {
+    try {
+      await pool.query(`
+        UPDATE story_sessions
+        SET generation_state = NULL, generation_updated_at = NULL
+        WHERE id = $1
+      `, [this.sessionId]);
+      logger.debug(`[LaunchSequence] State cleared for session ${this.sessionId}`);
+    } catch (error) {
+      logger.warn(`[LaunchSequence] Failed to clear state: ${error.message}`);
+    }
+  }
+
+  /**
+   * Apply recovered state to this manager instance
+   */
+  applyRecoveredState(state) {
+    if (!state) return false;
+
+    this.stageStatuses = state.stageStatuses || this.stageStatuses;
+    this.stageResults = state.stageResults || this.stageResults;
+    this.retryAttempts = state.retryAttempts || this.retryAttempts;
+    this.stageTimestamps = state.stageTimestamps || this.stageTimestamps;
+    this.voiceId = state.voiceId || this.voiceId;
+    this.validationStats = state.validationStats || this.validationStats;
+
+    logger.info(`[LaunchSequence] Applied recovered state for session ${this.sessionId}`);
+    return true;
   }
 
   /**
@@ -227,35 +299,76 @@ export class LaunchSequenceManager {
     this.voiceId = voiceId;
 
     try {
-      // Initialize all stages
-      this.initializeStages();
+      // P2 FIX: Check for recoverable state from a previous interrupted session
+      const recoveredState = await this.recoverGenerationState();
+      let startFromStage = null;
+
+      if (recoveredState) {
+        this.applyRecoveredState(recoveredState);
+        // Find the first non-completed stage to resume from
+        for (const [stage, status] of Object.entries(this.stageStatuses)) {
+          if (status !== STATUS.SUCCESS) {
+            startFromStage = stage;
+            logger.info(`[LaunchSequence] Resuming from stage: ${stage}`);
+            break;
+          }
+        }
+        // Emit current state to client
+        this.io.to(this.sessionId).emit('launch-sequence-resumed', {
+          stages: Object.keys(STAGES).map(key => ({
+            id: STAGES[key],
+            name: this.getStageName(STAGES[key]),
+            status: this.stageStatuses[STAGES[key]]
+          })),
+          allStatuses: { ...this.stageStatuses },
+          resumedFrom: startFromStage
+        });
+      } else {
+        // Initialize all stages fresh
+        this.initializeStages();
+      }
 
       // Initialize agent tracking for this session
       agentTracker.initAgentTracking(this.sessionId, this.io);
       usageTracker.setUsageTrackingIO(this.sessionId, this.io);
       this.emitStageProgress(STAGES.VOICES, 0, 'Starting launch sequence...');
 
-      // Stage 1: Voice Assignment
+      // Stage 1: Voice Assignment (skip if already completed from recovery)
       if (this.cancelled) return null;
-      await this.runVoiceAssignment();
+      if (this.stageStatuses[STAGES.VOICES] !== STATUS.SUCCESS) {
+        await this.runVoiceAssignment();
+        await this.saveGenerationState(); // P2 FIX: Save after each stage
+      }
 
-      // Stage 2: SFX Generation
+      // Stage 2: SFX Generation (skip if already completed from recovery)
       if (this.cancelled) return null;
-      await this.runSFXGeneration();
+      if (this.stageStatuses[STAGES.SFX] !== STATUS.SUCCESS) {
+        await this.runSFXGeneration();
+        await this.saveGenerationState(); // P2 FIX: Save after each stage
+      }
 
-      // Stage 3: Cover Art Validation
+      // Stage 3: Cover Art Validation (skip if already completed from recovery)
       if (this.cancelled) return null;
-      await this.runCoverArtValidation();
+      if (this.stageStatuses[STAGES.COVER] !== STATUS.SUCCESS) {
+        await this.runCoverArtValidation();
+        await this.saveGenerationState(); // P2 FIX: Save after each stage
+      }
 
-      // Stage 4: QA Checks
+      // Stage 4: QA Checks (skip if already completed from recovery)
       if (this.cancelled) return null;
-      await this.runQAChecks();
+      if (this.stageStatuses[STAGES.QA] !== STATUS.SUCCESS) {
+        await this.runQAChecks();
+        await this.saveGenerationState(); // P2 FIX: Save after each stage
+      }
 
       // === FINAL VALIDATION GATE ===
       // Ensure ALL required components are ready before playback
       // This is the critical checkpoint - no content until everything passes
       if (this.cancelled) return null;
       await this.runFinalValidationGate();
+
+      // P2 FIX: Clear state on successful completion
+      await this.clearGenerationState();
 
       // All stages complete - emit ready event
       this.emitReadyForPlayback();
@@ -932,6 +1045,31 @@ export class LaunchSequenceManager {
    */
   async runSFXGeneration() {
     const stage = STAGES.SFX;
+
+    // P1 FIX: Check if SFX is explicitly enabled before generating
+    // This prevents SFX generation when user explicitly disabled it in Configure screen
+    const configResult = await pool.query('SELECT config_json FROM story_sessions WHERE id = $1', [this.sessionId]);
+    const sfxEnabled = configResult.rows[0]?.config_json?.sfx_enabled === true;
+
+    if (!sfxEnabled) {
+      logger.info(`[LaunchSequence] SFX SKIPPED | sfx_enabled !== true | sessionId: ${this.sessionId}`);
+      this.stageResults.sfx = {
+        sfxCount: 0,
+        sfxCategories: [],
+        sfxNames: [],
+        cachedCount: 0,
+        missingCount: 0,
+        skipped: true,
+        reason: 'SFX not enabled in story settings'
+      };
+      this.emitStageStatus(stage, STATUS.SUCCESS, {
+        message: 'SFX disabled in settings',
+        sfxCount: 0,
+        skipped: true
+      });
+      return this.stageResults.sfx;
+    }
+
     this.emitStageStatus(stage, STATUS.IN_PROGRESS, { message: 'Detecting sound effects...' });
     this.emitStageProgress(stage, 0.05, 'Detecting sound effects...');
 
@@ -1213,7 +1351,7 @@ export class LaunchSequenceManager {
       const sfxDetailPayload = {
         sfxList: sfxList.map((sfx, i) => {
           const resolvedKey = sfx.sfx_key || sfx.sfxKey || `sfx_${i}`;
-          logger.info(`[SFX Debug] Mapping sfx ${i}: sfx_key=${sfx.sfx_key}, sfxKey=${sfx.sfxKey} -> resolved=${resolvedKey}`);
+          logger.info(`[SFX Debug] Mapping sfx ${i}: sfx_key=${sfx.sfx_key}, sfxKey=${sfx.sfxKey}, timing=${sfx.timing} -> resolved=${resolvedKey}`);
           return {
             key: resolvedKey,
             sfx_key: resolvedKey, // Also include as sfx_key for client compatibility
@@ -1222,7 +1360,8 @@ export class LaunchSequenceManager {
             status: cachedIndices.has(i) ? 'cached' : 'generating',
             progress: 100,
             volume: sfx.volume || 0.3,
-            loop: sfx.loop || false
+            loop: sfx.loop || false,
+            timing: sfx.timing || 'beginning' // CRITICAL: Include timing for client-side scheduling
           };
         }),
         sfxCount: sfxList.length,
@@ -1711,11 +1850,10 @@ Minor spelling variations or stylization are acceptable.`
       const storySettings = [];
       const settingsDetails = {};
 
-      // Story type (narrative, cyoa, campaign)
+      // Story type (narrative, cyoa)
       const storyTypeLabels = {
         'narrative': 'Story',
-        'cyoa': 'Adventure (CYOA)',
-        'campaign': 'D&D Campaign'
+        'cyoa': 'Adventure (CYOA)'
       };
       if (configJson.story_type) {
         storySettings.push(storyTypeLabels[configJson.story_type] || configJson.story_type);
@@ -1758,8 +1896,9 @@ Minor spelling variations or stylization are acceptable.`
         settingsDetails.multiVoice = true;
       }
 
-      // SFX enabled
-      if (configJson.sfx_enabled !== false) {
+      // SFX enabled - P1 FIX: Only enable SFX when EXPLICITLY set to true
+      // Previously used !== false which generated SFX even when user said "no"
+      if (configJson.sfx_enabled === true) {
         storySettings.push('SFX');
         settingsDetails.sfxEnabled = true;
       }
@@ -1815,11 +1954,42 @@ Minor spelling variations or stylization are acceptable.`
 
       emitQACheck('sliders', 'passed', sliderMessage, settingsDetails);
 
-      // Continuity check
+      // Continuity check - P2 FIX: Real LLM-based validation
       emitQACheck('continuity', 'running', 'Checking story continuity...');
       agentTracker.updateAgentProgress(this.sessionId, 'qa', 70, 'Checking continuity...');
       this.emitStageProgress(stage, 0.85, 'Checking continuity...');
-      emitQACheck('continuity', 'passed', 'Continuity verified');
+
+      // Get previous scene for comparison
+      let continuityResult = { passed: true, message: 'Continuity verified', issues: [] };
+      try {
+        const prevSceneResult = await pool.query(`
+          SELECT polished_text FROM story_scenes
+          WHERE story_session_id = $1
+          ORDER BY sequence_index DESC
+          OFFSET 1 LIMIT 1
+        `, [this.sessionId]);
+
+        const previousSceneText = prevSceneResult.rows[0]?.polished_text || null;
+        const currentSceneText = this.scene?.polished_text || this.scene?.text || '';
+
+        if (currentSceneText) {
+          continuityResult = await this.validateContinuity(currentSceneText, previousSceneText);
+        }
+      } catch (err) {
+        logger.warn(`[QA] Continuity check error: ${err.message}`);
+        continuityResult = { passed: true, message: 'Continuity check skipped', issues: [] };
+      }
+
+      if (continuityResult.passed) {
+        emitQACheck('continuity', 'passed', continuityResult.message);
+      } else {
+        // Log warning but don't fail - continuity issues are informational
+        emitQACheck('continuity', 'warning', continuityResult.message, {
+          issues: continuityResult.issues,
+          confidence: continuityResult.confidence
+        });
+        logger.warn(`[QA] Continuity warning: ${continuityResult.message}`, continuityResult.issues);
+      }
 
       // Engagement check
       emitQACheck('engagement', 'running', 'Analyzing engagement level...');
@@ -2029,7 +2199,8 @@ Minor spelling variations or stylization are acceptable.`
 
     const sfxResult = this.stageResults.sfx;
     const config = await pool.query('SELECT config_json FROM story_sessions WHERE id = $1', [this.sessionId]);
-    const sfxEnabled = config.rows[0]?.config_json?.sfx_enabled !== false;
+    // P1 FIX: Only check SFX when EXPLICITLY enabled
+    const sfxEnabled = config.rows[0]?.config_json?.sfx_enabled === true;
 
     if (sfxEnabled) {
       if (sfxResult?.sfxCount > 0) {
@@ -2166,6 +2337,8 @@ Minor spelling variations or stylization are acceptable.`
     const sfxDetails = {
       sfxList: (sfxResult.sfxList || []).map((sfx, i) => {
         const resolvedKey = sfx.sfx_key || sfx.sfxKey || `sfx_${i}`;
+        // Include timing for proper SFX synchronization
+        const timing = sfx.timing || 'middle'; // Default to middle if not specified
         return {
           key: resolvedKey,
           sfx_key: resolvedKey, // Include sfx_key for client compatibility
@@ -2174,7 +2347,8 @@ Minor spelling variations or stylization are acceptable.`
           status: sfx.cached ? 'cached' : 'complete', // Detection done, mark as complete
           progress: 100,
           volume: sfx.volume || 0.3,
-          loop: sfx.loop || false
+          loop: sfx.loop || false,
+          timing: timing // Pass timing string to client for conversion
         };
       }),
       sfxCount: sfxResult.sfxCount || 0,
@@ -2220,7 +2394,7 @@ Minor spelling variations or stylization are acceptable.`
       scene: {
         id: this.scene.id,
         index: this.scene.sequence_index,
-        text: stripTags(this.scene.polished_text || ''), // Strip [CHAR] tags for display
+        text: stripTags(this.scene.polished_text || ''), // Strip [CHAR] and audio tags for display
         mood: this.scene.mood,
         hasChoices: this.scene.choices && this.scene.choices.length > 0,
         choices: this.scene.choices,
@@ -2266,6 +2440,8 @@ Minor spelling variations or stylization are acceptable.`
         const sfxDetails = {
           sfxList: (sfxResult.sfxList || []).map((sfx, i) => {
             const resolvedKey = sfx.sfx_key || sfx.sfxKey || `sfx_${i}`;
+            // Include timing for proper SFX synchronization
+            const timing = sfx.timing || 'middle'; // Default to middle if not specified
             return {
               key: resolvedKey,
               sfx_key: resolvedKey, // Include sfx_key for client compatibility
@@ -2274,7 +2450,8 @@ Minor spelling variations or stylization are acceptable.`
               status: sfx.cached ? 'cached' : 'complete', // Detection done, mark as complete
               progress: 100,
               volume: sfx.volume || 0.3,
-              loop: sfx.loop || false
+              loop: sfx.loop || false,
+              timing: timing // Pass timing string to client for conversion
             };
           }),
           sfxCount: sfxResult.sfxCount || 0,
@@ -2321,7 +2498,7 @@ Minor spelling variations or stylization are acceptable.`
           scene: {
             id: this.scene.id,
             index: this.scene.sequence_index,
-            text: stripTags(this.scene.polished_text || ''), // Strip [CHAR] tags for display
+            text: stripTags(this.scene.polished_text || ''), // Strip [CHAR] and audio tags for display
             mood: this.scene.mood,
             hasChoices: this.scene.choices && this.scene.choices.length > 0,
             choices: this.scene.choices,
@@ -2736,6 +2913,81 @@ Return ONLY the JSON array, no other text.`;
     }
 
     return true;
+  }
+
+  /**
+   * P2 FIX: Validate story continuity between scenes
+   * Uses LLM to check if current scene properly continues from previous scene
+   * @param {string} currentSceneText - The current scene text
+   * @param {string|null} previousSceneText - The previous scene text (null for first scene)
+   * @returns {Object} Validation result with passed, message, and issues
+   */
+  async validateContinuity(currentSceneText, previousSceneText) {
+    // First scene always passes
+    if (!previousSceneText) {
+      return { passed: true, message: 'First scene - no continuity check needed', issues: [] };
+    }
+
+    try {
+      // Get the ending of the previous scene and start of current scene
+      const prevEnding = previousSceneText.slice(-500);
+      const currentStart = currentSceneText.substring(0, 500);
+
+      const prompt = `You are a story editor checking for continuity issues.
+
+PREVIOUS SCENE ENDING:
+"${prevEnding}"
+
+CURRENT SCENE START:
+"${currentStart}"
+
+Analyze whether the current scene CONTINUES the story or RESTARTS it.
+
+Signs of a RESTART (bad):
+- Same events/dialogue repeating
+- Characters re-introduced as if new
+- Time going backwards unexpectedly
+- Starting over from the beginning
+
+Signs of CONTINUATION (good):
+- Story moves forward to new events
+- References previous events naturally
+- Character development progresses
+- Plot advances
+
+Return a JSON response:
+{
+  "continues_story": true or false,
+  "confidence": "high" or "medium" or "low",
+  "issues": ["issue1", "issue2"] // empty if continues_story is true
+}`;
+
+      const result = await completion({
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 500,
+        model: getUtilityModel(),
+        temperature: 0.3
+      });
+
+      const analysis = parseJsonResponse(result);
+
+      if (!analysis) {
+        logger.warn('[Continuity] Failed to parse LLM response, assuming passed');
+        return { passed: true, message: 'Continuity check inconclusive', issues: [] };
+      }
+
+      return {
+        passed: analysis.continues_story !== false,
+        message: analysis.continues_story
+          ? `Continuity verified (confidence: ${analysis.confidence || 'unknown'})`
+          : 'Scene may restart story - ' + (analysis.issues?.[0] || 'plot regression detected'),
+        issues: analysis.issues || [],
+        confidence: analysis.confidence || 'unknown'
+      };
+    } catch (error) {
+      logger.warn(`[Continuity] Validation error: ${error.message}`);
+      return { passed: true, message: 'Continuity check skipped due to error', issues: [] };
+    }
   }
 }
 

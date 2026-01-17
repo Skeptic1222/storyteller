@@ -241,12 +241,25 @@ class WakeLockManager {
 export const wakeLock = new WakeLockManager();
 
 // Re-acquire wake lock when page becomes visible
-if (typeof document !== 'undefined') {
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') {
-      wakeLock.reacquire();
-    }
-  });
+// MEMORY LEAK FIX: Track listener to prevent duplicates during HMR/hot reload
+let visibilityListenerAdded = false;
+const handleVisibilityChange = () => {
+  if (document.visibilityState === 'visible') {
+    wakeLock.reacquire();
+  }
+};
+
+if (typeof document !== 'undefined' && !visibilityListenerAdded) {
+  document.addEventListener('visibilitychange', handleVisibilityChange);
+  visibilityListenerAdded = true;
+}
+
+// Cleanup function for testing/hot-reload scenarios
+export function cleanupWakeLockListeners() {
+  if (typeof document !== 'undefined' && visibilityListenerAdded) {
+    document.removeEventListener('visibilitychange', handleVisibilityChange);
+    visibilityListenerAdded = false;
+  }
 }
 
 export default wakeLock;

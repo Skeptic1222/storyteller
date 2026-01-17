@@ -12,6 +12,9 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 
+// Import stage constants from single source of truth
+import { STAGES, STATUS, COUNTDOWN_PHASE } from '../constants/launchStages.js';
+
 // Agent configuration for HUD display
 const AGENTS = {
   planner: { name: 'Story Planner', description: 'Creating story outline' },
@@ -24,29 +27,6 @@ const AGENTS = {
   qa: { name: 'Quality Assurance', description: 'Final verification' },
   voice: { name: 'Voice Agent', description: 'Assigning voices' },
   cover: { name: 'Cover Artist', description: 'Generating cover art' }
-};
-
-// Stage and status constants (must match server)
-const STAGES = {
-  STORY: 'story',
-  VOICES: 'voices',
-  SFX: 'sfx',
-  COVER: 'cover',
-  QA: 'qa'
-};
-
-const STATUS = {
-  PENDING: 'pending',
-  IN_PROGRESS: 'in_progress',
-  SUCCESS: 'success',
-  ERROR: 'error'
-};
-
-// Legacy countdown phases (deprecated - kept for backward compatibility)
-// New flow goes directly from ready to playing
-const COUNTDOWN_PHASE = {
-  READY: 'ready',           // Ready to play (replaces countdown)
-  COMPLETE: 'complete'
 };
 
 /**
@@ -102,6 +82,9 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
   const readyReceivedRef = useRef(false);
   // Guard against duplicate start-playback emissions (React StrictMode)
   const playbackStartedRef = useRef(false);
+  // P0 FIX: Persistent ref to prevent launch-sequence-ready from being processed multiple times
+  // This ref persists across state changes unlike isReady which gets cleared in handleAudioReady
+  const launchCompletedRef = useRef(false);
 
   // Retry state
   const [retryingStage, setRetryingStage] = useState(null);
@@ -258,6 +241,7 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
     // Clear refs
     readyReceivedRef.current = false;
     playbackStartedRef.current = false;
+    launchCompletedRef.current = false; // P0 FIX: Reset launch completion guard
   }, []);
 
   /**
@@ -432,7 +416,7 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
 
     // Overall progress update
     const handleProgress = (data) => {
-      console.log('[Socket:Recv] EVENT: launch-progress | progress:', data?.progress, '| stage:', data?.stage);
+      console.log('[Socket:Recv] EVENT: launch-progress | percent:', data?.percent, '| message:', data?.message?.substring(0, 40), '| stage:', data?.stage);
       setLaunchProgress({
         percent: data?.percent ?? 0,
         message: data?.message || '',
@@ -444,12 +428,16 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
     const handleSequenceReady = (data) => {
       console.log('[Socket:Recv] EVENT: launch-sequence-ready | isRetry:', data?.isRetry, '| hasStats:', !!data?.stats, '| hasScene:', !!data?.scene);
 
-      // Prevent duplicate handling (watchdog resends)
-      if (isReady && !data.isRetry) {
-        console.log('[Launch] SKIP_DUPLICATE | reason: already_ready');
+      // P0 FIX: Use persistent ref instead of state for duplicate guard
+      // isReady state gets cleared in handleAudioReady, breaking this guard
+      // launchCompletedRef persists across state changes
+      if (launchCompletedRef.current && !data.isRetry) {
+        console.log('[Launch] SKIP_DUPLICATE | reason: launch_completed_ref');
         return;
       }
 
+      // Mark launch as completed BEFORE setting state
+      launchCompletedRef.current = true;
       setIsReady(true);
       setStats(data.stats);
       setScene(data.scene);
@@ -496,6 +484,10 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
       // Go directly to ready (no countdown - simplified flow)
       console.log('[Launch] Ready to play - no countdown');
       setIsReadyToPlay(true);
+
+      // P1 FIX: Mark launch sequence as inactive when ready
+      // This ensures LaunchScreen hides and story content becomes visible
+      setIsActive(false);
     };
 
     // Launch sequence error
@@ -770,7 +762,9 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
 
       // Reset launch-specific state but keep LaunchScreen visible via isAudioQueued
       setIsActive(false);
-      setIsReady(false);
+      // P0 FIX: DO NOT clear isReady here - it breaks the duplicate guard in handleSequenceReady
+      // The launchCompletedRef now handles duplicate prevention, so clearing isReady is unnecessary
+      // setIsReady(false); // REMOVED - was causing progress bar reversion bug
       setIsReadyToPlay(false);
       // DO NOT reset: sfxDetails, characterVoices, stats, scene - still needed for playback
     };

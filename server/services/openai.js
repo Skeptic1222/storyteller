@@ -156,6 +156,25 @@ export async function completion(options) {
       requestParams.max_tokens = max_tokens;
     }
 
+    // CRITICAL FIX: GPT-5.2 is a reasoning model that uses completion tokens for
+    // internal chain-of-thought reasoning BEFORE generating output. The reasoning
+    // tokens count toward max_completion_tokens. If the budget is too low, all tokens
+    // go to reasoning leaving 0 for actual content.
+    //
+    // EVIDENCE FROM PRODUCTION (2026-01-16):
+    //   - Writer agent with 16000 max_tokens used ALL 16000 for reasoning_tokens
+    //   - Result: 0 content tokens, complete failure
+    //   - Reasoning models can use 16000+ tokens for chain-of-thought
+    //
+    // Solution: Add 20000 token buffer (doubled from 10000) to ensure room for
+    // both heavy reasoning (up to 16000+) AND actual content output (6000+).
+    if (model === 'gpt-5.2') {
+      const originalTokens = requestParams.max_completion_tokens;
+      // Minimum 28000 tokens: allows 20000 reasoning + 8000 content
+      requestParams.max_completion_tokens = Math.max(originalTokens + 20000, 28000);
+      logger.info(`[Agent:${agent_name}] GPT-5.2 token budget increased: ${originalTokens} -> ${requestParams.max_completion_tokens} (reasoning buffer x2)`);
+    }
+
     // Note: gpt-5.x models may not support response_format parameter
     // Only add it for models that support it
     if (response_format && !model.startsWith('gpt-5') && !model.startsWith('o1') && !model.startsWith('o3')) {
@@ -170,13 +189,68 @@ export async function completion(options) {
       if (lastUserMsgIndex >= 0) {
         const originalContent = requestParams.messages[lastUserMsgIndex].content;
         requestParams.messages[lastUserMsgIndex].content =
-          `CRITICAL INSTRUCTION: You MUST respond with valid JSON only. No markdown code blocks, no explanatory text before or after - just raw JSON starting with { and ending with }.\n\n${originalContent}`;
+          `CRITICAL JSON FORMATTING INSTRUCTION:
+1. Respond with valid JSON ONLY - no markdown, no explanatory text
+2. Start with { and end with }
+3. ALL string values MUST be wrapped in double quotes: "key": "string value here"
+4. Escape any quotes inside strings with backslash: "dialogue": "She said \\"hello\\""
+5. Example of CORRECT format: {"prose": "The story text goes here.", "dialogue": []}
+6. Example of WRONG format: {"prose": The story text goes here} (missing quotes!)
+
+${originalContent}`;
       }
     }
 
     const response = await openai.chat.completions.create(requestParams);
 
     const message = response.choices[0]?.message;
+    const finishReason = response.choices[0]?.finish_reason;
+
+    // Phase 4: Handle truncated responses due to token limits
+    if (finishReason === 'length' && (!message?.content || message.content.length < 100)) {
+      logger.warn(`[completion] ${agent_name}: Response truncated (finish_reason=length), max_tokens=${max_tokens}`);
+
+      // Retry with doubled token limit if under 4000
+      if (max_tokens < 4000) {
+        const newMaxTokens = Math.min(max_tokens * 2, 8000);
+        logger.info(`[completion] ${agent_name}: Retrying with increased max_tokens: ${max_tokens} -> ${newMaxTokens}`);
+        return completion({
+          messages,
+          agent_name,
+          model,
+          temperature,
+          max_tokens: newMaxTokens,
+          sessionId,
+          response_format
+        });
+      }
+
+      // GPT-5.2 TRUNCATION DEBUGGING - Fail loud per user request
+      // Log comprehensive debug info for root cause analysis
+      const debugInfo = {
+        agent: agent_name,
+        model,
+        max_tokens,
+        finish_reason: finishReason,
+        content_length: message?.content?.length || 0,
+        usage: response.usage || 'unknown',
+        refusal: message?.refusal || null,
+        message_keys: message ? Object.keys(message) : [],
+        prompt_preview: messages[messages.length - 1]?.content?.substring(0, 200) || 'no prompt'
+      };
+
+      logger.error(`[completion] GPT-5.2 TRUNCATION FAILURE - Full debug info:`, debugInfo);
+
+      // Log to AI calls log for pattern analysis
+      aiLogger.error({
+        agent: agent_name,
+        model,
+        error: `GPT-5.2 truncated with 0 content`,
+        debug: debugInfo
+      });
+
+      throw new Error(`OpenAI response truncated at max_tokens=${max_tokens}. Content too short: ${message?.content?.length || 0} chars. Model: ${model}. Usage: ${JSON.stringify(response.usage || {})}`);
+    }
 
     // Check for model refusal (GPT-5.x and reasoning models can refuse requests)
     if (message?.refusal) {
@@ -455,11 +529,12 @@ export function requiresVeniceProvider(contentSettings) {
   }
 
   const intensity = contentSettings.intensity || {};
+  // FIXED: Changed from > to >= so boundary values (60 gore, 50 adultContent) trigger Venice
   return (
-    (intensity.gore || 0) > GORE_THRESHOLDS.MODERATE ||
-    (intensity.violence || 0) > 60 ||
-    (intensity.romance || 0) > ROMANCE_THRESHOLDS.STEAMY ||
-    (intensity.adultContent || 0) > 50  // Explicit adult content triggers Venice
+    (intensity.gore || 0) >= GORE_THRESHOLDS.MODERATE ||
+    (intensity.violence || 0) >= 60 ||
+    (intensity.romance || 0) >= ROMANCE_THRESHOLDS.STEAMY ||
+    (intensity.adultContent || 0) >= 50  // Explicit adult content triggers Venice
   );
 }
 
@@ -552,43 +627,31 @@ export async function callAgent(agentName, userMessage, context = {}) {
   // Check if this call should use provider routing (mature content)
   const useProviderRouting = context.contentSettings && requiresVeniceProvider(context.contentSettings);
 
-  // CRITICAL FIX: Retry with fallback model if GPT-5.x returns empty content
-  const maxRetries = 2;
-  const fallbackModel = 'gpt-4o';
-
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      // Use provider routing for mature content, standard completion otherwise
-      if (useProviderRouting) {
-        logger.info(`[callAgent] ${agentName}: Using provider routing for mature content`);
-        return await completionWithRouting(completionParams);
-      }
-      return await completion(completionParams);
-    } catch (error) {
-      const isEmptyContentError = error.message?.includes('empty content') ||
-                                   error.message?.includes('returned empty');
-      const isGpt5Model = completionParams.model?.startsWith('gpt-5');
-      const isContentPolicyError = error.message?.includes('content_policy') ||
-                                   error.message?.includes('refused') ||
-                                   error.isContentPolicy;
-
-      // If OpenAI refused content, try Venice (for mature content)
-      if (isContentPolicyError && context.contentSettings?.audience === 'mature') {
-        logger.warn(`[callAgent] ${agentName}: OpenAI content policy triggered, switching to Venice`);
-        completionParams.contentSettings = context.contentSettings;
-        completionParams.forceProvider = PROVIDERS.VENICE;
-        return await completionWithRouting(completionParams);
-      }
-
-      if (isEmptyContentError && isGpt5Model && attempt < maxRetries) {
-        logger.warn(`[callAgent] ${agentName}: Attempt ${attempt}/${maxRetries} failed with empty content from ${completionParams.model}, retrying with ${fallbackModel}`);
-        completionParams.model = fallbackModel;
-        continue;
-      }
-
-      // Re-throw for non-retryable errors or final attempt
-      throw error;
+  // Execute the completion - no silent fallbacks per user preference
+  // GPT-5.2 now uses reasoning.effort=none to prevent token exhaustion
+  try {
+    // Use provider routing for mature content, standard completion otherwise
+    if (useProviderRouting) {
+      logger.info(`[callAgent] ${agentName}: Using provider routing for mature content`);
+      return await completionWithRouting(completionParams);
     }
+    return await completion(completionParams);
+  } catch (error) {
+    const isContentPolicyError = error.message?.includes('content_policy') ||
+                                 error.message?.includes('refused') ||
+                                 error.isContentPolicy;
+
+    // If OpenAI refused content due to policy, try Venice (for mature content only)
+    if (isContentPolicyError && context.contentSettings?.audience === 'mature') {
+      logger.warn(`[callAgent] ${agentName}: OpenAI content policy triggered, switching to Venice for mature content`);
+      completionParams.contentSettings = context.contentSettings;
+      completionParams.forceProvider = PROVIDERS.VENICE;
+      return await completionWithRouting(completionParams);
+    }
+
+    // No silent fallbacks - fail loudly so issues can be diagnosed and fixed
+    logger.error(`[callAgent] ${agentName}: Call failed - model: ${completionParams.model}, error: ${error.message}`);
+    throw error;
   }
 }
 
@@ -1237,10 +1300,12 @@ Story: ${outline.title}
 Setting: ${outline.setting}
 Current act: ${outline.acts?.[Math.floor(sceneIndex / 3)]?.summary || 'Main story'}`;
 
-  if (contextSummary) {
+  if (contextSummary?.trim()) {
     scenePrompt += `\n\nSTORY SO FAR:\n${contextSummary}`;
-  } else if (previousScene) {
-    scenePrompt += `\n\nPrevious scene: ${previousScene}`;
+  } else if (previousScene?.trim()) {
+    // P0 FIX: Explicit continuation instructions to prevent Chapter 2 from redoing Chapter 1
+    scenePrompt += `\n\nPREVIOUS SCENE (continue from where this ends):\n${previousScene}`;
+    scenePrompt += `\n\nCRITICAL: Continue the story from where the previous scene ended. Do NOT restart or redo the previous scene. The story MUST progress forward to new events.`;
   } else {
     scenePrompt += '\n\nThis is the opening scene.';
   }
@@ -1271,15 +1336,53 @@ Current act: ${outline.acts?.[Math.floor(sceneIndex / 3)]?.summary || 'Main stor
     scenePrompt += storyBibleSection;
   }
 
-  // Format instructions - 4x EXPANDED for full chapter-length content
-  // Default is now 3200-4800 words (4x the previous 800-1200)
-  let formatInstructions = 'Write 3200-4800 words. Create rich, immersive prose with detailed descriptions, character development, and natural dialogue.';
+  // Format instructions - Adjusted by story_length (short, medium, long)
+  // Base word counts: 3200-4800 words for short stories
+  // Adjust by story_length preference
+  let baseMin = 3200, baseMax = 4800;
+
+  if (preferences?.story_length === 'short') {
+    baseMin = 1500;
+    baseMax = 2200;
+  } else if (preferences?.story_length === 'long') {
+    baseMin = 5000;
+    baseMax = 7000;
+  }
+  // Medium (default): 3200-4800
+
+  let formatInstructions = `Write ${baseMin}-${baseMax} words. Create rich, immersive prose with detailed descriptions, character development, and natural dialogue.`;
+
   if (preferences?.story_format === 'picture_book') {
     formatInstructions = 'Write 400-800 words. Focus on vivid, visual moments with engaging rhythm.';
   } else if (preferences?.story_format === 'novella') {
-    formatInstructions = 'Write 4000-5500 words. Allow for rich description, character development, and multiple scene beats.';
+    // Novella: adjust base ranges
+    let novellaMin = 4000, novellaMax = 5500;
+    if (preferences?.story_length === 'short') {
+      novellaMin = 2500;
+      novellaMax = 3500;
+    } else if (preferences?.story_length === 'long') {
+      novellaMin = 6000;
+      novellaMax = 8000;
+    }
+    formatInstructions = `Write ${novellaMin}-${novellaMax} words. Allow for rich description, character development, and multiple scene beats.`;
   } else if (preferences?.story_format === 'novel') {
-    formatInstructions = 'Write 6000-8000 words. Create a full chapter with detailed scenes, extensive dialogue, character depth, and narrative complexity.';
+    // Novel: adjust base ranges
+    let novelMin = 6000, novelMax = 8000;
+    if (preferences?.story_length === 'short') {
+      novelMin = 4000;
+      novelMax = 5500;
+    } else if (preferences?.story_length === 'long') {
+      novelMin = 8000;
+      novelMax = 10000;
+    }
+    formatInstructions = `Write ${novelMin}-${novelMax} words. Create a full chapter with detailed scenes, extensive dialogue, character depth, and narrative complexity.`;
+  }
+
+  // P1 FIX: Override format instructions when retrying for length
+  // This is triggered when validateAndRegenerateIfShort calls the regeneration callback
+  if (preferences?.isRetryForLength && preferences?.lengthInstruction) {
+    formatInstructions = `${preferences.lengthInstruction}\n\n${formatInstructions}`;
+    logger.info(`[Scene+Dialogue] LENGTH RETRY: Adding critical length instruction | minWords: ${preferences.minimumWords}`);
   }
 
   // Author style
@@ -2621,85 +2724,13 @@ export function parseDialogueSegments(text, characters = [], sessionId = null) {
   return segments;
 }
 
-/**
- * All available voices for comprehensive D&D character assignment
- */
-const DND_VOICE_MAP = {
-  // Deep British/American male voices
-  george: 'JBFqnCBsd6RMkjVDRZzb',
-  brian: 'nPczCjzI2devNBz1zQrb',
-  callum: 'N2lVS1w4EtoT3dr4eOWO',
-  daniel: 'onwK4e9ZLuTAKqWW03F9',
-  adam: 'pNInz6obpgDQGcFmaJgB',
-  antoni: 'ErXwobaYiN019PkySvjV',
-  josh: 'TxGEqnHWrfWFTfGW9XjX',
-  arnold: 'VR6AewLTigWG4xSOukaG',
-  sam: 'yoZ06aMxZJJ28mfd3POQ',
-  // Female voices
-  charlotte: 'XB0fDUnXU5powFXDhCwa',
-  aria: '9BWtsMINqrJLrRacOk9x',
-  rachel: '21m00Tcm4TlvDq8ikWAM',
-  domi: 'AZnzlk1XvdvUeBnXmlld',
-  bella: 'EXAVITQu4vr4xnSDxMaL',
-  elli: 'MF3mGyEYCl7XYWbV9V6O'
-};
-
-/**
- * D&D character type to voice mapping
- */
-const DND_CHARACTER_VOICES = {
-  // Class-based assignments
-  fighter: DND_VOICE_MAP.arnold,
-  barbarian: DND_VOICE_MAP.callum,
-  paladin: DND_VOICE_MAP.george,
-  ranger: DND_VOICE_MAP.brian,
-  rogue: DND_VOICE_MAP.adam,
-  wizard: DND_VOICE_MAP.daniel,
-  sorcerer: DND_VOICE_MAP.daniel,
-  warlock: DND_VOICE_MAP.callum,
-  cleric: DND_VOICE_MAP.george,
-  druid: DND_VOICE_MAP.josh,
-  bard: DND_VOICE_MAP.josh,
-  monk: DND_VOICE_MAP.sam,
-  // Race-based adjustments
-  elf: DND_VOICE_MAP.daniel,
-  dwarf: DND_VOICE_MAP.arnold,
-  halfling: DND_VOICE_MAP.sam,
-  gnome: DND_VOICE_MAP.sam,
-  orc: DND_VOICE_MAP.callum,
-  goblin: DND_VOICE_MAP.elli,
-  dragon: DND_VOICE_MAP.callum,
-  // NPC types
-  tavern_keeper: DND_VOICE_MAP.antoni,
-  merchant: DND_VOICE_MAP.sam,
-  guard: DND_VOICE_MAP.josh,
-  noble: DND_VOICE_MAP.daniel,
-  peasant: DND_VOICE_MAP.sam,
-  villain: DND_VOICE_MAP.callum,
-  mysterious: DND_VOICE_MAP.callum,
-  wise: DND_VOICE_MAP.antoni,
-  // Female variants
-  fighter_female: DND_VOICE_MAP.domi,
-  barbarian_female: DND_VOICE_MAP.domi,
-  paladin_female: DND_VOICE_MAP.charlotte,
-  ranger_female: DND_VOICE_MAP.charlotte,
-  rogue_female: DND_VOICE_MAP.aria,
-  wizard_female: DND_VOICE_MAP.rachel,
-  sorcerer_female: DND_VOICE_MAP.rachel,
-  warlock_female: DND_VOICE_MAP.rachel,
-  cleric_female: DND_VOICE_MAP.bella,
-  druid_female: DND_VOICE_MAP.bella,
-  bard_female: DND_VOICE_MAP.aria,
-  elf_female: DND_VOICE_MAP.charlotte,
-  noble_female: DND_VOICE_MAP.rachel,
-  villain_female: DND_VOICE_MAP.domi
-};
+// NOTE: D&D voice maps removed (2026-01-15) - DnD mode moved to separate GameMaster project
 
 /**
  * Assign voices to characters based on their roles
- * Supports both regular stories and D&D campaigns
+ * Uses generic storytelling archetypes (protagonist, antagonist, mentor, etc.)
  */
-export function assignCharacterVoices(characters, voiceSuggestions, isCampaign = false) {
+export function assignCharacterVoices(characters, voiceSuggestions) {
   const assignments = {};
   const usedVoices = new Set();
 
@@ -2786,81 +2817,10 @@ export function assignCharacterVoices(characters, voiceSuggestions, isCampaign =
     let assignedVoice = null;
     let voiceRole = 'narrator';
 
-    // For D&D campaigns, try to match character archetypes
-    if (isCampaign) {
-      const combined = `${role} ${name} ${description} ${traits}`;
+    // NOTE: D&D campaign-specific matching removed (2026-01-15) - moved to GameMaster project
 
-      // Check for D&D classes
-      const classMatches = [
-        ['fighter', 'warrior', 'knight', 'soldier'],
-        ['barbarian', 'berserker', 'savage'],
-        ['paladin', 'holy', 'divine', 'crusader'],
-        ['ranger', 'hunter', 'archer', 'scout'],
-        ['rogue', 'thief', 'assassin', 'spy', 'shadow'],
-        ['wizard', 'mage', 'archmage', 'spellcaster'],
-        ['sorcerer', 'magic', 'elemental'],
-        ['warlock', 'dark', 'pact', 'demon'],
-        ['cleric', 'priest', 'healer', 'holy'],
-        ['druid', 'nature', 'forest', 'wild'],
-        ['bard', 'musician', 'singer', 'performer'],
-        ['monk', 'martial', 'fist']
-      ];
-
-      for (const [dndClass, ...keywords] of classMatches) {
-        if (keywords.some(k => combined.includes(k)) || combined.includes(dndClass)) {
-          const voiceKey = isFemale ? `${dndClass}_female` : dndClass;
-          assignedVoice = DND_CHARACTER_VOICES[voiceKey] || DND_CHARACTER_VOICES[dndClass];
-          voiceRole = dndClass;
-          break;
-        }
-      }
-
-      // Check for races if no class match
-      if (!assignedVoice) {
-        const raceMatches = [
-          ['elf', 'elven', 'elvish'],
-          ['dwarf', 'dwarven', 'stout'],
-          ['orc', 'orcish', 'half-orc'],
-          ['goblin', 'kobold', 'imp'],
-          ['dragon', 'wyrm', 'drake'],
-          ['halfling', 'hobbit', 'small']
-        ];
-
-        for (const [race, ...keywords] of raceMatches) {
-          if (keywords.some(k => combined.includes(k)) || combined.includes(race)) {
-            const voiceKey = isFemale ? `${race}_female` : race;
-            assignedVoice = DND_CHARACTER_VOICES[voiceKey] || DND_CHARACTER_VOICES[race];
-            voiceRole = race;
-            break;
-          }
-        }
-      }
-
-      // Check for NPC types
-      if (!assignedVoice) {
-        const npcMatches = [
-          ['tavern_keeper', 'innkeeper', 'bartender', 'tavern'],
-          ['merchant', 'shop', 'trader', 'vendor'],
-          ['guard', 'soldier', 'patrol'],
-          ['noble', 'lord', 'lady', 'king', 'queen', 'prince', 'princess'],
-          ['villain', 'evil', 'dark lord', 'necromancer'],
-          ['mysterious', 'stranger', 'hooded', 'cloaked'],
-          ['wise', 'elder', 'sage', 'old']
-        ];
-
-        for (const [npcType, ...keywords] of npcMatches) {
-          if (keywords.some(k => combined.includes(k)) || combined.includes(npcType)) {
-            const voiceKey = isFemale ? `${npcType}_female` : npcType;
-            assignedVoice = DND_CHARACTER_VOICES[voiceKey] || DND_CHARACTER_VOICES[npcType];
-            voiceRole = npcType;
-            break;
-          }
-        }
-      }
-    }
-
-    // Fallback to standard role-based assignment
-    if (!assignedVoice) {
+    // Role-based assignment using storytelling archetypes
+    {
       if (role.includes('protagonist') || role.includes('hero') || role.includes('main')) {
         voiceRole = isFemale ? 'protagonist_female' : 'protagonist_male';
       } else if (role.includes('antagonist') || role.includes('villain')) {

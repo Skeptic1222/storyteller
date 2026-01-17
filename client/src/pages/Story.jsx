@@ -24,6 +24,7 @@ import { initClientLogger, sfxLog, audioLog, socketLog } from '../utils/clientLo
 import { stripAllTags } from '../utils/textUtils';
 import { AUTHOR_NAMES } from '../constants/authorStyles';
 import { getMoodFromGenres, MOOD_ACCENTS } from '../constants/themes';
+import { useTheme } from '../context/ThemeContext';
 // Wake lock removed - was causing screen dimming issues
 
 const SHOW_TEXT_STORAGE_KEY = 'narrimo_showText';
@@ -32,6 +33,8 @@ const KARAOKE_STORAGE_KEY = 'narrimo_karaokeEnabled';
 const LEGACY_KARAOKE_STORAGE_KEY = 'storyteller_karaokeEnabled';
 const FONT_SIZE_STORAGE_KEY = 'narrimo_fontSize';
 const LEGACY_FONT_SIZE_STORAGE_KEY = 'storyteller_fontSize';
+const TEXT_LAYOUT_STORAGE_KEY = 'narrimo_textLayout';
+const LEGACY_TEXT_LAYOUT_STORAGE_KEY = 'storyteller_textLayout';
 
 function Story() {
   const { sessionId } = useParams();
@@ -100,6 +103,12 @@ function Story() {
   });
   const [wordTimings, setWordTimings] = useState(null); // For karaoke/read-along text highlighting
   const [sceneImages, setSceneImages] = useState([]); // Picture book images for current scene
+
+  // P1 FIX: Use ThemeContext for textLayout instead of local state
+  // This ensures ControlBar buttons and BookPageLayout use the same state source
+  // ThemeContext handles localStorage persistence automatically
+  const { textLayout, setTextLayout } = useTheme();
+
   // Note: currentWordIndex is computed by useKaraokeHighlight hook below
 
   // CYOA state - extracted to useCYOAState hook
@@ -250,6 +259,13 @@ function Story() {
   const sfxDetailsRef = useRef(null); // Ref version of sfxDetails for callback access (from useLaunchSequence)
   const [introAudioQueued, setIntroAudioQueued] = useState(false); // Track if intro (synopsis) was queued
   const [playbackRequested, setPlaybackRequested] = useState(false); // Begin Chapter clicked; waiting for audio
+  // P0 FIX: Guard against duplicate autoplay triggers
+  const autoplayTriggeredRef = useRef(false);
+
+  // P0 FIX: Reset autoplay guard when session changes (new story or chapter)
+  useEffect(() => {
+    autoplayTriggeredRef.current = false;
+  }, [sessionId]);
 
   // Karaoke word highlighting - computed from wordTimings and audio state
   const currentWordIndex = useKaraokeHighlight({
@@ -432,13 +448,18 @@ function Story() {
     sfxDetailsRef.current = sfxDetails;
   }, [sfxDetails]);
 
-  // Wrapper to pass audio state to playSfx hook
-  const playSfxWithState = useCallback((sfxList) => {
+  // Wrapper to pass audio state and duration to playSfx hook
+  const playSfxWithState = useCallback((sfxList, audioDurationSeconds = null) => {
+    // Calculate audio duration from word timings if not provided
+    const duration = audioDurationSeconds ||
+      (wordTimings?.total_duration_ms ? wordTimings.total_duration_ms / 1000 : 40);
+
     playSfx(sfxList, {
       introAudioQueued,
-      sceneAudioStarted: sceneAudioStartedRef.current
+      sceneAudioStarted: sceneAudioStartedRef.current,
+      audioDurationSeconds: duration
     });
-  }, [playSfx, introAudioQueued]);
+  }, [playSfx, introAudioQueued, wordTimings]);
 
   // Save progress when a new scene loads so the library updates immediately
   useEffect(() => {
@@ -788,7 +809,10 @@ function Story() {
           text: stripAllTags(lastScene.polished_text || lastScene.summary),
           mood: lastScene.mood,
           scene_id: lastScene.id,
-          scene_index: lastScene.sequence_index
+          scene_index: lastScene.sequence_index,
+          // P0 FIX: Include audio_url and word_timings for story replay
+          audio_url: lastScene.audio_url,
+          word_timings: lastScene.word_timings
         });
 
         // Restore karaoke timings if available (enables read-along after refresh).
@@ -831,10 +855,50 @@ function Story() {
     }
   }, [sessionId, generateCover, continueStoryWithVoice, generateOutlineAndStart]);
 
+  // P0 FIX: Replay mode - play stored audio for existing stories loaded from library
+  // This effect triggers when a user loads a story that already has audio generated
+  useEffect(() => {
+    // Guard conditions: only play if we have stored audio and NOT in generation/launch mode
+    if (!currentScene?.audio_url) return;
+    if (isGenerating || launchActive || sceneAudioStarted) return;
+    if (isPlaying || isPaused) return; // Don't restart if already playing/paused
+
+    console.log('[Story] Replay mode: detected stored audio_url, preparing playback');
+
+    // Construct full URL if relative path
+    const fullUrl = currentScene.audio_url.startsWith('http')
+      ? currentScene.audio_url
+      : `${window.location.origin}${currentScene.audio_url}`;
+
+    // Queue the audio for playback
+    // Use queueAudio to respect the audio context's queue management
+    const playStoredAudio = async () => {
+      try {
+        console.log('[Story] Replay mode: queueing stored audio:', fullUrl);
+        await queueAudio(fullUrl, {
+          isSceneAudio: true,
+          onStart: () => {
+            console.log('[Audio] Replay: stored audio playback started');
+            setSceneAudioStarted(true);
+            sceneAudioStartedRef.current = true;
+          }
+        });
+      } catch (error) {
+        console.error('[Story] Replay mode: failed to queue stored audio:', error);
+        setAudioError('Failed to play stored audio. Try regenerating the chapter.');
+      }
+    };
+
+    // Small delay to ensure UI is ready
+    const timer = setTimeout(playStoredAudio, 100);
+    return () => clearTimeout(timer);
+  }, [currentScene?.audio_url, isGenerating, launchActive, sceneAudioStarted, isPlaying, isPaused, queueAudio]);
+
   // Effect for autoplay when countdown finishes and autoplay is enabled
   // The useLaunchSequence hook handles autoplay internally, but we listen for playback start
   // IMPORTANT: Only auto-start if session config is loaded AND autoplay is explicitly true
   // AND user didn't manually click "Next" (manualContinue flag)
+  // P0 FIX: Use autoplayTriggeredRef to prevent duplicate autoplay triggers
   useEffect(() => {
     // Must have session loaded to check config
     if (!session?.config_json) {
@@ -854,10 +918,12 @@ function Story() {
       return; // Don't auto-start - user must click Begin Chapter
     }
 
-    if (isReadyToPlay && configAutoplay && launchStats) {
+    // P0 FIX: Guard against duplicate autoplay triggers using persistent ref
+    if (isReadyToPlay && configAutoplay && launchStats && !autoplayTriggeredRef.current) {
       console.log('[Story] Autoplay enabled in config, starting playback...');
+      autoplayTriggeredRef.current = true; // Mark as triggered BEFORE calling handler
       handleStartPlayback();
-    } else if (isReadyToPlay && launchStats) {
+    } else if (isReadyToPlay && launchStats && !autoplayTriggeredRef.current) {
       console.log('[Story] Ready to play, but autoplay disabled - waiting for user to click Begin Chapter');
     }
   }, [isReadyToPlay, session?.config_json, launchStats, handleStartPlayback, manualContinue]);
@@ -937,9 +1003,16 @@ function Story() {
   }, [backtrackToCheckpointHook]);
 
   const togglePause = useCallback(() => {
-    if (isPlaying) socket?.emit('pause-story', { session_id: sessionId });
-    else if (isPaused) socket?.emit('resume-story', { session_id: sessionId });
-  }, [isPlaying, isPaused, socket, sessionId]);
+    if (isPlaying) {
+      socket?.emit('pause-story', { session_id: sessionId });
+    } else if (isPaused) {
+      socket?.emit('resume-story', { session_id: sessionId });
+    } else if (isReadyToPlay) {
+      // Handle initial playback start when ready but not yet playing
+      console.log('[Story] togglePause: Starting playback from ready state');
+      handleStartPlayback();
+    }
+  }, [isPlaying, isPaused, isReadyToPlay, socket, sessionId, handleStartPlayback]);
 
   const endStory = useCallback(async () => {
     try {
@@ -1070,8 +1143,9 @@ function Story() {
   }
 
   // Determine if story header should be hidden (clearer than complex boolean)
-  // Hide during: generation, launch screen active, ready to play, or audio queued but not started
-  const shouldHideStoryHeader = isGenerating || launchActive || isReadyToPlay || (isAudioQueued && !sceneAudioStarted);
+  // Hide during: generation or launch screen active (but NOT when ready to play - user needs to see story context)
+  // FIX: Removed isReadyToPlay from this condition so title/cover/synopsis show when ready to play
+  const shouldHideStoryHeader = isGenerating || launchActive || (isAudioQueued && !sceneAudioStarted && !isReadyToPlay);
 
   return (
     <div
@@ -1310,6 +1384,7 @@ function Story() {
         ) : (
           <>
             {/* Book Page Layout - Float cover with text wrap, karaoke/read-along */}
+            {/* Only show after launch is complete to prevent premature playback */}
             {showText && currentScene && !launchActive && (
               <div className="max-w-2xl mx-auto mb-8">
                 <BookPageLayout
@@ -1389,21 +1464,27 @@ function Story() {
           // P2: Simplified overlay visibility to single source of truth
           // Show overlay ONLY while:
           // 1. Story isn't ended, AND
-          // 2. Launch is active (includes generation/setup phases)
+          // 2. Generating OR Launch is active OR audio is queued (covers entire generation-to-playback flow)
           // 3. Audio hasn't started playing (sceneAudioStarted indicates playback begun)
-          // This prevents overlay flashing when user clicks "Begin Chapter 1"
-          const showLaunchOverlay = !storyEnded && launchActive && !sceneAudioStarted;
+          // CRITICAL: Including isGenerating ensures progress bar shows immediately when generation starts
+          const showLaunchOverlay = !storyEnded && (isGenerating || launchActive || isAudioQueued) && !sceneAudioStarted;
 
           if (!showLaunchOverlay) return null;
 
           return (
-            <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/60 backdrop-blur-sm p-6">
+            <div
+              className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/40 backdrop-blur-sm p-6"
+              onClick={(e) => {
+                // P2 FIX: Prevent clicks on backdrop from propagating
+                // Only stop propagation if clicking the backdrop itself, not the LaunchScreen
+                if (e.target === e.currentTarget) {
+                  e.stopPropagation();
+                  // Don't do anything on backdrop click - user must use buttons
+                }
+              }}
+            >
               <LaunchScreen
                 isVisible={true}
-                showStoryPreview={true}
-                coverUrl={coverUrl}
-                title={session?.title || outlineData?.title || launchStats?.title}
-                synopsis={outlineSynopsisText || launchStats?.synopsis}
                 stats={launchStats}
                 stageStatuses={stageStatuses}
                 stageDetails={stageDetails}
@@ -1421,11 +1502,7 @@ function Story() {
                 canRetryStages={canRetryStages}
                 retryingStage={retryingStage}
                 onRetryStage={retryStage}
-                isRegeneratingCover={isRegeneratingCover}
-                onRegenerateCover={regenerateCover}
-                // Additional regeneration props
-                isRegeneratingSynopsis={isRegeneratingSynopsis}
-                onRegenerateSynopsis={regenerateSynopsis}
+                // Regeneration props for HUD panels
                 isRegeneratingSfx={isRegeneratingSfx}
                 onRegenerateSfx={regenerateSfx}
                 isRegeneratingVoices={isRegeneratingVoices}
@@ -1451,9 +1528,6 @@ function Story() {
                 // Detailed progress log for technical info display
                 detailedProgressLog={detailedProgressLog}
                 launchProgress={launchProgress}
-                // Text display props
-                showText={false}
-                storyText=""
                 // Initial generation phase props
                 isGenerating={isGenerating}
                 generationProgress={generationProgress}
@@ -1497,6 +1571,11 @@ function Story() {
             // Story format for dynamic terminology
             storyFormat={config.story_format}
             storyType={config.story_type}
+            // Playback controls (SFX, text layout)
+            sfxEnabled={sfxEnabled}
+            onSfxToggle={toggleSfx}
+            textLayout={textLayout}
+            onTextLayoutChange={setTextLayout}
           />
 
           {/* Chapter Selector - shows when we have multiple scenes */}

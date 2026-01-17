@@ -20,6 +20,17 @@ const CHAR_TAG_OPEN = /\[CHAR:([^\]]+)\]/g;
 const CHAR_TAG_CLOSE = /\[\/CHAR\]/g;
 const FULL_TAG_PATTERN = /\[CHAR:([^\]]+)\]([\s\S]*?)\[\/CHAR\]/g;
 
+// P1 FIX: Attribution patterns to strip "He said", "She replied" etc. from narrator text
+// These are generated as prose but shouldn't be narrated - only the dialogue content matters
+const ATTRIBUTION_PATTERNS = [
+  // Basic attributions: "he said", "she replied", "they asked"
+  /\b(he|she|they|it|the [a-z]+)\s+(said|replied|asked|answered|whispered|shouted|muttered|exclaimed|responded|called|yelled|cried|murmured|growled|hissed|snarled|snapped|stated|declared|announced|added|continued|began|remarked|observed|noted|commented)[,.]?\s*/gi,
+  // Attributions with adverbs: "he said softly", "she replied angrily"
+  /\b(he|she|they|it)\s+(said|replied|asked|whispered|shouted|muttered|exclaimed)\s+(softly|quietly|loudly|angrily|sadly|happily|nervously|excitedly|calmly|firmly|gently|harshly|coldly|warmly)[,.]?\s*/gi,
+  // Character name attributions: "John said", "Mary replied" (handles common patterns)
+  /\b([A-Z][a-z]+)\s+(said|replied|asked|answered|whispered|shouted|muttered|exclaimed)[,.]?\s*/g
+];
+
 /**
  * Parse tagged prose into audio segments
  *
@@ -226,6 +237,27 @@ export function hasCharacterTags(prose) {
 }
 
 /**
+ * Strip speech attributions like "he said", "she replied" from text
+ * P1 FIX: Prevents the narrator from reading "He replied" before each dialogue
+ *
+ * @param {string} text - Text to strip attributions from
+ * @returns {string} Text with attributions removed
+ */
+function stripAttributions(text) {
+  if (!text) return text;
+
+  let result = text;
+  for (const pattern of ATTRIBUTION_PATTERNS) {
+    // Reset regex lastIndex for global patterns
+    pattern.lastIndex = 0;
+    result = result.replace(pattern, '');
+  }
+
+  // Clean up double spaces and trim
+  return result.replace(/\s+/g, ' ').trim();
+}
+
+/**
  * Strip all [CHAR] tags from prose, leaving only the text content
  * Useful for text-only display or narrator-only audio generation
  *
@@ -235,6 +267,7 @@ export function hasCharacterTags(prose) {
  * @param {string} prose - Prose with [CHAR:Name] tags
  * @param {Object} options - Optional settings
  * @param {boolean} options.preserveQuotes - If true, wrap dialogue in quotes (default: true)
+ * @param {boolean} options.stripAttributions - If true, remove "he said" etc. (default: true for TTS)
  * @returns {string} Plain text without tags (dialogue wrapped in quotes)
  */
 export function stripTags(prose, options = {}) {
@@ -242,12 +275,14 @@ export function stripTags(prose, options = {}) {
     return '';
   }
 
-  const { preserveQuotes = true } = options;
+  const { preserveQuotes = true, stripAttributions: shouldStripAttributions = true } = options;
+
+  let result;
 
   if (preserveQuotes) {
     // Replace [CHAR:Name]dialogue[/CHAR] with "dialogue" (quotes restored)
     // This is critical for readable display - dialogue needs quotation marks
-    return prose
+    result = prose
       .replace(/\[CHAR:[^\]]+\]([\s\S]*?)\[\/CHAR\]/g, (match, dialogue) => {
         const trimmedDialogue = dialogue.trim();
         // Only add quotes if dialogue isn't empty and doesn't already have quotes
@@ -255,16 +290,28 @@ export function stripTags(prose, options = {}) {
         if (/^[""\u201C]/.test(trimmedDialogue)) return trimmedDialogue; // Already has opening quote
         return `"${trimmedDialogue}"`;
       })
+      // Also strip ElevenLabs audio/prosody tags: [whispers], [softly], [dramatically], etc.
+      // Pattern matches [word] or [multiple words] - lowercase letters, spaces, hyphens, apostrophes
+      .replace(/\[[a-z][a-z\s\-']*\]/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  } else {
+    // Legacy behavior: Remove tags without adding quotes (for TTS)
+    result = prose
+      .replace(/\[CHAR:[^\]]+\]/g, '')
+      .replace(/\[\/CHAR\]/g, '')
+      // Also strip ElevenLabs audio/prosody tags
+      .replace(/\[[a-z][a-z\s\-']*\]/gi, '')
       .replace(/\s+/g, ' ')
       .trim();
   }
 
-  // Legacy behavior: Remove tags without adding quotes (for TTS)
-  return prose
-    .replace(/\[CHAR:[^\]]+\]/g, '')
-    .replace(/\[\/CHAR\]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+  // P1 FIX: Strip "he said", "she replied" attributions for cleaner TTS output
+  if (shouldStripAttributions) {
+    result = stripAttributions(result);
+  }
+
+  return result;
 }
 
 /**

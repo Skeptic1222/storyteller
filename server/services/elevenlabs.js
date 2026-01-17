@@ -17,9 +17,15 @@ import * as usageTracker from './usageTracker.js';
 import * as ttsGating from './ttsGating.js';
 import { detectEmotionsForSegments } from './agents/emotionValidatorAgent.js';
 import { getNarratorDeliveryDirectives } from './agents/narratorDeliveryAgent.js';
+import { directVoiceActing } from './agents/voiceDirectorAgent.js';
 import { assembleMultiVoiceAudio, ASSEMBLY_PRESETS, checkFFmpegAvailable } from './audioAssembler.js';
 import { DEFAULT_NARRATOR_VOICE_ID } from '../constants/voices.js';
 import { cache } from './cache.js';
+import {
+  containsPotentiallyRefusedContent,
+  applyPhoneticRespellings,
+  storeWordAlignment
+} from './phoneticRespelling.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -212,6 +218,22 @@ export const EMOTION_TO_AUDIO_TAGS = {
   threatening: '[menacingly]',
   menacing: '[coldly][with quiet menace]',
   sinister: '[darkly][ominously]',
+
+  // Horror/Violence intensity (for mature content)
+  brutal: '[savagely][with deadly intensity]',
+  bloodthirsty: '[with cold fury][snarling]',
+  agonized: '[in agony][screaming]',
+  tormented: '[voice breaking][through gritted teeth]',
+  predatory: '[with quiet menace][hungrily]',
+  unhinged: '[madly][with crazed intensity]',
+  chilling: '[icily][with terrifying calm]',
+
+  // Intimate/Romantic intensity (for mature content)
+  passionate: '[passionately][breathlessly]',
+  sensual: '[sensually][with desire]',
+  intimate: '[intimately][softly]',
+  yearning: '[with longing][breathlessly]',
+  heated: '[huskily][with building tension]',
 
   // Complex emotions
   sarcastic: '[sarcastically]',
@@ -1268,72 +1290,88 @@ export class ElevenLabsService {
     logger.info(`[MultiVoice] INPUT | segments: ${segments.length} | narrator: ${narratorCount} | dialogue: ${dialogueCount} | speakers: ${uniqueSpeakers.length} | chars: ${totalCharsInput}`);
     logger.info(`[MultiVoice] ========== MULTI-VOICE GENERATION WITH TIMESTAMPS ==========`);
 
-    // Run LLM-based emotion detection on all segments BEFORE processing
-    let emotionEnhancedSegments = segments;
-    if (storyContext) {
+    // =============================================================================
+    // VOICE DIRECTOR: Comprehensive LLM-based voice acting direction
+    // =============================================================================
+    // This replaces both emotion detection AND narrator delivery with a single
+    // comprehensive pass that understands:
+    // - Story context and genre conventions
+    // - Character personalities and emotional arcs
+    // - ElevenLabs v3 audio tag syntax and capabilities
+    // - Voice settings (stability, style) per segment
+    // =============================================================================
+    let voiceDirectedSegments = segments;
+    const tagsModelId = voiceSettings.model_id || QUALITY_TIER_MODELS.premium; // eleven_v3
+
+    if (storyContext && modelSupportsAudioTags(tagsModelId)) {
       try {
         if (onProgress) {
           try {
             onProgress({
-              phase: 'emotion',
-              message: 'Analyzing dialogue emotion and delivery...',
+              phase: 'voice_direction',
+              message: 'Voice Director analyzing scene...',
               current: 0,
               total: segments.length
             });
           } catch (err) {
-            logger.debug(`[MultiVoice] Progress callback failed (emotion): ${err.message}`);
+            logger.debug(`[MultiVoice] Progress callback failed (voice_direction): ${err.message}`);
           }
         }
 
-        logger.info(`[MultiVoice] Running LLM emotion detection with story context...`);
-        logger.info(`[MultiVoice]   Genre: ${storyContext.genre || 'unknown'}, Mood: ${storyContext.mood || 'unknown'}`);
-        emotionEnhancedSegments = await detectEmotionsForSegments(segments, storyContext, sessionId);
-        const emotionSummary = emotionEnhancedSegments
-          .filter(s => s.speaker !== 'narrator' && s.llmValidated)
-          .map(s => `${s.speaker}:${s.emotion}`)
-          .join(', ');
-        logger.info(`[MultiVoice] LLM emotion detection complete: ${emotionSummary || 'no dialogue segments'}`);
-      } catch (error) {
-        logger.warn(`[MultiVoice] LLM emotion detection failed, using fallback: ${error.message}`);
-        // Continue with original segments - fallback will be used per-segment
-      }
-    } else {
-      logger.info(`[MultiVoice] No story context provided, using regex fallback for emotion detection`);
-    }
+        logger.info(`[VoiceDirector] ========== VOICE DIRECTION PASS ==========`);
+        logger.info(`[VoiceDirector] Analyzing ${segments.length} segments with full story context`);
+        logger.info(`[VoiceDirector] Context: genre=${storyContext.genre || 'unknown'}, mood=${storyContext.mood || 'unknown'}, audience=${storyContext.audience || 'general'}`);
 
-    // Narrator delivery (v3 Audio Tags) - one LLM call per scene, cached.
-    // Improves pacing/intent/prosody without brittle keyword heuristics.
-    let narratorDirectives = null;
-    const tagsModelId = voiceSettings.model_id || QUALITY_TIER_MODELS.premium; // eleven_v3
-    if (storyContext && sessionId && modelSupportsAudioTags(tagsModelId)) {
-      if (onProgress) {
+        // Run comprehensive voice direction
+        voiceDirectedSegments = await directVoiceActing(segments, storyContext, sessionId);
+
+        // Log summary of voice direction
+        const directedCount = voiceDirectedSegments.filter(s => s.voiceDirected).length;
+        const sampleNarrator = voiceDirectedSegments
+          .filter(s => s.speaker === 'narrator' && s.voiceDirected)
+          .slice(0, 2)
+          .map(s => `"${s.delivery}" (stab=${s.voiceStability}, style=${s.voiceStyle})`)
+          .join(' | ');
+        const sampleDialogue = voiceDirectedSegments
+          .filter(s => s.speaker !== 'narrator' && s.voiceDirected)
+          .slice(0, 2)
+          .map(s => `${s.speaker}: "${s.delivery}"`)
+          .join(' | ');
+
+        logger.info(`[VoiceDirector] Directed ${directedCount}/${segments.length} segments`);
+        if (sampleNarrator) logger.info(`[VoiceDirector] Narrator samples: ${sampleNarrator}`);
+        if (sampleDialogue) logger.info(`[VoiceDirector] Dialogue samples: ${sampleDialogue}`);
+        logger.info(`[VoiceDirector] ========================================`);
+
+      } catch (error) {
+        logger.error(`[VoiceDirector] Voice direction failed: ${error.message}`);
+        logger.warn(`[VoiceDirector] Falling back to legacy emotion detection`);
+
+        // Fallback to old emotion detection if Voice Director fails
         try {
-          onProgress({
-            phase: 'narrator_direction',
-            message: 'Directing narrator delivery...',
-            current: 0,
-            total: segments.length
-          });
-        } catch (err) {
-          logger.debug(`[MultiVoice] Progress callback failed (narrator): ${err.message}`);
+          voiceDirectedSegments = await detectEmotionsForSegments(segments, storyContext, sessionId, { includeNarrator: true });
+        } catch (fallbackError) {
+          logger.warn(`[VoiceDirector] Fallback also failed: ${fallbackError.message}`);
+          // Continue with original segments
         }
       }
-
-      const narratorSample = emotionEnhancedSegments
-        .filter(s => s.speaker === 'narrator')
-        .map(s => s.text)
-        .join('\n\n')
-        .trim();
-
-      if (narratorSample) {
-        narratorDirectives = await getNarratorDeliveryDirectives({
-          sessionId,
-          sceneText: narratorSample,
-          context: storyContext
-        });
-        logger.info(`[NarratorDelivery] scene | emotion=${narratorDirectives.emotion} | delivery="${narratorDirectives.delivery || 'none'}"`);
+    } else {
+      logger.info(`[MultiVoice] No story context or model doesn't support audio tags, using legacy detection`);
+      // Fallback for non-v3 models or missing context
+      if (storyContext) {
+        try {
+          voiceDirectedSegments = await detectEmotionsForSegments(segments, storyContext, sessionId, { includeNarrator: true });
+        } catch (error) {
+          logger.warn(`[MultiVoice] Legacy emotion detection failed: ${error.message}`);
+        }
       }
     }
+
+    // Legacy narrator directives are no longer needed - Voice Director handles per-segment
+    const narratorDirectives = null; // Kept for backward compatibility in segment processing
+
+    // Use Voice Director output as the segments for TTS generation
+    const emotionEnhancedSegments = voiceDirectedSegments;
 
     // Pre-log all voice assignments for this multi-voice generation
     // ENHANCED LOGGING: Show full text for debugging overlaps/repetitions
@@ -1410,43 +1448,89 @@ export class ElevenLabsService {
         // Get the preset for this emotion
         const emotionPreset = VOICE_PRESETS[emotion] || VOICE_PRESETS.neutral;
 
+        // =============================================================================
+        // VOICE DIRECTOR INTEGRATION: Use per-segment voice settings from Voice Director
+        // =============================================================================
+        // The Voice Director provides:
+        // - segment.voiceDirected: boolean - whether VD processed this segment
+        // - segment.voiceStability: 0-1 - emotional intensity (lower = more expressive)
+        // - segment.voiceStyle: 0-1 - style exaggeration
+        // - segment.delivery: "[tag1][tag2]" - ElevenLabs v3 audio tags
+        // - segment.voiceReasoning: why these choices were made
+        // =============================================================================
+
         let segmentSettings;
+        const hasVoiceDirection = segment.voiceDirected === true;
+
         if (segment.speaker === 'narrator') {
-          // Narrator: apply scene-level delivery direction for v3 Audio Tags (if available).
-          const narratorOverride = narratorDirectives?.voiceSettingsOverride || {};
+          // NARRATOR: Use Voice Director's per-segment direction when available
+          const narratorDelivery = segment.delivery || '';
+
+          // Use Voice Director values if available, fall back to presets
+          const stability = hasVoiceDirection && segment.voiceStability !== undefined
+            ? segment.voiceStability
+            : emotionPreset.stability;
+          const style = hasVoiceDirection && segment.voiceStyle !== undefined
+            ? segment.voiceStyle
+            : emotionPreset.style;
+
           segmentSettings = {
             ...voiceSettings,
-            stability: narratorOverride.stability ?? voiceSettings.stability ?? 0.65,
-            style: narratorOverride.style ?? voiceSettings.style ?? 0.25,
+            stability,
+            style,
             sessionId,
             speaker: segment.speaker,
-            detectedEmotion: narratorDirectives?.emotion || voiceSettings.detectedEmotion,
-            delivery: narratorDirectives?.delivery || voiceSettings.delivery
+            detectedEmotion: segment.emotion || 'neutral',
+            delivery: narratorDelivery
           };
+
+          // Log Voice Director output for narrator
+          if (hasVoiceDirection) {
+            logger.debug(`[MultiVoice] Narrator[${segIdx}] VoiceDirector: stability=${stability}, style=${style}, delivery="${narratorDelivery}"`);
+          }
         } else {
-          // Character dialogue - apply emotion preset + Audio Tags (v3)
+          // CHARACTER DIALOGUE: Use Voice Director's per-segment direction when available
+          // Use Voice Director values if available, fall back to emotion presets
+          const stability = hasVoiceDirection && segment.voiceStability !== undefined
+            ? segment.voiceStability
+            : emotionPreset.stability;
+          const style = hasVoiceDirection && segment.voiceStyle !== undefined
+            ? segment.voiceStyle
+            : emotionPreset.style;
+          const similarityBoost = emotionPreset.similarity_boost; // Not modified by VD
+
           segmentSettings = {
             ...voiceSettings,
-            stability: emotionPreset.stability,
-            similarity_boost: emotionPreset.similarity_boost,
-            style: emotionPreset.style,
+            stability,
+            similarity_boost: similarityBoost,
+            style,
             sessionId,
             speaker: segment.speaker,
-            detectedEmotion: emotion,  // For v3 Audio Tags
-            delivery: segment.delivery  // Additional delivery direction from dialogue_map
+            detectedEmotion: emotion,  // For v3 Audio Tags mapping
+            delivery: segment.delivery || ''  // Audio tags from Voice Director
           };
+
+          // Log Voice Director output for dialogue
+          if (hasVoiceDirection) {
+            logger.debug(`[MultiVoice] ${segment.speaker}[${segIdx}] VoiceDirector: stability=${stability}, style=${style}, delivery="${segment.delivery || ''}"`);
+          }
         }
 
-        // Log emotion detection for character dialogue
-        const emotionLog = segment.speaker !== 'narrator'
-          ? ` [Emotion: ${emotion} (${emotionSource})]`
+        // Log segment info with Voice Director details
+        const sourceTag = hasVoiceDirection ? 'VoiceDirector' : (segment.llmValidated ? 'LLM' : 'preset');
+        const deliveryInfo = segmentSettings.delivery ? ` [${segmentSettings.delivery}]` : '';
+        const emotionInfo = segmentSettings.detectedEmotion && segmentSettings.detectedEmotion !== 'neutral'
+          ? ` (${segmentSettings.detectedEmotion})`
           : '';
-        logger.info(`[MultiVoice] Generating segment [${segIdx + 1}/${emotionEnhancedSegments.length}] with timestamps: ${segment.speaker} → "${voiceName}"${emotionLog}`);
-        logger.info(`[MultiVoice]   Full text: "${segment.text}"`);
-        if (segment.speaker !== 'narrator' && emotion !== 'neutral') {
-          logger.info(`[MultiVoice]   Voice settings: stability=${segmentSettings.stability}, style=${segmentSettings.style}`);
-          if (segment.emotionReasoning) {
-            logger.info(`[MultiVoice]   LLM reasoning: ${segment.emotionReasoning}`);
+
+        logger.info(`[MultiVoice] Generating [${segIdx + 1}/${emotionEnhancedSegments.length}] ${segment.speaker} → "${voiceName}" [${sourceTag}]${deliveryInfo}${emotionInfo}`);
+        logger.info(`[MultiVoice]   Text: "${segment.text.substring(0, 60)}${segment.text.length > 60 ? '...' : ''}"`);
+
+        // Log voice settings for all Voice Director processed segments
+        if (hasVoiceDirection || segmentSettings.detectedEmotion !== 'neutral') {
+          logger.info(`[MultiVoice]   Settings: stability=${segmentSettings.stability.toFixed(2)}, style=${segmentSettings.style.toFixed(2)}`);
+          if (segment.voiceReasoning) {
+            logger.info(`[MultiVoice]   Reasoning: ${segment.voiceReasoning}`);
           }
         }
 
@@ -1891,20 +1975,59 @@ export class ElevenLabsService {
     const charStartTimes = alignment.character_start_times_seconds.map(t => Math.round(t * 1000));
     const charEndTimes = alignment.character_end_times_seconds.map(t => Math.round(t * 1000));
 
-    // Prosody tag pattern - matches [word] or [multiple words] patterns
-    // These are ElevenLabs Audio Tags like [excitedly], [whispers], [angrily], etc.
-    const prosodyTagPattern = /^\[[a-zA-Z][a-zA-Z\s\-']*\]$/;
-    const embeddedTagPattern = /\[[a-zA-Z][a-zA-Z\s\-']*\]/g;
+    // Pattern to strip any bracketed tags from text (covers all audio tag formats)
+    // Matches [word], [multiple words], [with-hyphens], [with'apostrophes], etc.
+    const allBracketedTagsPattern = /\[[^\]]+\]/g;
 
     const words = [];
     let currentWord = '';
     let wordStartTime = 0;
     let wordStartCharIndex = 0;
+    let insideBracket = false; // Track if we're inside a [tag]
+    let bracketDepth = 0;
 
     for (let i = 0; i < chars.length; i++) {
       const char = chars[i];
       const charStart = charStartTimes[i];
       const charEnd = charEndTimes[i];
+
+      // Track bracket state to skip entire audio tags including multi-word ones
+      if (char === '[') {
+        bracketDepth++;
+        insideBracket = true;
+        // If we have accumulated a word before the bracket, save it
+        if (currentWord.trim()) {
+          const trimmedWord = currentWord.trim();
+          const cleanWord = trimmedWord.replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$/g, '') || trimmedWord;
+          if (cleanWord) {
+            words.push({
+              text: trimmedWord,
+              clean_text: cleanWord,
+              start_ms: wordStartTime,
+              end_ms: charStartTimes[i] || charEnd,
+              duration_ms: (charStartTimes[i] || charEnd) - wordStartTime,
+              char_start_index: wordStartCharIndex,
+              char_end_index: i - 1
+            });
+          }
+        }
+        currentWord = '';
+        continue;
+      }
+
+      if (char === ']') {
+        bracketDepth--;
+        if (bracketDepth <= 0) {
+          insideBracket = false;
+          bracketDepth = 0;
+        }
+        continue;
+      }
+
+      // Skip all characters inside brackets (audio tags)
+      if (insideBracket) {
+        continue;
+      }
 
       // Track word start
       if (currentWord === '' && char.trim() !== '') {
@@ -1920,14 +2043,8 @@ export class ElevenLabsService {
       if (isWordBoundary) {
         let trimmedWord = currentWord.trim();
 
-        // Skip if the entire word is a prosody tag like [excitedly]
-        if (prosodyTagPattern.test(trimmedWord)) {
-          currentWord = '';
-          continue;
-        }
-
-        // Remove any embedded prosody tags from the word (e.g., "[excitedly]What" → "What")
-        trimmedWord = trimmedWord.replace(embeddedTagPattern, '').trim();
+        // Final cleanup: remove any remaining bracketed content (safety net)
+        trimmedWord = trimmedWord.replace(allBracketedTagsPattern, '').trim();
 
         if (trimmedWord) {
           // Clean punctuation but keep the word
@@ -2105,6 +2222,277 @@ export class ElevenLabsService {
     } catch (error) {
       logger.error('Cache cleanup error:', error);
       return 0;
+    }
+  }
+
+  // ============================================================================
+  // PHASE 5.1: Content Refusal Detection and Phonetic Fallback
+  // ============================================================================
+
+  /**
+   * Check if an error is a content policy refusal from ElevenLabs
+   * @param {Error} error - The error from ElevenLabs API
+   * @returns {boolean} True if this is a content refusal
+   */
+  _isContentRefusal(error) {
+    if (error.response?.status !== 422) return false;
+
+    const message = (
+      error.response?.data?.detail?.message ||
+      error.response?.data?.message ||
+      error.message ||
+      ''
+    ).toLowerCase();
+
+    // Check for content policy indicators
+    const policyKeywords = [
+      'policy', 'profan', 'explicit', 'violat', 'inappropriate',
+      'offensive', 'harmful', 'forbidden', 'not allowed', 'blocked',
+      'content', 'moderation'
+    ];
+
+    return policyKeywords.some(keyword => message.includes(keyword));
+  }
+
+  /**
+   * Generate TTS with automatic phonetic fallback for content refusals
+   * @param {string} text - Text to synthesize
+   * @param {string} voiceId - Voice ID
+   * @param {object} options - TTS options
+   * @returns {object} Audio result with potential phonetic info
+   */
+  async textToSpeechWithPhoneticFallback(text, voiceId = null, options = {}) {
+    const voice = voiceId || this.defaultVoiceId;
+
+    // First, try normal TTS
+    try {
+      const result = await this.textToSpeechWithTimestamps(text, voice, options);
+      return {
+        ...result,
+        usedPhonetic: false,
+        originalText: text
+      };
+    } catch (error) {
+      // Check if this is a content refusal
+      if (!this._isContentRefusal(error)) {
+        throw error; // Re-throw non-content-policy errors
+      }
+
+      logger.warn(`[ElevenLabs] Content policy refusal detected, attempting phonetic fallback`);
+
+      // Check if text has potentially problematic content
+      if (!containsPotentiallyRefusedContent(text)) {
+        logger.warn(`[ElevenLabs] Text doesn't match known patterns, refusal may be for unknown reason`);
+        throw error; // Can't help with unknown content issues
+      }
+
+      // Apply phonetic respellings
+      const { phoneticText, mappings, hasReplacements } = await applyPhoneticRespellings(text);
+
+      if (!hasReplacements) {
+        logger.warn(`[ElevenLabs] No phonetic replacements made, cannot recover`);
+        throw error;
+      }
+
+      logger.info(`[ElevenLabs] Retrying with ${mappings.length} phonetic replacements`);
+
+      // Retry with phonetic text
+      try {
+        const result = await this.textToSpeechWithTimestamps(phoneticText, voice, options);
+
+        // Store alignment for karaoke sync
+        if (result.wordTimings) {
+          await storeWordAlignment(text, phoneticText, voice, {
+            mappings,
+            wordTimings: result.wordTimings
+          });
+        }
+
+        return {
+          ...result,
+          usedPhonetic: true,
+          originalText: text,
+          phoneticText: phoneticText,
+          phoneticMappings: mappings
+        };
+      } catch (retryError) {
+        logger.error(`[ElevenLabs] Phonetic retry also failed: ${retryError.message}`);
+        throw new Error(`Content policy refusal even with phonetic fallback: ${retryError.message}`);
+      }
+    }
+  }
+
+  // ============================================================================
+  // PHASE 5.2: Text Chunking for Long Content (>5000 chars)
+  // ============================================================================
+
+  /**
+   * Maximum characters per chunk for ElevenLabs
+   * Using 4800 to leave buffer for any text processing/wrapping
+   */
+  static MAX_CHUNK_LENGTH = 4800;
+
+  /**
+   * Split text at sentence boundaries for chunking
+   * @param {string} text - Text to chunk
+   * @param {number} maxLength - Maximum length per chunk
+   * @returns {Array} Array of {text, index} chunks
+   */
+  chunkAtSentenceBoundaries(text, maxLength = ElevenLabsService.MAX_CHUNK_LENGTH) {
+    if (text.length <= maxLength) {
+      return [{ text, index: 0 }];
+    }
+
+    const chunks = [];
+    let remaining = text;
+    let chunkIndex = 0;
+
+    // Sentence-ending patterns (in order of preference)
+    const sentenceEnders = [
+      /([.!?])\s+/g,     // Standard sentence endings
+      /([,;:])\s+/g,     // Clause boundaries
+      /\s+/g             // Any whitespace as last resort
+    ];
+
+    while (remaining.length > 0) {
+      if (remaining.length <= maxLength) {
+        chunks.push({ text: remaining.trim(), index: chunkIndex });
+        break;
+      }
+
+      let splitPoint = -1;
+
+      // Try each pattern to find a good split point
+      for (const pattern of sentenceEnders) {
+        pattern.lastIndex = 0; // Reset regex state
+        let lastMatch = null;
+
+        // Find the last match before maxLength
+        let match;
+        while ((match = pattern.exec(remaining)) !== null) {
+          if (match.index + match[0].length <= maxLength) {
+            lastMatch = match;
+          } else {
+            break;
+          }
+        }
+
+        if (lastMatch) {
+          splitPoint = lastMatch.index + lastMatch[0].length;
+          break;
+        }
+      }
+
+      // Fallback: hard split at maxLength
+      if (splitPoint === -1 || splitPoint === 0) {
+        splitPoint = maxLength;
+      }
+
+      const chunk = remaining.substring(0, splitPoint).trim();
+      if (chunk) {
+        chunks.push({ text: chunk, index: chunkIndex++ });
+      }
+      remaining = remaining.substring(splitPoint).trim();
+    }
+
+    logger.info(`[Chunking] Split ${text.length} chars into ${chunks.length} chunks`);
+    return chunks;
+  }
+
+  /**
+   * Generate TTS for long text with automatic chunking
+   * Chunks are generated and assembled with seamless audio transitions
+   * @param {string} text - Text to synthesize (any length)
+   * @param {string} voiceId - Voice ID
+   * @param {object} options - TTS options
+   * @returns {object} Combined audio result
+   */
+  async textToSpeechWithChunking(text, voiceId = null, options = {}) {
+    const voice = voiceId || this.defaultVoiceId;
+
+    // Check if chunking is needed
+    if (text.length <= ElevenLabsService.MAX_CHUNK_LENGTH) {
+      // Use phonetic fallback wrapper for single chunk
+      return this.textToSpeechWithPhoneticFallback(text, voice, options);
+    }
+
+    logger.info(`[Chunking] Text length ${text.length} exceeds ${ElevenLabsService.MAX_CHUNK_LENGTH}, chunking...`);
+
+    const chunks = this.chunkAtSentenceBoundaries(text);
+    const chunkResults = [];
+    let cumulativeMs = 0;
+    const allWordTimings = [];
+
+    // Generate audio for each chunk
+    for (const chunk of chunks) {
+      logger.info(`[Chunking] Processing chunk ${chunk.index + 1}/${chunks.length}: ${chunk.text.length} chars`);
+
+      try {
+        const result = await this.textToSpeechWithPhoneticFallback(chunk.text, voice, options);
+        chunkResults.push(result);
+
+        // Merge word timings with cumulative offset
+        if (result.wordTimings?.words) {
+          const offsetWords = result.wordTimings.words.map(w => ({
+            ...w,
+            start_ms: w.start_ms + cumulativeMs,
+            end_ms: w.end_ms + cumulativeMs,
+            chunk_index: chunk.index
+          }));
+          allWordTimings.push(...offsetWords);
+          cumulativeMs += result.wordTimings.total_duration_ms || 0;
+        }
+      } catch (error) {
+        logger.error(`[Chunking] Chunk ${chunk.index + 1} failed: ${error.message}`);
+        throw new Error(`Failed to generate chunk ${chunk.index + 1}: ${error.message}`);
+      }
+    }
+
+    // Assemble all chunks with crossfade
+    logger.info(`[Chunking] Assembling ${chunkResults.length} audio chunks...`);
+
+    const assemblySegments = chunkResults.map((r, i) => ({
+      audio: r.audio,
+      index: i
+    }));
+
+    try {
+      const assembled = await assembleMultiVoiceAudio(assemblySegments, {
+        gapMs: 100,      // Small gap between chunks
+        crossfadeMs: 50  // Subtle crossfade
+      });
+
+      const hash = this.generateHash(text, voice);
+      const checksum = crypto.createHash('sha256').update(assembled.audio).digest('hex');
+
+      // Cache the combined result
+      const cacheResult = await this.cacheAudioWithTimestamps(
+        text, voice, assembled.audio,
+        { words: allWordTimings, total_duration_ms: cumulativeMs },
+        checksum
+      );
+
+      logger.info(`[Chunking] Assembled ${assembled.audio.length} bytes from ${chunks.length} chunks`);
+
+      return {
+        audio: assembled.audio,
+        audioUrl: cacheResult.audioUrl,
+        audioHash: hash,
+        checksum,
+        wordTimings: {
+          words: allWordTimings,
+          total_duration_ms: cumulativeMs,
+          word_count: allWordTimings.length,
+          chunk_count: chunks.length
+        },
+        durationSeconds: cumulativeMs / 1000,
+        chunked: true,
+        chunkCount: chunks.length,
+        usedPhonetic: chunkResults.some(r => r.usedPhonetic)
+      };
+    } catch (error) {
+      logger.error(`[Chunking] Assembly failed: ${error.message}`);
+      throw new Error(`Failed to assemble chunked audio: ${error.message}`);
     }
   }
 }

@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { stripAllTags } from '../utils/textUtils';
 import { useTheme } from '../context/ThemeContext';
+import { CollapsibleSynopsis } from './story';
 
 const DETAILS_STORAGE_KEY = 'narrimo_details_expanded';
 const LEGACY_DETAILS_STORAGE_KEY = 'storyteller_details_expanded';
@@ -67,6 +68,11 @@ function BookPageLayout({
 
   // Get text layout from theme context
   const { textLayout } = useTheme();
+
+  // Debug: Log textLayout changes
+  useEffect(() => {
+    console.log('[BookPageLayout] textLayout changed to:', textLayout);
+  }, [textLayout]);
 
   // Cover state: 'full' | 'minimized'
   const [coverState, setCoverState] = useState('full');
@@ -490,30 +496,14 @@ function BookPageLayout({
             </div>
           )}
 
-          {/* Synopsis - separate section below story details badge, above story text */}
-          {synopsis && (
-            <div className="synopsis-section relative group mb-4">
-              <p className="text-slate-200 leading-relaxed text-base italic">
-                {synopsis}
-              </p>
-              {onRegenerateSynopsis && !hideRegenerateButtons && (
-                <button
-                  onClick={onRegenerateSynopsis}
-                  disabled={isRegeneratingSynopsis}
-                  className={`
-                    absolute -right-1 -top-1 p-1 rounded transition-all opacity-0 group-hover:opacity-100
-                    ${isRegeneratingSynopsis
-                      ? 'bg-slate-700/90 cursor-wait'
-                      : 'bg-slate-700/80 hover:bg-slate-600'
-                    }
-                  `}
-                  title="Regenerate synopsis"
-                >
-                  <RefreshCw className={`w-3 h-3 text-slate-400 ${isRegeneratingSynopsis ? 'animate-spin' : ''}`} />
-                </button>
-              )}
-            </div>
-          )}
+          {/* Synopsis - collapsible section below story details badge */}
+          <CollapsibleSynopsis
+            synopsis={synopsis}
+            chapterIndex={chapterIndex}
+            onRegenerateSynopsis={onRegenerateSynopsis}
+            isRegeneratingSynopsis={isRegeneratingSynopsis}
+            hideRegenerateButton={hideRegenerateButtons}
+          />
 
           {/* Story text flows naturally around cover like old-school indent */}
 
@@ -589,7 +579,7 @@ function BookPageLayout({
                 </div>
               ) : textLayout === 'horizontal' ? (
                 /* Horizontal mode - Two columns */
-                <div className="horizontal-text-layout grid grid-cols-2 gap-6 max-w-4xl mx-auto">
+                <div className="horizontal-text-layout grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-6 max-w-4xl mx-auto">
                   {words.length > 0 ? (
                     /* Karaoke mode in two columns */
                     <div className="story-karaoke leading-loose col-span-2" style={{ fontSize: `${fontSize}px` }}>

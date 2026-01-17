@@ -34,36 +34,49 @@ function VoiceRecorder({ onTranscript, disabled = false, size = 'normal' }) {
       timeout: 3000
     });
 
-    socket.on('connect', () => {
+    // Named handlers for proper cleanup
+    const handleConnect = () => {
       console.log('[VoiceRecorder] Connected to Whisper service');
       socket.emit('init-session', { sessionId: `storyteller-${Date.now()}` });
-    });
+    };
 
-    socket.on('session-ready', (data) => {
+    const handleSessionReady = (data) => {
       console.log('[VoiceRecorder] Whisper session ready:', data.sessionId);
-    });
+    };
 
-    socket.on('transcription', (data) => {
+    const handleTranscription = (data) => {
       console.log('[VoiceRecorder] Transcription received:', data.text);
       setIsProcessing(false);
       if (data.text && onTranscript) {
         onTranscript(data.text);
       }
-    });
+    };
 
-    socket.on('error', (data) => {
+    const handleError = (data) => {
       console.error('[VoiceRecorder] Whisper error:', data);
       setError(data.message || 'Voice recognition error');
       setIsProcessing(false);
-    });
+    };
 
-    socket.on('connect_error', () => {
+    const handleConnectError = () => {
       setError('Voice service unavailable');
-    });
+    };
+
+    socket.on('connect', handleConnect);
+    socket.on('session-ready', handleSessionReady);
+    socket.on('transcription', handleTranscription);
+    socket.on('error', handleError);
+    socket.on('connect_error', handleConnectError);
 
     whisperSocketRef.current = socket;
 
     return () => {
+      // CRITICAL: Remove all listeners before disconnecting to prevent memory leaks
+      socket.off('connect', handleConnect);
+      socket.off('session-ready', handleSessionReady);
+      socket.off('transcription', handleTranscription);
+      socket.off('error', handleError);
+      socket.off('connect_error', handleConnectError);
       socket.disconnect();
     };
   }, [onTranscript]);

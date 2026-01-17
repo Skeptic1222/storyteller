@@ -295,7 +295,18 @@ async function preloadAudio(urls) {
       const filename = path.basename(url);
       const filepath = path.join(AUDIO_CACHE_DIR, filename);
 
-      const exists = await fs.access(filepath).then(() => true).catch(() => false);
+      // Check file existence with proper error handling
+      let exists = false;
+      try {
+        await fs.access(filepath);
+        exists = true;
+      } catch (err) {
+        // Only ENOENT (file not found) is expected - other errors warrant logging
+        if (err.code !== 'ENOENT') {
+          logger.warn(`[AudioStreaming] Unexpected file access error: ${err.message}`);
+        }
+        exists = false;
+      }
 
       results.push({
         url,

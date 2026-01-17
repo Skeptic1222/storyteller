@@ -5,7 +5,7 @@
  * Uses ThemeContext for unified theme management across pages
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   ArrowLeft,
@@ -42,6 +42,8 @@ export default function Library() {
   const [category, setCategory] = useState('all'); // New: content category
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState('recent');
+  const [displayCount, setDisplayCount] = useState(12); // Pagination: show 12 initially
+  const ITEMS_PER_PAGE = 12;
 
   useEffect(() => {
     fetchLibrary();
@@ -155,32 +157,50 @@ export default function Library() {
     }
   };
 
-  // Filter and sort stories
-  const filteredStories = stories
-    .filter(story => {
-      // Category filter
-      if (category !== 'all') {
-        const storyCategory = getStoryCategory(story);
-        if (storyCategory !== category) return false;
-      }
-      // Search filter
-      if (searchQuery) {
-        return story.title?.toLowerCase().includes(searchQuery.toLowerCase());
-      }
-      return true;
-    })
-    .sort((a, b) => {
-      if (sortBy === 'recent') {
-        return new Date(b.last_activity_at || b.started_at) - new Date(a.last_activity_at || a.started_at);
-      }
-      if (sortBy === 'title') {
-        return (a.title || '').localeCompare(b.title || '');
-      }
-      if (sortBy === 'progress') {
-        return (b.progress_percent || 0) - (a.progress_percent || 0);
-      }
-      return 0;
-    });
+  // Filter and sort stories - memoized for performance
+  const filteredStories = useMemo(() => {
+    return stories
+      .filter(story => {
+        // Category filter
+        if (category !== 'all') {
+          const storyCategory = getStoryCategory(story);
+          if (storyCategory !== category) return false;
+        }
+        // Search filter
+        if (searchQuery) {
+          return story.title?.toLowerCase().includes(searchQuery.toLowerCase());
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        if (sortBy === 'recent') {
+          return new Date(b.last_activity_at || b.started_at) - new Date(a.last_activity_at || a.started_at);
+        }
+        if (sortBy === 'title') {
+          return (a.title || '').localeCompare(b.title || '');
+        }
+        if (sortBy === 'progress') {
+          return (b.progress_percent || 0) - (a.progress_percent || 0);
+        }
+        return 0;
+      });
+  }, [stories, category, searchQuery, sortBy]);
+
+  // Paginated stories - only show displayCount items
+  const displayedStories = useMemo(() => {
+    return filteredStories.slice(0, displayCount);
+  }, [filteredStories, displayCount]);
+
+  const hasMoreStories = displayCount < filteredStories.length;
+
+  const handleLoadMore = useCallback(() => {
+    setDisplayCount(prev => prev + ITEMS_PER_PAGE);
+  }, []);
+
+  // Reset pagination when filters change
+  useEffect(() => {
+    setDisplayCount(ITEMS_PER_PAGE);
+  }, [category, searchQuery, sortBy, filter]);
 
   // Navigate to appropriate page based on story type
   const handleStoryClick = (story) => {
@@ -414,7 +434,7 @@ export default function Library() {
           gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
           gap: '20px'
         }}>
-          {filteredStories.map(story => {
+          {displayedStories.map(story => {
             const storyCategory = getStoryCategory(story);
             const categoryColor = CATEGORIES[storyCategory]?.color || colors.accent;
 
@@ -460,6 +480,53 @@ export default function Library() {
                 }}>
                   {CATEGORIES[storyCategory]?.label}
                 </span>
+                {/* Mature content badge - P1 FIX: Show badge for mature/adult content stories */}
+                {(() => {
+                  const config = story.config_json || {};
+                  const intensity = config.intensity || config.intensitySettings || {};
+                  const isMature = config.audience === 'mature';
+                  const hasHighAdultContent = (intensity.adultContent || 0) >= 50;
+                  const hasHighExplicitness = (intensity.explicitness || 0) >= 70;
+                  const hasHighSensuality = (intensity.sensuality || 0) >= 70;
+                  const hasHighGore = (intensity.gore || 0) >= 60;
+                  const hasHighViolence = (intensity.violence || 0) >= 60;
+
+                  // Show 18+ for mature audience or high explicit content
+                  if (isMature || hasHighAdultContent || hasHighExplicitness || hasHighSensuality) {
+                    return (
+                      <span style={{
+                        background: '#dc262622',
+                        color: '#dc2626',
+                        fontSize: '10px',
+                        padding: '2px 8px',
+                        borderRadius: '10px',
+                        fontWeight: '600',
+                        border: '1px solid #dc262644'
+                      }}>
+                        18+
+                      </span>
+                    );
+                  }
+
+                  // Show "Graphic" for high gore/violence but not explicitly adult
+                  if (hasHighGore || hasHighViolence) {
+                    return (
+                      <span style={{
+                        background: '#ea580c22',
+                        color: '#ea580c',
+                        fontSize: '10px',
+                        padding: '2px 8px',
+                        borderRadius: '10px',
+                        fontWeight: '600',
+                        border: '1px solid #ea580c44'
+                      }}>
+                        Graphic
+                      </span>
+                    );
+                  }
+
+                  return null;
+                })()}
                 {(() => {
                   const StatusIcon = getStatusIcon(story.current_status);
                   return (
@@ -651,6 +718,34 @@ export default function Library() {
             </div>
           );
           })}
+        </div>
+      )}
+
+      {/* Load More button for pagination */}
+      {hasMoreStories && !loading && (
+        <div style={{ textAlign: 'center', marginTop: '24px' }}>
+          <button
+            onClick={handleLoadMore}
+            style={{
+              background: `${colors.accent}22`,
+              color: colors.accent,
+              border: `1px solid ${colors.accent}44`,
+              borderRadius: '8px',
+              padding: '12px 32px',
+              fontSize: '14px',
+              fontWeight: '500',
+              cursor: 'pointer',
+              transition: 'all 0.2s'
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = `${colors.accent}33`;
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = `${colors.accent}22`;
+            }}
+          >
+            Load More ({filteredStories.length - displayCount} remaining)
+          </button>
         </div>
       )}
 

@@ -34,7 +34,7 @@ Analyze the premise and return JSON with the following structure (be precise and
 
 {
   "genres": {
-    "primary": "genre_name (horror|fantasy|scifi|mystery|romance|adventure|humor|fairytale|literary|poetry|ya)",
+    "primary": "genre_name (horror|fantasy|scifi|mystery|romance|erotica|adventure|humor|fairytale|literary|poetry|ya|thriller)",
     "secondary": "optional_secondary_genre or null",
     "reasoning": "Why these genres fit the premise"
   },
@@ -44,6 +44,8 @@ Analyze the premise and return JSON with the following structure (be precise and
     "scary": 0-100,
     "romance": 0-100,
     "adultContent": 0-100,
+    "sensuality": 0-100,
+    "explicitness": 0-100,
     "reasoning": "Justify each intensity level based on premise language and context"
   },
   "mood": "calm|exciting|scary|funny|mysterious|dramatic",
@@ -66,8 +68,28 @@ Analyze the premise and return JSON with the following structure (be precise and
   "author_style": "author_style_key_from_catalog|null",
   "author_reasoning": "Which writing style best matches this premise",
   "bedtime_mode": true|false,
-  "bedtime_reasoning": "Is this appropriate for pre-sleep stories?"
+  "bedtime_reasoning": "Is this appropriate for pre-sleep stories?",
+  "narrator": {
+    "preferred_gender": "masculine|feminine|neutral",
+    "voice_style": "dramatic|warm|mysterious|playful|epic|horror|noir|whimsical|calm",
+    "characteristics": ["deep", "gravelly", "rich", "soothing", "commanding", "gentle", "authoritative", "raspy", "silky"],
+    "tone_descriptors": "2-3 word description like 'gruff and commanding' or 'warm and gentle'",
+    "reasoning": "Why this type of narrator fits the story's genre, tone, and likely fan expectations"
+  }
 }
+
+NARRATOR SELECTION INSTRUCTIONS:
+- Consider what voice fans of this type of story would expect to hear
+- Sword & sorcery / barbarian stories → masculine, gravelly, commanding voice
+- Children's bedtime → warm, gentle, soothing (either gender)
+- Horror → deep, mysterious, potentially raspy or unsettling
+- Romance → warm, rich, emotionally resonant
+- Erotica / Adult content → sultry, breathy, intimate, sensual (match gender to content - masculine for straight female POV, feminine for straight male POV, neutral for LGBTQ+)
+- Sci-fi / space opera → authoritative, dramatic, clear
+- Cozy mysteries → friendly, warm, inviting
+- Epic fantasy → deep, dramatic, commanding
+- Noir/detective → gravelly, cynical, world-weary
+- Think: "How would audiobook fans expect this to be narrated?"
 
 AUTHOR STYLE CATALOG (use this to select author_style):
 ${authorCatalog}
@@ -75,14 +97,32 @@ ${authorCatalog}
 CRITICAL INSTRUCTIONS:
 1. Understand INTENT: Don't just match keywords. If premise says "dark romance" understand user wants both darkness AND romance.
 2. Context matters: "alien" could be sci-fi OR fantasy-adjacent, understand from context
-3. Intensity: If premise is detailed about violent/sexual content, rate intensity high. If vague, rate lower.
-4. Format detection: "choices" → CYOA, "episodes" → episodic, "for kids" → picture_book, explicit chapter count → novel/novella
-5. Audience: "for kids" → children, "teen protagonist" → young_adult, "explicit content" → mature
-6. Character count: Count distinct named characters, estimate if not explicit
-7. Multi-narrator: True if "different voices", "ensemble cast", "dialogue heavy", "full cast recording"; False if "single narrator", "first person", "one perspective"
-8. SFX: Enable if mentioned explicitly or implied by format (audio drama → high, quiet fairy tale → low/false)
-9. Author matching: Look for author names, genre keywords that match author specialties, writing style descriptors
-10. Never guess: If unclear, say "low" for any intensity, pick format that fits best, explain reasoning
+3. GENRE PRIORITIZATION - EXPLICIT CONTENT WINS:
+   - SEXUAL CONTENT: "sex scene", "erotic", "explicit", "hardcore", "NSFW", "adult content" → PRIMARY IS EROTICA, audience MUST be "mature"
+   - If premise explicitly mentions: "horror|scary|terrifying" → PRIMARY IS HORROR (unless explicitly contradicted)
+   - If premise explicitly mentions: "sci-fi|scifi|science fiction|space|alien|robot" → PRIMARY IS SCIFI (unless explicitly contradicted)
+   - If premise mentions BOTH horror AND scifi → Use horror as primary, scifi as secondary
+   - "adventure" is default fallback ONLY if no stronger genre indicators exist
+   - Example: "aliens hunting astronauts" = SCIFI, but "scary aliens hunting" = HORROR
+   - Example: "a sex scene between two women" = EROTICA, NOT romance
+4. EXPLICIT SEXUAL CONTENT DETECTION (CRITICAL):
+   - Words like "sex", "sex scene", "hardcore", "erotic", "explicit", "NSFW", "threesome", "orgy" → SET ALL THESE HIGH:
+     * adultContent: 90-100
+     * sensuality: 90-100
+     * explicitness: 90-100
+     * romance: 70-95
+     * audience: "mature" (MANDATORY)
+     * genre: "erotica" (primary)
+   - DO NOT confuse "between" with "tween" - "between 2 women" means two women, NOT young adult/teen content
+5. Intensity: If premise is detailed about violent/sexual content, rate intensity high. If vague, rate lower.
+6. Format detection: "choices" → CYOA, "episodes" → episodic, "for kids" → picture_book, explicit chapter count → novel/novella
+7. Audience: "for kids" → children, "teen protagonist" → young_adult, ANY sexual content → mature (MANDATORY)
+8. Character count: Count distinct named characters, estimate if not explicit
+9. Multi-narrator: True if "different voices", "ensemble cast", "dialogue heavy", "full cast recording"; False if "single narrator", "first person", "one perspective"
+10. SFX: Enable if mentioned explicitly or implied by format (audio drama → high, quiet fairy tale → low/false)
+11. Author matching: Look for author names, genre keywords that match author specialties, writing style descriptors
+12. Never guess: If unclear, say "low" for any intensity, pick format that fits best, explain reasoning
+13. WORD BOUNDARY AWARENESS: Parse words at word boundaries, NOT substrings. "between" is NOT "tween", "therapist" is NOT "the rapist"
 
 Return ONLY valid JSON, no markdown, no explanations outside JSON.`;
 
@@ -90,10 +130,11 @@ Return ONLY valid JSON, no markdown, no explanations outside JSON.`;
       model: 'gpt-5.2',
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.7,
-      max_tokens: 1500
+      max_tokens: 1500,
+      agent_name: 'ConfigAnalyzer'
     });
 
-    const analysis = parseJsonResponse(response);
+    const analysis = parseJsonResponse(response.content);
 
     if (!analysis) {
       logger.warn('[ConfigAnalyzer] Failed to parse LLM response');
@@ -153,7 +194,9 @@ export function convertLLMAnalysisToKeywordFormat(llmAnalysis) {
       gore: llmAnalysis.intensity?.gore || 0,
       scary: llmAnalysis.intensity?.scary || 0,
       romance: llmAnalysis.intensity?.romance || 0,
-      adultContent: llmAnalysis.intensity?.adultContent || 0
+      adultContent: llmAnalysis.intensity?.adultContent || 0,
+      sensuality: llmAnalysis.intensity?.sensuality || 0,
+      explicitness: llmAnalysis.intensity?.explicitness || 0
     },
     mood: llmAnalysis.mood || null,
     format: llmAnalysis.format || null,
@@ -168,6 +211,14 @@ export function convertLLMAnalysisToKeywordFormat(llmAnalysis) {
       category: llmAnalysis.character_count.solo_duo_small_medium_large || 'small'
     } : null,
     author_style: llmAnalysis.author_style || null,
+    // LLM-based narrator voice recommendation
+    narrator: llmAnalysis.narrator ? {
+      preferred_gender: llmAnalysis.narrator.preferred_gender || 'neutral',
+      voice_style: llmAnalysis.narrator.voice_style || 'dramatic',
+      characteristics: llmAnalysis.narrator.characteristics || [],
+      tone_descriptors: llmAnalysis.narrator.tone_descriptors || '',
+      reasoning: llmAnalysis.narrator.reasoning || ''
+    } : null,
     detectedKeywords: [
       llmAnalysis.genres?.primary,
       llmAnalysis.format,

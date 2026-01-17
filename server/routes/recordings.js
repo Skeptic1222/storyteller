@@ -4,7 +4,8 @@
  */
 
 import { Router } from 'express';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync } from 'fs';
+import { readFile } from 'fs/promises';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { recordingService } from '../services/recording.js';
@@ -515,7 +516,7 @@ router.get('/:id/export', async (req, res) => {
         continue;
       }
 
-      const audioBuffer = readFileSync(audioPath);
+      const audioBuffer = await readFile(audioPath);
 
       audioSegments.push({
         audio: audioBuffer,
@@ -536,7 +537,7 @@ router.get('/:id/export', async (req, res) => {
               const sfxPath = join(__dirname, '..', '..', 'public', sfx.audio_url);
               if (existsSync(sfxPath)) {
                 sfxTracks.push({
-                  audio: readFileSync(sfxPath),
+                  audio: await readFile(sfxPath),
                   startMs: cumulativeTime + (sfx.start_time || 0) * 1000,
                   volume: sfx.volume || 0.4
                 });

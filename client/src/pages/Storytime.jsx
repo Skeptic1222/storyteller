@@ -56,32 +56,43 @@ function Storytime() {
       timeout: 3000
     });
 
-    socket.on('connect', () => {
+    // Named handlers for proper cleanup
+    const handleConnect = () => {
       console.log('[Storytime] Connected to Whisper');
       socket.emit('init-session', { sessionId: `storytime-${sessionId}` });
-    });
+    };
 
-    socket.on('transcription', (data) => {
+    const handleTranscription = (data) => {
       console.log('[Storytime] Transcription:', data.text);
       if (data.text) {
         setTranscript(data.text);
         handleUserInput(data.text);
       }
-    });
+    };
 
-    socket.on('error', (data) => {
+    const handleError = (data) => {
       console.error('[Storytime] Whisper error:', data);
       setError('Voice recognition error');
       setState(STATES.LISTENING);
-    });
+    };
 
-    socket.on('connect_error', () => {
+    const handleConnectError = () => {
       // Silent - user will see mic is unavailable
-    });
+    };
+
+    socket.on('connect', handleConnect);
+    socket.on('transcription', handleTranscription);
+    socket.on('error', handleError);
+    socket.on('connect_error', handleConnectError);
 
     whisperSocketRef.current = socket;
 
     return () => {
+      // CRITICAL: Remove all listeners before disconnecting to prevent memory leaks
+      socket.off('connect', handleConnect);
+      socket.off('transcription', handleTranscription);
+      socket.off('error', handleError);
+      socket.off('connect_error', handleConnectError);
       socket.disconnect();
       stopListening();
     };

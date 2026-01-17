@@ -10,7 +10,8 @@ function GenreSlider({
   threshold = null,  // Optional threshold marker (e.g., { value: 61, label: 'Venice.ai', icon: '🔓' })
   showProvider = false,  // Show which provider will be used
   animating = false,  // If true, slider is being auto-configured
-  autoSelected = false  // If true, this value was set by AI
+  autoSelected = false,  // If true, this value was set by AI
+  description = null  // Optional description shown below the slider
 }) {
   const [showTooltip, setShowTooltip] = useState(false);
   const [displayValue, setDisplayValue] = useState(value);
@@ -200,6 +201,11 @@ function GenreSlider({
             : `${threshold.value - displayValue}% more to enable uncensored AI`
           }
         </p>
+      )}
+
+      {/* Optional description text */}
+      {description && !threshold && (
+        <p className="text-xs text-slate-500">{description}</p>
       )}
     </div>
   );

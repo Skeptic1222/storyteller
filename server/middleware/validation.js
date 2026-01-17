@@ -10,6 +10,7 @@
 import { z } from 'zod';
 import sanitizeHtml from 'sanitize-html';
 import { ValidationError } from './errorHandler.js';
+import { logger } from '../utils/logger.js';
 
 // UUID v4 regex pattern
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -258,7 +259,7 @@ export const schemas = {
 
   // Story start
   storyStart: z.object({
-    mode: z.enum(['storytime', 'advanced', 'quick', 'cyoa', 'conversation', 'campaign']).default('storytime'),
+    mode: z.enum(['storytime', 'advanced', 'quick', 'cyoa', 'conversation']).default('storytime'),
     config: z.object({
       genre: z.string().max(100).optional(),
       themes: z.array(z.string().max(50)).max(10).optional(),
@@ -273,7 +274,7 @@ export const schemas = {
       autoplay: z.boolean().optional(),
       bedtime_mode: z.boolean().optional(),
       cyoa_enabled: z.boolean().optional(),
-      custom_prompt: z.string().max(2000).optional()
+      custom_prompt: z.string().optional()
     }).passthrough().default({}),
     cyoa_enabled: z.boolean().default(false),
     bedtime_mode: z.boolean().default(false),
@@ -326,7 +327,7 @@ export const schemas = {
 
   // Smart interpret
   smartInterpret: z.object({
-    prompt: z.string().min(1).max(2000),
+    prompt: z.string().min(1),
     context: z.any().optional()
   }),
 
@@ -344,14 +345,8 @@ export const schemas = {
     session_id: uuidSchema,
     is_public: z.boolean().default(false),
     allow_comments: z.boolean().default(true)
-  }),
-
-  // D&D dice roll
-  diceRoll: z.object({
-    dice: z.string().regex(/^\d+d\d+([+-]\d+)?$/, 'Invalid dice notation'),
-    advantage: z.boolean().optional(),
-    disadvantage: z.boolean().optional()
   })
+  // NOTE: D&D diceRoll schema removed (2026-01-15) - not needed for general storytelling
 };
 
 // =============================================================================
@@ -364,10 +359,25 @@ export const schemas = {
 export function validateBody(schema) {
   return (req, res, next) => {
     try {
+      // SECURITY: Only log validation details in development (never log full request bodies)
+      const NODE_ENV = process.env.NODE_ENV || 'development';
+      if (NODE_ENV === 'development') {
+        logger.debug('[VALIDATION] Validating request body');
+      }
+
+      // Check for null values in config object (warning only in dev)
+      if (NODE_ENV === 'development' && req.body?.config) {
+        const nullKeys = Object.keys(req.body.config).filter(key => req.body.config[key] === null);
+        if (nullKeys.length > 0) {
+          logger.debug('[VALIDATION] Null values in config:', nullKeys);
+        }
+      }
+
       req.body = schema.parse(req.body);
       next();
     } catch (error) {
       if (error instanceof z.ZodError) {
+        logger.warn('[VALIDATION] Validation failed:', error.errors.map(e => e.path.join('.')));
         const details = error.errors.map(e => ({
           field: e.path.join('.'),
           message: e.message

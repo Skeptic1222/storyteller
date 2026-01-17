@@ -60,9 +60,11 @@ const server = http.createServer(app);
 app.set('trust proxy', 1);
 
 // Socket.IO setup - listen on both /socket.io and /storyteller/socket.io for IIS compatibility
+// SECURITY: Never use wildcard '*' for CORS - always use explicit allowed origins
+const SOCKET_ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost', 'http://localhost:5100'];
 const socketOptions = {
   cors: {
-    origin: process.env.ALLOWED_ORIGINS?.split(',') || '*',
+    origin: SOCKET_ALLOWED_ORIGINS,
     methods: ['GET', 'POST'],
     credentials: true  // Required for withCredentials: true on client
   },
@@ -88,6 +90,9 @@ const io = new SocketIO(server, {
   path: '/socket.io',
   ...socketOptions
 });
+
+// Expose io globally for routes that need to emit events (e.g., story-bible.js)
+global.io = io;
 
 // Secondary socket path (IIS reverse proxy access)
 const ioPrefixed = new SocketIO(server, {
@@ -211,10 +216,28 @@ setInterval(() => {
 // MIDDLEWARE
 // =============================================================================
 
-// Security headers
+// Security headers - SECURITY: Enable proper protection
 app.use(helmet({
-  contentSecurityPolicy: false, // Disable for development
-  crossOriginEmbedderPolicy: false
+  contentSecurityPolicy: NODE_ENV === 'production' ? {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", "https://accounts.google.com", "https://apis.google.com"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com", "https://accounts.google.com"],
+      fontSrc: ["'self'", "https://fonts.gstatic.com"],
+      imgSrc: ["'self'", "data:", "blob:", "https:", "http://localhost"],
+      connectSrc: ["'self'", "https://api.openai.com", "https://api.elevenlabs.io", "https://api.venice.ai", "https://accounts.google.com", "wss:", "ws:"],
+      mediaSrc: ["'self'", "blob:", "data:"],
+      frameSrc: ["'self'", "https://accounts.google.com"],
+      objectSrc: ["'none'"],
+      baseUri: ["'self'"]
+    }
+  } : false,
+  crossOriginEmbedderPolicy: false,
+  crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' }, // Required for Google OAuth popup
+  referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+  hsts: NODE_ENV === 'production' ? { maxAge: 31536000, includeSubDomains: true } : false,
+  noSniff: true,
+  xssFilter: true
 }));
 
 // CORS
@@ -272,7 +295,8 @@ app.use((req, res, next) => {
     res.set('Expires', '0');
   }
   // Long cache for hashed assets (Vite adds content hashes like main-abc123.js)
-  else if (path.match(/\.(js|css)$/) && path.match(/-[a-f0-9]{8}\./)) {
+  // Fixed regex to match Vite's hash format with uppercase letters, underscores: index-B_Qu0yvC.js
+  else if (path.match(/\.(js|css)$/) && path.match(/-[A-Za-z0-9_-]{8,}\./)) {
     res.set('Cache-Control', 'public, max-age=31536000, immutable');
   }
   // Short cache for other static assets

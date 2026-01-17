@@ -29,23 +29,31 @@ export function useOfflineMode() {
 
   // Register service worker
   useEffect(() => {
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker
-        .register('/storyteller/sw.js')
-        .then((registration) => {
-          console.log('[OfflineMode] Service Worker registered');
-          setSwRegistration(registration);
-          setSwReady(true);
-        })
-        .catch((error) => {
-          console.error('[OfflineMode] SW registration failed:', error);
-        });
+    if (!('serviceWorker' in navigator)) return;
 
-      // Listen for updates
-      navigator.serviceWorker.addEventListener('controllerchange', () => {
-        console.log('[OfflineMode] New Service Worker active');
+    // MEMORY LEAK FIX: Define handler so we can remove it in cleanup
+    const handleControllerChange = () => {
+      console.log('[OfflineMode] New Service Worker active');
+    };
+
+    navigator.serviceWorker
+      .register('/storyteller/sw.js')
+      .then((registration) => {
+        console.log('[OfflineMode] Service Worker registered');
+        setSwRegistration(registration);
+        setSwReady(true);
+      })
+      .catch((error) => {
+        console.error('[OfflineMode] SW registration failed:', error);
       });
-    }
+
+    // Listen for updates
+    navigator.serviceWorker.addEventListener('controllerchange', handleControllerChange);
+
+    // Cleanup: Remove listener on unmount
+    return () => {
+      navigator.serviceWorker.removeEventListener('controllerchange', handleControllerChange);
+    };
   }, []);
 
   // Send message to service worker
@@ -57,7 +65,15 @@ export function useOfflineMode() {
       }
 
       const messageChannel = new MessageChannel();
+      // MEMORY LEAK FIX: Set timeout to close port if no response
+      const timeoutId = setTimeout(() => {
+        messageChannel.port1.close();
+        resolve({ success: false, error: 'Service Worker timeout' });
+      }, 10000); // 10 second timeout
+
       messageChannel.port1.onmessage = (event) => {
+        clearTimeout(timeoutId);
+        messageChannel.port1.close(); // Close port after receiving message
         resolve(event.data);
       };
 

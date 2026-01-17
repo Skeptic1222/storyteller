@@ -25,7 +25,10 @@ const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '').split(',').map(e => e.trim().toLowerCase());
 
 const googleClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
-const DEV_LOGIN_ENABLED = process.env.DEV_LOGIN_ENABLED === 'true';
+
+// SECURITY: Dev login ONLY allowed in development environment
+const NODE_ENV = process.env.NODE_ENV || 'development';
+const DEV_LOGIN_ENABLED = NODE_ENV === 'development' && process.env.DEV_LOGIN_ENABLED === 'true';
 const DEV_LOGIN_TOKEN = process.env.DEV_LOGIN_TOKEN;
 const DEV_LOGIN_EMAIL = (process.env.DEV_LOGIN_EMAIL || 'dev@storyteller.local').toLowerCase();
 const DEV_LOGIN_NAME = process.env.DEV_LOGIN_NAME || 'Developer';

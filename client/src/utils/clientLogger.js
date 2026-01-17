@@ -8,29 +8,57 @@
 let socketRef = null;
 let pendingLogs = [];
 let isConnected = false;
+let isInitialized = false;
+
+// Named handler functions for proper cleanup
+function handleConnect() {
+  isConnected = true;
+  // Flush any pending logs
+  if (pendingLogs.length > 0) {
+    pendingLogs.forEach(log => sendLog(log));
+    pendingLogs = [];
+  }
+}
+
+function handleDisconnect() {
+  isConnected = false;
+}
 
 /**
  * Initialize the logger with a socket connection
  * @param {Socket} socket - Socket.IO socket instance
+ * @returns {Function} Cleanup function to remove listeners
  */
 export function initClientLogger(socket) {
+  // Clean up previous socket listeners if reinitializing
+  if (socketRef && isInitialized) {
+    socketRef.off('connect', handleConnect);
+    socketRef.off('disconnect', handleDisconnect);
+  }
+
   socketRef = socket;
   isConnected = socket?.connected || false;
+  isInitialized = false;
 
   if (socket) {
-    socket.on('connect', () => {
-      isConnected = true;
-      // Flush any pending logs
-      if (pendingLogs.length > 0) {
-        pendingLogs.forEach(log => sendLog(log));
-        pendingLogs = [];
-      }
-    });
+    // Remove any existing listeners to prevent duplicates
+    socket.off('connect', handleConnect);
+    socket.off('disconnect', handleDisconnect);
 
-    socket.on('disconnect', () => {
-      isConnected = false;
-    });
+    // Add fresh listeners
+    socket.on('connect', handleConnect);
+    socket.on('disconnect', handleDisconnect);
+    isInitialized = true;
   }
+
+  // Return cleanup function
+  return () => {
+    if (socket) {
+      socket.off('connect', handleConnect);
+      socket.off('disconnect', handleDisconnect);
+    }
+    isInitialized = false;
+  };
 }
 
 /**

@@ -10,22 +10,11 @@
  * 2. Stage Detail Events (voice-*, sfx-*, cover-*, qa-*, safety-*)
  */
 
-/**
- * STAGE CONSTANTS
- */
-export const STAGES = {
-  VOICES: 'voices',
-  SFX: 'sfx',
-  COVER: 'cover',
-  QA: 'qa'
-};
+// Import stage constants from single source of truth
+import { STAGES, STAGE_STATUS } from '../constants/stages.js';
 
-export const STAGE_STATUS = {
-  PENDING: 'pending',
-  IN_PROGRESS: 'in_progress',
-  SUCCESS: 'success',
-  ERROR: 'error'
-};
+// Re-export for backwards compatibility
+export { STAGES, STAGE_STATUS };
 
 /**
  * EVENT: launch-sequence-started

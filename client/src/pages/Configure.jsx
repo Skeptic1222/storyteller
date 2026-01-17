@@ -60,7 +60,9 @@ function Configure() {
       scary: 30,
       romance: 10,
       language: 10,
-      adultContent: 0  // Nudity/sexual content (50+ triggers Venice.ai)
+      adultContent: 0,     // Overall adult content level (50+ triggers Venice.ai)
+      sensuality: 0,       // Suggestive content, flirtation, tension (mature only)
+      explicitness: 0      // How graphic intimate scenes are (mature only)
     },
 
     // Audience Level
@@ -187,9 +189,20 @@ function Configure() {
   };
 
   useEffect(() => {
-    fetchDefaults();
-    fetchTemplates();
-    fetchStoryBibleOutlines();
+    let isMounted = true;
+
+    const loadInitialData = async () => {
+      await Promise.all([
+        fetchDefaults(),
+        fetchTemplates(),
+        fetchStoryBibleOutlines(isMounted)
+      ]);
+    };
+    loadInitialData();
+
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   const fetchDefaults = async () => {
@@ -219,11 +232,11 @@ function Configure() {
   };
 
   // Fetch outlines from Story Bible
-  const fetchStoryBibleOutlines = async () => {
+  const fetchStoryBibleOutlines = async (isMounted = true) => {
     try {
       // First get all libraries
       const librariesResponse = await apiCall('/story-bible/libraries');
-      if (!librariesResponse.ok) return;
+      if (!librariesResponse.ok || !isMounted) return;
 
       const librariesData = await librariesResponse.json();
       if (!librariesData.libraries || librariesData.libraries.length === 0) return;
@@ -231,6 +244,9 @@ function Configure() {
       // For each library, fetch synopses with outlines
       const outlinesWithLibrary = [];
       for (const library of librariesData.libraries) {
+        // Check if component is still mounted before each API call
+        if (!isMounted) return;
+
         const synopsesResponse = await apiCall(`/story-bible/libraries/${library.id}/synopsis`);
         if (synopsesResponse.ok) {
           const synopsesData = await synopsesResponse.json();
@@ -250,7 +266,10 @@ function Configure() {
         }
       }
 
-      setStoryBibleOutlines(outlinesWithLibrary);
+      // Only update state if component is still mounted
+      if (isMounted) {
+        setStoryBibleOutlines(outlinesWithLibrary);
+      }
     } catch (error) {
       console.error('Failed to fetch Story Bible outlines:', error);
     }
@@ -515,16 +534,18 @@ function Configure() {
               newConfig.character_count = data.suggestedConfig.character_count;
             }
 
-            // Narrator voice - apply recommended voice if auto-select enabled
-            if (autoSelect.narrator_voice && data.suggestedConfig.recommended_voice?.voice_id) {
+            // Narrator voice - apply recommended voice if auto-select enabled AND user hasn't manually selected a voice
+            // This respects explicit user selection over AI recommendation
+            if (autoSelect.narrator_voice && data.suggestedConfig.recommended_voice?.voice_id && !selectedVoice) {
               newConfig.voice_id = data.suggestedConfig.recommended_voice.voice_id;
             }
 
             return newConfig;
           });
 
-          // Also update selectedVoice state for VoiceSelector component
-          if (autoSelect.narrator_voice && data.suggestedConfig.recommended_voice?.voice_id) {
+          // Also update selectedVoice state for VoiceSelector component (only if user hasn't manually selected)
+          // This prevents autoSelect from overwriting explicit user voice selections
+          if (autoSelect.narrator_voice && data.suggestedConfig.recommended_voice?.voice_id && !selectedVoice) {
             setSelectedVoice({
               voice_id: data.suggestedConfig.recommended_voice.voice_id,
               name: data.suggestedConfig.recommended_voice.name,
@@ -635,7 +656,9 @@ function Configure() {
           scary: Math.min(prev.intensity.scary, 15),
           romance: 0,
           language: 0,
-          adultContent: 0
+          adultContent: 0,
+          sensuality: 0,
+          explicitness: 0
         };
         newConfig.genres = {
           ...prev.genres,
@@ -647,22 +670,35 @@ function Configure() {
         newConfig.intensity = {
           ...prev.intensity,
           gore: 0,
-          adultContent: 0
+          adultContent: 0,
+          sensuality: 0,
+          explicitness: 0
         };
       } else if (audience === 'mature') {
-        // Allow higher limits
+        // Allow higher limits and preserve mature-specific settings
         newConfig.intensity = {
           violence: Math.max(prev.intensity.violence, 30),
           gore: prev.intensity.gore,
           scary: prev.intensity.scary,
           romance: prev.intensity.romance,
           language: prev.intensity.language,
-          adultContent: prev.intensity.adultContent || 0
+          adultContent: prev.intensity.adultContent || 0,
+          sensuality: prev.intensity.sensuality || 0,
+          explicitness: prev.intensity.explicitness || 0
         };
       }
 
       return newConfig;
     });
+
+    // P1 FIX (Issues 20-21): Auto-show advanced content sliders for mature audience
+    // This ensures adult content sliders are visible by default when Mature is selected
+    if (audience === 'mature') {
+      setShowAdvanced(true);
+    } else if (audience === 'children') {
+      // Hide advanced sliders for children (not applicable anyway)
+      setShowAdvanced(false);
+    }
   };
 
   const startStory = async () => {
@@ -679,6 +715,22 @@ function Configure() {
         // Narrator style settings for ElevenLabs
         narratorStyleSettings: getNarratorStyleSettings(config.narrator_style)
       };
+
+      // Remove null/undefined values that don't pass Zod schema validation
+      // Schema uses .optional() which only accepts undefined, not null
+      const nullKeys = Object.keys(fullConfig).filter(key => fullConfig[key] === null);
+      console.log('[CONFIG NULL CLEANUP] Keys with null values BEFORE cleanup:', nullKeys);
+      console.log('[CONFIG NULL CLEANUP] Full config BEFORE cleanup:', JSON.stringify(fullConfig, null, 2));
+
+      Object.keys(fullConfig).forEach(key => {
+        if (fullConfig[key] === null) {
+          delete fullConfig[key];
+        }
+      });
+
+      console.log('[CONFIG NULL CLEANUP] Keys with null values AFTER cleanup:',
+        Object.keys(fullConfig).filter(key => fullConfig[key] === null));
+      console.log('[CONFIG NULL CLEANUP] Full config AFTER cleanup:', JSON.stringify(fullConfig, null, 2));
 
       // ========== COMPREHENSIVE CONFIG DEBUG LOGGING (to server) ==========
       configLog.info('START_STORY | beginning config capture');
@@ -710,13 +762,18 @@ function Configure() {
 
       // Create session if we don't have one
       if (!targetSessionId) {
+        console.log('[API REQUEST] Sending to /stories/start:', JSON.stringify(requestBody, null, 2));
+
         const response = await apiCall('/stories/start', {
           method: 'POST',
           body: JSON.stringify(requestBody)
         });
 
+        console.log('[API RESPONSE] Status:', response.status, response.statusText);
+
         if (!response.ok) {
           const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+          console.error('[API VALIDATION ERROR] Error data:', errorData);
           const errorMessage = errorData.error?.message || errorData.error || errorData.message || response.statusText;
           const details = errorData.error?.details || [];
           const detailsText = details.length > 0
@@ -725,6 +782,7 @@ function Configure() {
           throw new Error(`Failed to create session: ${errorMessage}${detailsText}`);
         }
         const data = await response.json();
+        console.log('[API RESPONSE] Success data:', data);
         targetSessionId = data.session_id;
       } else {
         // Update existing session config
@@ -1015,7 +1073,10 @@ function Configure() {
                 <>
                   <div className="font-medium mb-1">Settings auto-configured!</div>
                   <ul className="text-xs space-y-1 text-slate-300">
-                    {analysisResult.reasoning.map((reason, i) => (
+                    {(Array.isArray(analysisResult.reasoning)
+                      ? analysisResult.reasoning
+                      : (analysisResult.reasoning || '').split('\n').filter(Boolean)
+                    ).map((reason, i) => (
                       <li key={i}>• {reason}</li>
                     ))}
                   </ul>
@@ -1563,17 +1624,46 @@ function Configure() {
                 />
 
                 {config.audience === 'mature' && (
-                  <GenreSlider
-                    label="Adult Content"
-                    icon="🔞"
-                    value={config.intensity.adultContent}
-                    onChange={(v) => updateIntensity('adultContent', v)}
-                    max={100}
-                    colorClass="from-rose-400 to-fuchsia-600"
-                    threshold={PROVIDER_THRESHOLDS.adultContent}
-                    showProvider={true}
-                    animating={animatingSections.intensity}
-                  />
+                  <>
+                    <GenreSlider
+                      label="Adult Content"
+                      icon="🔞"
+                      value={config.intensity.adultContent}
+                      onChange={(v) => updateIntensity('adultContent', v)}
+                      max={100}
+                      colorClass="from-rose-400 to-fuchsia-600"
+                      threshold={PROVIDER_THRESHOLDS.adultContent}
+                      showProvider={true}
+                      animating={animatingSections.intensity}
+                    />
+
+                    {/* P1 FIX (Issue 21): Additional sliders for sexual content granularity */}
+                    <GenreSlider
+                      label="Sensuality"
+                      icon="💫"
+                      value={config.intensity.sensuality}
+                      onChange={(v) => updateIntensity('sensuality', v)}
+                      max={100}
+                      colorClass="from-pink-300 to-pink-500"
+                      threshold={PROVIDER_THRESHOLDS.sensuality}
+                      showProvider={true}
+                      description="Flirtation, tension, suggestive content"
+                      animating={animatingSections.intensity}
+                    />
+
+                    <GenreSlider
+                      label="Explicitness"
+                      icon="🔥"
+                      value={config.intensity.explicitness}
+                      onChange={(v) => updateIntensity('explicitness', v)}
+                      max={100}
+                      colorClass="from-orange-400 to-red-600"
+                      threshold={PROVIDER_THRESHOLDS.explicitness}
+                      showProvider={true}
+                      description="How graphic intimate scenes are described"
+                      animating={animatingSections.intensity}
+                    />
+                  </>
                 )}
               </>
             )}
@@ -1778,6 +1868,105 @@ function Configure() {
               </div>
             </div>
           )}
+        </section>
+
+        {/* Text Layout & Display Settings */}
+        <section>
+          <div className="p-4 bg-slate-800/30 rounded-xl border border-slate-600/50 space-y-4">
+            <h3 className="text-slate-200 text-sm font-medium flex items-center gap-2">
+              <FileText className="w-4 h-4 text-blue-400" />
+              Text Display
+            </h3>
+
+            {/* Show Text Toggle */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="flex items-center gap-2 text-slate-200 text-sm">
+                    <FileText className="w-4 h-4 text-blue-400" />
+                    Display Text While Narrating
+                  </div>
+                  <div className="text-slate-400 text-sm">Show story text on screen during playback</div>
+                </div>
+              </div>
+              <AccessibleToggle
+                enabled={config.show_text !== false}
+                onChange={(value) => setConfig(prev => ({ ...prev, show_text: value }))}
+                label="Display Text"
+                colorOn="bg-blue-400"
+                size="large"
+                showLabel={true}
+              />
+            </div>
+
+            {/* Text Size */}
+            <div className="space-y-2">
+              <label className="text-slate-300 text-xs block">
+                Font Size: <span className="text-blue-400 font-medium">{config.fontSize || 18}px</span>
+              </label>
+              <input
+                type="range"
+                min="12"
+                max="28"
+                step="1"
+                value={config.fontSize || 18}
+                onChange={(e) => setConfig(prev => ({ ...prev, fontSize: parseInt(e.target.value, 10) }))}
+                className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-400"
+              />
+              <div className="flex justify-between text-xs text-slate-500">
+                <span>Compact</span>
+                <span>Large</span>
+              </div>
+            </div>
+
+            {/* Text Layout */}
+            {config.show_text !== false && (
+              <div className="space-y-2">
+                <label className="text-slate-300 text-xs block">Layout</label>
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { id: 'vertical', name: 'Vertical', desc: 'Single column' },
+                    { id: 'horizontal', name: 'Columns', desc: 'Two columns' },
+                    { id: 'modal', name: 'Modal', desc: 'One paragraph' }
+                  ].map(layout => (
+                    <button
+                      key={layout.id}
+                      onClick={() => setConfig(prev => ({ ...prev, text_layout: layout.id }))}
+                      className={`py-2 px-3 rounded-lg text-xs transition-all ${
+                        (config.text_layout || 'vertical') === layout.id
+                          ? 'bg-blue-500/30 border-2 border-blue-400 text-blue-300'
+                          : 'bg-slate-700/50 border border-slate-600 text-slate-400 hover:border-slate-500'
+                      }`}
+                    >
+                      <div className="font-medium">{layout.name}</div>
+                      <div className="text-[10px] opacity-70 mt-0.5">{layout.desc}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Karaoke/Word Highlighting */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="flex items-center gap-2 text-slate-200 text-sm">
+                    <Zap className="w-4 h-4 text-blue-400" />
+                    Word-by-Word Highlighting
+                  </div>
+                  <div className="text-slate-400 text-sm">Highlight text as it's narrated (karaoke-style)</div>
+                </div>
+              </div>
+              <AccessibleToggle
+                enabled={config.karaoke_enabled !== false}
+                onChange={(value) => setConfig(prev => ({ ...prev, karaoke_enabled: value }))}
+                label="Karaoke Mode"
+                colorOn="bg-blue-400"
+                size="large"
+                showLabel={true}
+              />
+            </div>
+          </div>
         </section>
 
         {/* CYOA Settings - show when Adventure story type is selected */}
