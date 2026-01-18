@@ -13,6 +13,219 @@
 import { logger } from '../../utils/logger.js';
 
 /**
+ * =============================================================================
+ * GRANULAR INTENSITY MAPPING (Phase 5C)
+ *
+ * Key insight: "81% violence must mean MORE than 80%" - each percentage matters.
+ * This system converts percentage values to precise, granular instructions.
+ * =============================================================================
+ */
+
+/**
+ * Granular Violence Intensity Mapping
+ * Each tier has a base description, and increments within the tier add modifiers.
+ */
+const VIOLENCE_TIERS = [
+  { max: 10, base: 'minimal conflict, no physical harm shown', modifiers: [] },
+  { max: 20, base: 'mild tension with implied threat', modifiers: ['minor pushing or shoving', 'raised voices and posturing'] },
+  { max: 30, base: 'cartoon-style violence without consequences', modifiers: ['slaps and shoves', 'pratfall humor', 'comical impacts'] },
+  { max: 40, base: 'action violence with minimal harm', modifiers: ['fistfights without blood', 'chase sequences', 'property damage'] },
+  { max: 50, base: 'moderate combat with visible consequences', modifiers: ['bruises and minor cuts', 'exhaustion from fighting', 'tactical violence'] },
+  { max: 60, base: 'intense action with real stakes', modifiers: ['weapons used in combat', 'characters get hurt', 'blood is visible'] },
+  { max: 70, base: 'graphic violence with lasting impact', modifiers: ['painful injuries described', 'characters suffer', 'violence has weight'] },
+  { max: 80, base: 'brutal combat with visceral detail', modifiers: ['bones break audibly', 'blood sprays', 'wounds described in detail'] },
+  { max: 90, base: 'extreme violence approaching torture', modifiers: ['prolonged suffering', 'graphic mutilation', 'psychological horror of violence'] },
+  { max: 100, base: 'maximum violence - war crime level', modifiers: ['surgical detail of harm', 'death throes', 'unflinching brutality'] }
+];
+
+const GORE_TIERS = [
+  { max: 10, base: 'no blood or injury visible', modifiers: [] },
+  { max: 20, base: 'paper cuts and stubbed toes', modifiers: ['tiny drops of blood', 'minor scrapes'] },
+  { max: 30, base: 'small wounds and scratches', modifiers: ['nosebleeds', 'scraped knees', 'minor cuts'] },
+  { max: 40, base: 'visible blood from injuries', modifiers: ['bleeding wounds', 'bruising patterns', 'swelling'] },
+  { max: 50, base: 'moderately graphic injuries', modifiers: ['deep cuts described', 'blood pooling', 'visible tissue damage'] },
+  { max: 60, base: 'graphic wound descriptions', modifiers: ['bone visible through wounds', 'arterial spray', 'organ exposure hints'] },
+  { max: 70, base: 'detailed anatomical damage', modifiers: ['internal organs mentioned', 'severed digits', 'surgical-level detail'] },
+  { max: 80, base: 'extreme body horror', modifiers: ['evisceration', 'compound fractures', 'visceral descriptions'] },
+  { max: 90, base: 'torture-porn level gore', modifiers: ['prolonged mutilation', 'body desecration', 'horror-focused carnage'] },
+  { max: 100, base: 'maximum possible gore', modifiers: ['anatomical treatise of destruction', 'every wound in medical detail', 'body horror maximized'] }
+];
+
+const ROMANCE_TIERS = [
+  { max: 10, base: 'friendship and platonic warmth', modifiers: [] },
+  { max: 20, base: 'shy glances and blushing', modifiers: ['hand-brushing', 'lingering looks', 'nervous energy'] },
+  { max: 30, base: 'obvious attraction and flirting', modifiers: ['hand-holding', 'light touches', 'declarations of interest'] },
+  { max: 40, base: 'romantic tension building', modifiers: ['first kiss territory', 'intimate conversations', 'emotional vulnerability'] },
+  { max: 50, base: 'passionate romantic content', modifiers: ['make-out sessions', 'heated embraces', 'strong desire shown'] },
+  { max: 60, base: 'steamy romantic scenes', modifiers: ['clothes being removed', 'physical desire explicit', 'fade-to-black moment'] },
+  { max: 70, base: 'explicit romantic content', modifiers: ['intimate acts described', 'sensual language', 'physical passion detailed'] },
+  { max: 80, base: 'very explicit sexual content', modifiers: ['anatomical terms used', 'sexual acts described directly', 'graphic passion'] },
+  { max: 90, base: 'hardcore sexual content', modifiers: ['multiple positions/acts', 'fetish content acceptable', 'prolonged explicit scenes'] },
+  { max: 100, base: 'maximum explicit content', modifiers: ['no restrictions on sexual content', 'every act described in detail', 'pornographic prose'] }
+];
+
+const ADULT_TIERS = [
+  { max: 10, base: 'family-friendly content only', modifiers: [] },
+  { max: 20, base: 'mild innuendo acceptable', modifiers: ['double entendres', 'subtle adult humor', 'implied situations'] },
+  { max: 30, base: 'PG-13 level adult themes', modifiers: ['referenced sexual situations', 'mature topics discussed', 'adult awareness'] },
+  { max: 40, base: 'R-rated content allowed', modifiers: ['sexual situations shown briefly', 'adult themes explored', 'mature content'] },
+  { max: 50, base: 'explicit adult content', modifiers: ['sex scenes included', 'nudity described', 'adult themes central'] },
+  { max: 60, base: 'strongly explicit content', modifiers: ['detailed sexual encounters', 'graphic descriptions', 'adult focus'] },
+  { max: 70, base: 'very explicit adult content', modifiers: ['anatomical descriptions', 'prolonged sexual scenes', 'hardcore content'] },
+  { max: 80, base: 'extremely explicit content', modifiers: ['no limits on sexual content', 'graphic detail throughout', 'maximally adult'] },
+  { max: 90, base: 'hardcore explicit content', modifiers: ['multiple explicit scenes', 'taboo themes acceptable', 'extreme content'] },
+  { max: 100, base: 'maximum adult content - no restrictions', modifiers: ['everything explicit', 'pornographic detail', 'no limits whatsoever'] }
+];
+
+const LANGUAGE_TIERS = [
+  { max: 10, base: 'completely clean language', modifiers: [] },
+  { max: 20, base: 'mild expressions only', modifiers: ['darn', 'heck', 'shoot'] },
+  { max: 30, base: 'PG-level mild cursing', modifiers: ['damn', 'hell', 'crap'] },
+  { max: 40, base: 'moderate profanity', modifiers: ['occasional strong words', 'ass', 'bastard'] },
+  { max: 50, base: 'regular strong language', modifiers: ['shit', 'bitch', 'frequent cursing'] },
+  { max: 60, base: 'heavy profanity', modifiers: ['F-words used', 'crude expressions', 'vulgar language'] },
+  { max: 70, base: 'very strong language', modifiers: ['constant profanity', 'crude sexual terms', 'slurs in character'] },
+  { max: 80, base: 'extremely crude language', modifiers: ['maximum profanity', 'shock-value language', 'no limits'] },
+  { max: 90, base: 'maximally vulgar speech', modifiers: ['every crude term', 'constant f-bombs', 'linguistic assault'] },
+  { max: 100, base: 'unrestricted language', modifiers: ['profanity in every sentence', 'all slurs included', 'maximum crudity'] }
+];
+
+const SCARY_TIERS = [
+  { max: 10, base: 'gentle tension only, no scares', modifiers: [] },
+  { max: 20, base: 'mildly spooky atmosphere', modifiers: ['creaky doors', 'shadows', 'slight unease'] },
+  { max: 30, base: 'kid-friendly scares', modifiers: ['jump-scare moments', 'monster appearances', 'thrilling chase'] },
+  { max: 40, base: 'genuinely creepy moments', modifiers: ['dread building', 'unsettling imagery', 'unease throughout'] },
+  { max: 50, base: 'sustained horror atmosphere', modifiers: ['constant tension', 'disturbing reveals', 'psychological fear'] },
+  { max: 60, base: 'scary with disturbing elements', modifiers: ['nightmare imagery', 'existential dread', 'visceral fear'] },
+  { max: 70, base: 'intense horror throughout', modifiers: ['terror-inducing scenes', 'deeply unsettling', 'horror focus'] },
+  { max: 80, base: 'extreme horror content', modifiers: ['psychological trauma', 'relentless dread', 'nightmare fuel'] },
+  { max: 90, base: 'maximum horror intensity', modifiers: ['cosmic horror level', 'sanity-breaking', 'pure terror'] },
+  { max: 100, base: 'traumatizing horror', modifiers: ['reader nightmares expected', 'maximum disturbing', 'unforgettable horror'] }
+];
+
+const EXPLICITNESS_TIERS = [
+  { max: 10, base: 'completely clean, family-safe content', modifiers: [] },
+  { max: 20, base: 'mild innuendo, implied situations', modifiers: ['double meanings', 'subtle adult awareness'] },
+  { max: 30, base: 'fade-to-black, suggestive but not shown', modifiers: ['morning-after scenes', 'implied intimacy', 'tasteful suggestion'] },
+  { max: 40, base: 'PG-13 sensual content, limited detail', modifiers: ['kissing described', 'attraction noted', 'romantic tension'] },
+  { max: 50, base: 'R-rated content, moderate explicit detail', modifiers: ['undressing described', 'physical arousal', 'intimate touching'] },
+  { max: 60, base: 'explicit sexual content, clear descriptions', modifiers: ['acts named directly', 'bodies described', 'sensations detailed'] },
+  { max: 70, base: 'graphic sexual content, anatomical terms', modifiers: ['specific body parts', 'detailed actions', 'nothing implied'] },
+  { max: 80, base: 'very graphic, prolonged explicit scenes', modifiers: ['extended encounters', 'multiple positions', 'visceral detail'] },
+  { max: 90, base: 'hardcore explicit, pornographic prose', modifiers: ['maximum detail', 'fetish content', 'taboo exploration'] },
+  { max: 100, base: 'maximum explicitness - erotica focus', modifiers: ['every sensation described', 'no limits', 'literary pornography'] }
+];
+
+const BLEAKNESS_TIERS = [
+  { max: 12, base: 'pure sunshine - guaranteed happy ending', modifiers: ['Disney-level optimism', 'love conquers all', 'friends solve everything'] },
+  { max: 24, base: 'hopeful throughout with minor setbacks', modifiers: ['temporary darkness', 'hope always visible', 'redemption certain'] },
+  { max: 37, base: 'bittersweet - joy and sorrow balanced', modifiers: ['loss with growth', 'hard-won victories', 'meaningful sacrifice'] },
+  { max: 50, base: 'realistic - life is complicated', modifiers: ['ambiguous morality', 'partial victories', 'some things lost forever'] },
+  { max: 62, base: 'dark - pyrrhic victories, major tragedy', modifiers: ['beloved characters die', 'victories feel hollow', 'grief central'] },
+  { max: 75, base: 'grimdark lite - hope is rare and costly', modifiers: ['brutal world', 'survival over thriving', 'darkness encroaching'] },
+  { max: 87, base: 'grimdark - existential despair pervades', modifiers: ['everyone suffers', 'futility theme', 'Cormac McCarthy vibes'] },
+  { max: 100, base: 'cosmic nihilism - no hope exists', modifiers: ['universe is hostile', 'meaning is illusion', 'Thomas Ligotti territory'] }
+];
+
+const SEXUALVIOLENCE_TIERS = [
+  { max: 10, base: 'topic completely absent from story', modifiers: [] },
+  { max: 20, base: 'referenced only in backstory, never depicted', modifiers: ['survivor narrative', 'past trauma mentioned'] },
+  { max: 30, base: 'non-graphic mentions, implied threat', modifiers: ['threat established', 'danger sensed', 'Law & Order handling'] },
+  { max: 40, base: 'attempted assault, interrupted or prevented', modifiers: ['close call', 'rescue scene', 'tension without completion'] },
+  { max: 50, base: 'assault occurs off-page, aftermath explored', modifiers: ['fade to black', 'emotional aftermath', 'recovery focus'] },
+  { max: 60, base: 'on-page assault, not gratuitous', modifiers: ['restrained depiction', 'victim perspective', 'The Accused handling'] },
+  { max: 70, base: 'detailed assault scenes', modifiers: ['exploitation territory', 'graphic but purposeful', 'disturbing content'] },
+  { max: 80, base: 'graphic assault content', modifiers: ['extreme exploitation', 'multiple instances', 'brutal depiction'] },
+  { max: 90, base: 'extreme graphic assault', modifiers: ['torture combined', 'A Serbian Film territory', 'maximally disturbing'] },
+  { max: 100, base: 'maximum graphic assault - no limits', modifiers: ['everything depicted', 'no restrictions', 'extreme content'] }
+];
+
+/**
+ * Get granular intensity instruction for a dimension at a specific percentage
+ *
+ * @param {string} dimension - The intensity dimension (violence, gore, etc.)
+ * @param {number} level - The percentage (0-100)
+ * @returns {string} Precise instruction for this exact intensity level
+ */
+export function getGranularIntensityInstruction(dimension, level) {
+  const tierMaps = {
+    violence: VIOLENCE_TIERS,
+    gore: GORE_TIERS,
+    romance: ROMANCE_TIERS,
+    adultContent: ADULT_TIERS,
+    adult_content: ADULT_TIERS,
+    sensuality: ROMANCE_TIERS, // Use romance tiers as base
+    explicitness: EXPLICITNESS_TIERS,
+    language: LANGUAGE_TIERS,
+    scary: SCARY_TIERS,
+    bleakness: BLEAKNESS_TIERS,
+    sexualViolence: SEXUALVIOLENCE_TIERS
+  };
+
+  const tiers = tierMaps[dimension] || VIOLENCE_TIERS;
+  const tier = tiers.find(t => level <= t.max) || tiers[tiers.length - 1];
+
+  let instruction = tier.base;
+
+  // Add modifiers based on position within the tier (0-9 within each 10% band)
+  const tierIndex = tiers.indexOf(tier);
+  const tierStart = tierIndex > 0 ? tiers[tierIndex - 1].max : 0;
+  const positionInTier = level - tierStart;
+
+  // Add modifiers progressively within the tier
+  if (tier.modifiers.length > 0) {
+    const modifiersToAdd = Math.min(
+      Math.ceil(positionInTier / (10 / tier.modifiers.length)),
+      tier.modifiers.length
+    );
+
+    const addedModifiers = tier.modifiers.slice(0, modifiersToAdd);
+    if (addedModifiers.length > 0) {
+      instruction += ' - specifically: ' + addedModifiers.join(', ');
+    }
+  }
+
+  return instruction;
+}
+
+/**
+ * Build complete granular intensity block for prompt injection
+ *
+ * @param {object} intensity - Object with dimension: percentage pairs
+ * @returns {string} Complete intensity instruction block for prompts
+ */
+export function buildGranularIntensityBlock(intensity = {}) {
+  const dimensions = ['violence', 'gore', 'romance', 'adultContent', 'sensuality', 'explicitness', 'language', 'scary', 'bleakness', 'sexualViolence'];
+  const instructions = [];
+
+  for (const dim of dimensions) {
+    const level = intensity[dim] ?? intensity[dim.replace(/([A-Z])/g, '_$1').toLowerCase()] ?? 0;
+    if (level > 0) {
+      const instruction = getGranularIntensityInstruction(dim, level);
+      const displayName = dim.replace(/([A-Z])/g, ' $1').toUpperCase();
+      instructions.push(`- ${displayName}: ${level}/100 → ${instruction}`);
+    }
+  }
+
+  if (instructions.length === 0) {
+    return '';
+  }
+
+  return `
+# GRANULAR INTENSITY REQUIREMENTS (MANDATORY)
+Each percentage point matters. 81% MUST be more intense than 80%.
+
+${instructions.join('\n')}
+
+CRITICAL COMPLIANCE RULE:
+- Content intensity MUST match these settings EXACTLY
+- Under-delivering is a FAILURE (e.g., writing PG content when 70% gore was requested)
+- Over-delivering is also a FAILURE (e.g., extreme content when 30% was requested)
+- The audience has EXPLICITLY chosen these intensity levels
+`;
+}
+
+/**
  * Compress character profile for token efficiency
  */
 export const compressCharacter = (char) => {
@@ -99,7 +312,7 @@ export const veniceSceneGenerationPrompt = ({
   location,
   mood,
   previousSceneEnding,
-  targetWordCount = 1000,
+  targetWordCount = 4500, // INCREASED: Was 1000, now 4500 for full scenes
   intensity = {},
   authorStyle = 'modern fiction',
   pov = 'third-person limited'
@@ -235,15 +448,20 @@ The user has EXPLICITLY requested mature content at these intensity levels:
 COMPLY WITH THESE SETTINGS FULLY. Do not sanitize, tone down, or hold back. The user WANTS this level of content. Write the most explicit, graphic version of these scenes.`;
   }
 
+  // Build granular intensity instructions - these provide PRECISE requirements for each dimension
+  const granularIntensityBlock = buildGranularIntensityBlock(intensity);
+
   return `# ROLE
 You are a professional fiction writer generating Scene ${sceneNumber} in ${authorStyle} style.
 
 # TASK
 Write a compelling scene based on the beat description below.
 
-${matureGuidance}# CRITICAL RULES
+${matureGuidance}
+${granularIntensityBlock}
+# CRITICAL RULES
 1. CONTINUITY: Start exactly from previous ending: "${previousSceneEnding}"
-2. LENGTH: Target ${targetWordCount} words (hard limit: ${Math.floor(targetWordCount * 1.15)} words)
+2. LENGTH: MUST WRITE AT LEAST ${targetWordCount} words. Writing less than ${targetWordCount} words is FAILURE. Write a FULL, RICH scene with detailed descriptions, extensive dialogue, and character introspection. Maximum: ${Math.floor(targetWordCount * 1.25)} words.
 3. CHARACTERS: Only use characters in PRESENT list below
 4. LOCATION: Scene takes place at ${location}
 5. MOOD: Maintain ${mood} tone throughout
@@ -304,8 +522,8 @@ Start immediately with the scene. First line should hook reader.
 export const veniceExpansionPassPrompt = ({
   rawScene,
   focusAreas = ['sensory', 'emotion'],
-  targetWordCount = 1500,
-  currentWordCount = 1000
+  targetWordCount = 5500, // INCREASED: Was 1500, now 5500 for expanded scenes
+  currentWordCount = 4000 // INCREASED: Was 1000, now 4000 baseline
 }) => {
   const focusGuidance = {
     sensory: "Add 2-3 specific sensory details per paragraph (sight, sound, smell, touch, taste)",
@@ -665,5 +883,8 @@ export default {
   buildVeniceContext,
   compressCharacter,
   compressScene,
-  detectRepetition
+  detectRepetition,
+  // Phase 5C: Granular Intensity Mapping
+  getGranularIntensityInstruction,
+  buildGranularIntensityBlock
 };

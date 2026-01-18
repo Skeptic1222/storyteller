@@ -1,0 +1,238 @@
+{
+  "recommended_tiers": 10,
+  "tier_reasoning": "Ten tiers provides granular control across the full spectrum from G-rated to extreme explicit content. This allows users to fine-tune exactly where they want the boundary, particularly in the critical middle ranges (PG-13 to R to NC-17) where small differences matter significantly. Fewer tiers would be too coarse; more would create decision paralysis.",
+
+  "tiers": [
+    {
+      "min": 0,
+      "max": 9,
+      "tier_name": "Hallmark Channel",
+      "rating_equivalent": "G",
+      "description": "Completely chaste. Romance is emotional only - hand holding, meaningful glances, maybe a forehead kiss.",
+      "what_you_will_see": "Longing looks, emotional connection, hand holding, characters blushing, declarations of love",
+      "what_you_wont_see": "Kissing on the lips, any physical intimacy beyond hand holding, bedroom scenes, suggestive dialogue",
+      "messages": [
+        "Pure as freshly fallen snow. Think Hallmark Christmas movies where the most scandalous thing is holding hands while ice skating.",
+        "G-rated romance. Characters will fall deeply in love but express it through meaningful glances and maybe a hand squeeze.",
+        "Disney princess tier. True love's kiss might happen but it's fade-to-black before lips even touch.",
+        "Your grandmother could read this aloud at church. Maximum spice level: holding hands for three full seconds.",
+        "Chaste as a Victorian letter. Romance is expressed through yearning looks and accidentally touching hands while reaching for the same book."
+      ],
+      "media_references": ["Hallmark Channel movies", "G-rated Disney films", "Pride and Prejudice (2005) but only the hand flex scene", "Anne of Green Gables"]
+    },
+
+    {
+      "min": 10,
+      "max": 19,
+      "tier_name": "Sweet Romance",
+      "rating_equivalent": "PG",
+      "description": "Innocent romance with closed-mouth kissing allowed. Focus on emotional intimacy and romantic gestures.",
+      "what_you_will_see": "Gentle kisses, hugging, cuddling, romantic dates, sweet declarations of love, innocent physical affection",
+      "what_you_wont_see": "Passionate kissing, bedroom scenes, partial nudity, suggestive touching, sexual tension",
+      "messages": [
+        "PG romance territory. Kisses happen but they're sweet pecks, not makeout sessions. Think 'The Princess Bride' smooch.",
+        "Wholesome but romantic. Characters can kiss goodbye and hold each other, but bedroom doors stay firmly closed (and locked, and we don't mention them).",
+        "Like your favorite YA romance novel. Sweet kisses, lots of blushing, maybe falling asleep on someone's shoulder. That's as spicy as it gets.",
+        "Netflix with your parents tier. A few tender kisses, some cuddling on the couch. Nobody's clothes are coming off.",
+        "Clean romance. Physical affection is innocent and sweet - a kiss in the rain, a warm embrace. The most scandalous thing is butterflies in the stomach."
+      ],
+      "media_references": ["The Princess Bride", "To All the Boys I've Loved Before", "Clean YA romance novels", "Most Pixar movies"]
+    },
+
+    {
+      "min": 20,
+      "max": 29,
+      "tier_name": "Mild Spice",
+      "rating_equivalent": "PG-13",
+      "description": "Romance heats up with passionate kissing and mild sensuality. Sexual tension acknowledged but not explored.",
+      "what_you_will_see": "Passionate kissing, making out, characters noticing physical attraction, mild innuendo, tension-filled moments, clothes stay on",
+      "what_you_wont_see": "Nudity, bedroom scenes (even implied), graphic description of bodies, sexual acts, heavy petting",
+      "messages": [
+        "PG-13 spice. Makeout sessions happen, characters definitely want each other, but we cut away before anything happens. Think Marvel movie romance.",
+        "Like Twilight but without the vampire restraint metaphor. Passionate kisses, definite sexual tension, but bedroom door remains theoretical.",
+        "Young adult territory. Characters are clearly attracted and might have a heated makeout session against a wall, but that's where we draw the curtain.",
+        "Movie theater date safe. Some steamy kisses and longing glances that mean more, but nothing that makes you want to leave the room when watching with family.",
+        "Teen drama level. Characters might fall into bed kissing but then we're immediately cutting to the next morning at breakfast. What happened? That's classified."
+      ],
+      "media_references": ["Twilight series", "Marvel Cinematic Universe romances", "Most CW shows", "Bridgerton (the edited version)", "The Hunger Games"]
+    },
+
+    {
+      "min": 30,
+      "max": 39,
+      "tier_name": "Fade to Black",
+      "rating_equivalent": "Light R",
+      "description": "Sexual activity clearly happens but is not described. Classic 'cut to morning after' approach.",
+      "what_you_will_see": "Clear indication intimacy occurred, passionate moments leading up to it, clothes coming off (fade to black immediately), waking up together implications",
+      "what_you_wont_see": "Any description of sexual acts, explicit body descriptions during intimate moments, what actually happened in bed",
+      "messages": [
+        "Hollywood R-rated romance. Characters clearly sleep together but the camera pans to the fireplace/curtains/window at the crucial moment.",
+        "Fade to black tier. Shirts start coming off, characters move to the bedroom, and... scene. Next thing we see is morning coffee.",
+        "Like a tasteful romance novel. You know they had sex because they wake up in bed together and reference 'last night,' but we skipped that chapter.",
+        "Broadcast TV drama level. Sexual activity is strongly implied through passionate kissing, clothes dropping, and then BOOM - next morning. Use your imagination.",
+        "The author believes in your imagination. Characters are about to get intimate, the scene fades out, and we rejoin them looking very satisfied at breakfast."
+      ],
+      "media_references": ["Most broadcast TV dramas", "Traditional romance novels", "James Bond films (classic era)", "Titanic (the car scene but fade out)"]
+    },
+
+    {
+      "min": 40,
+      "max": 49,
+      "tier_name": "Intimate Suggestion",
+      "rating_equivalent": "R",
+      "description": "Intimacy shown with euphemistic language and suggestive description. No graphic details but clearly more than 'fade to black.'",
+      "what_you_will_see": "Euphemistic descriptions of intimacy, physical sensations described tastefully, clear romantic/sexual activity using poetic language, aftermath details",
+      "what_you_wont_see": "Clinical anatomical terms, explicit play-by-play, graphic body part descriptions, pornographic detail",
+      "messages": [
+        "R-rated romance. Bedroom scenes happen and are described, but in poetic, euphemistic terms. 'Their bodies intertwined' not... anatomical specifics.",
+        "Fifty Shades if you squint and it was written by Jane Austen. Things definitely happen, they're described tastefully, but no one's saying anatomical words.",
+        "Literary fiction spice level. Sexual scenes exist and are described through sensation and emotion rather than mechanics. Think 'waves of pleasure' not instruction manual.",
+        "HBO shows at 9pm. Intimate scenes are present and somewhat detailed but still using metaphor and artful language. More suggestion than specification.",
+        "Romance novel territory. You'll read about intimate encounters but they're described with euphemisms and focus on emotion/sensation rather than graphic detail."
+      ],
+      "media_references": ["Outlander (lighter scenes)", "Most R-rated romance films", "Literary fiction with romance", "Bridgerton (actual show)", "Normal People (less explicit scenes)"]
+    },
+
+    {
+      "min": 50,
+      "max": 59,
+      "tier_name": "Explicit Romance",
+      "rating_equivalent": "Hard R / Soft NC-17",
+      "description": "Clear, detailed intimate scenes but still within romantic context. More direct language but not clinical.",
+      "what_you_will_see": "Detailed intimate scenes, some anatomical references, clear description of sexual activity within romantic context, sensory details",
+      "what_you_wont_see": "Purely pornographic focus, extreme acts, clinical/crude terminology, content without emotional context",
+      "messages": [
+        "Hard R / Soft NC-17. Intimate scenes are detailed and clear but still in service of romance/story. Think premium cable drama, not Pornhub.",
+        "Game of Thrones level (the romantic scenes, not the problematic ones). Sex happens on screen with some detail but it's still part of character development.",
+        "Spicy romance novel. The bedroom scenes are explicit and use clearer language, but they're still romantic encounters between characters we care about.",
+        "This is where 'adult romance' lives. Intimate scenes are described with enough detail that you know exactly what's happening, but it's still storytelling, not porn.",
+        "HBO at 10pm. Sexual content is explicit and detailed but contextualized within relationships and narrative. More graphic than fade-to-black, less graphic than XXX."
+      ],
+      "media_references": ["Game of Thrones", "Outlander (full version)", "Explicit romance novels (Kresley Cole, Nalini Singh)", "Sense8", "The L Word"]
+    },
+
+    {
+      "min": 60,
+      "max": 69,
+      "tier_name": "Very Explicit",
+      "rating_equivalent": "NC-17",
+      "description": "Highly detailed sexual content with direct anatomical language. Still within narrative context but primary focus on physical acts.",
+      "what_you_will_see": "Graphic sexual descriptions, anatomical terms used directly, detailed physical acts, extended intimate scenes, variety of sexual activities",
+      "what_you_wont_see": "Pure pornography, extreme fetish content, violence mixed with sex, content that exists purely for shock value",
+      "messages": [
+        "NC-17 territory. This is explicit erotica - anatomical terms, graphic descriptions, extended sex scenes. Still has plot but the intimacy is front and center.",
+        "Fifty Shades actual content level. Detailed sexual encounters with specific body parts named and activities described explicitly. Not for the faint of heart.",
+        "This is erotica, not romance with spice. Sex scenes are graphic, prolonged, and use direct language. Plot still exists but expect detailed intimate content.",
+        "European art film level. Sexually explicit with nothing left to imagination. Still has narrative/emotional context but the sex is shown/described graphically.",
+        "Adult bookstore paperback tier. Very explicit sexual content with anatomical detail and clear descriptions of acts. Your mother would clutch her pearls."
+      ],
+      "media_references": ["Fifty Shades of Grey series", "Explicit erotica novels", "NC-17 films like 'Blue is the Warmest Color'", "Literotica stories", "Showtime late-night programming"]
+    },
+
+    {
+      "min": 70,
+      "max": 79,
+      "tier_name": "Pornographic Lite",
+      "rating_equivalent": "X / Soft Porn",
+      "description": "Content is primarily sexual with plot as minimal framework. Graphic and detailed with variety of acts. Approaching pornography but with some narrative structure.",
+      "what_you_will_see": "Very graphic sexual content, multiple detailed sex scenes, variety of sexual acts and positions described explicitly, minimal plot connecting sexual encounters, anatomically explicit throughout",
+      "what_you_wont_see": "Extreme fetishes, illegal content, graphic violence combined with sex, content that would be banned from mainstream platforms",
+      "messages": [
+        "Soft-core pornography. Plot exists as a thin excuse to connect explicit sex scenes. Very graphic, very detailed, very anatomical. This is 18+ adults only.",
+        "Skinamax after midnight. Sexual content is the primary focus with story as window dressing. Expect graphic descriptions of varied sexual activities.",
+        "This is pornography with aspirations. Multiple explicit sex scenes per chapter, anatomical detail throughout, plot is minimal. Think premium adult content sites.",
+        "Hentai manga territory (the lighter stuff). Sexually explicit content is the main point, with enough plot to technically be a 'story.' Very graphic throughout.",
+        "Adult content warning mandatory. This is primarily sexual content - graphic, explicit, detailed. Story exists but it's really here for the sex scenes."
+      ],
+      "media_references": ["Cinemax late-night programming", "Softcore adult films", "Explicit hentai (lighter)", "Adult visual novels", "Literotica 'hot' category"]
+    },
+
+    {
+      "min": 80,
+      "max": 89,
+      "tier_name": "Hardcore Explicit",
+      "rating_equivalent": "XXX / Hardcore Porn",
+      "description": "This is hardcore pornography. Extremely graphic sexual content with minimal or no plot. Nothing is left to imagination.",
+      "what_you_will_see": "Extremely graphic sexual descriptions, hardcore pornographic content, multiple explicit encounters with detailed anatomical focus, variety of positions and acts described clinically, essentially written pornography",
+      "what_you_wont_see": "Illegal acts, underage content, extreme violence, true extreme fetishes (reserved for highest tier)",
+      "messages": [
+        "XXX hardcore pornography. This is explicit adult content with graphic sexual descriptions that would make a sailor blush. Plot is basically non-existent.",
+        "Pornhub 'popular' category in written form. Extremely explicit, anatomically detailed, multiple graphic sex scenes. This is actual porn, not erotica.",
+        "Full hardcore territory. Think professional pornography in text form - graphic, explicit, detailed to an extreme degree. Story is irrelevant.",
+        "This is pornography, period. Graphic sexual content with clinical anatomical detail and explicit description of acts. Absolutely nothing left to imagination.",
+        "Adult content sites are more subtle than this. Hardcore sexual content, extremely graphic, zero fade-to-black. This is pure textual porn."
+      ],
+      "media_references": ["Mainstream pornography sites", "XXX films", "Hardcore hentai", "Explicit adult fiction sites", "Content you clear from your browser history"]
+    },
+
+    {
+      "min": 90,
+      "max": 100,
+      "tier_name": "Extreme Explicit",
+      "rating_equivalent": "Beyond XXX / Extreme Adult",
+      "description": "Maximum explicitness. Includes extreme fetishes, taboo scenarios, and content that pushes boundaries. This is the 'no limits' tier.",
+      "what_you_will_see": "Everything from previous tier plus: extreme fetishes, taboo scenarios (within legal bounds), shock content, boundary-pushing sexual content, most extreme anatomical detail possible",
+      "what_you_wont_see": "Illegal content (underage, non-consent, snuff) - there ARE still limits, just very few",
+      "messages": [
+        "Maximum explicitness - no holds barred. Extreme fetish content, taboo scenarios, the works. This is 'A Serbian Film' but written. You've been warned.",
+        "Abandon hope all ye who enter here. This is the most extreme sexual content possible within legal bounds. Extreme fetishes, shocking scenarios, graphic beyond belief.",
+        "The final circle. Every extreme fetish, every taboo (legal) scenario, described in the most graphic terms possible. This makes hardcore porn look tame.",
+        "You specifically chose maximum. Extreme adult content including fetishes, taboo scenarios, and content designed to shock. Dark web forum tier explicitness.",
+        "No limits tier (within legality). This is as extreme as it gets - shocking sexual content, extreme fetishes, taboo scenarios. You asked for it, here it is."
+      ],
+      "media_references": ["Extreme fetish content", "4chan's darkest corners", "Content banned from mainstream platforms", "A Serbian Film (sexual content)", "Extreme hentai categories", "Things that require Tor browser"]
+    }
+  ],
+
+  "implementation_notes": {
+    "safety_guardrails": "Even at tier 10 (90-100%), illegal content (underage, non-consensual, etc.) should be hard-blocked by content filters. 'Extreme' means extreme legal content only.",
+
+    "tier_selection_ux": "Consider showing tier name, rating equivalent, and one rotating message when user hovers over slider. Full description on click.",
+
+    "combination_with_other_sliders": {
+      "romance_low_adult_high": "Physical encounters without emotional connection - hookups, casual sex, purely physical",
+      "romance_high_adult_low": "Deep emotional romance with minimal physical content - focus on feelings and connection",
+      "sensuality_moderate_adult_extreme": "Explicit sexual content with tension and attraction but not necessarily romance"
+    },
+
+    "content_warnings": "Recommend showing clear content warnings before generation at tiers 7+ (60%+), and requiring explicit confirmation at tiers 9+ (80%+)",
+
+    "age_verification": "Tiers 6+ (50%+) should require age verification. Tiers 8+ (70%+) should require explicit 'I understand this is adult content' confirmation.",
+
+    "default_value": "Recommend default of tier 3 (20-29%) - allows romance and tension without explicit content. Safe for most users.",
+
+    "message_rotation": "Rotate through message variations on each page load to keep UI fresh and amusing while still being informative."
+  },
+
+  "alternative_tier_structure_8_tiers": {
+    "reasoning": "If 10 tiers feels like too many options, here's an 8-tier alternative with broader ranges",
+    "tiers": [
+      {"range": "0-12%", "name": "Chaste (G)", "description": "Hand holding only"},
+      {"range": "13-24%", "name": "Sweet (PG)", "description": "Innocent kissing"},
+      {"range": "25-37%", "name": "Passionate (PG-13)", "description": "Making out, tension"},
+      {"range": "38-49%", "name": "Fade to Black (R)", "description": "Implied intimacy"},
+      {"range": "50-62%", "name": "Explicit Romance (Hard R)", "description": "Detailed intimate scenes"},
+      {"range": "63-74%", "name": "Erotica (NC-17)", "description": "Very graphic, anatomical"},
+      {"range": "75-87%", "name": "Pornographic (XXX)", "description": "Hardcore explicit content"},
+      {"range": "88-100%", "name": "Extreme (Beyond XXX)", "description": "No limits, extreme fetishes"}
+    ]
+  },
+
+  "alternative_tier_structure_12_tiers": {
+    "reasoning": "If you want maximum granularity, especially in the critical PG-13 to R range",
+    "tiers": [
+      {"range": "0-8%", "name": "G - Completely Chaste"},
+      {"range": "9-16%", "name": "PG - Sweet Romance"},
+      {"range": "17-24%", "name": "PG-13 Light - Mild Tension"},
+      {"range": "25-32%", "name": "PG-13 - Passionate Kissing"},
+      {"range": "33-40%", "name": "R Light - Fade to Black"},
+      {"range": "41-48%", "name": "R - Suggestive Details"},
+      {"range": "49-56%", "name": "R Hard - Explicit Romance"},
+      {"range": "57-64%", "name": "NC-17 - Very Explicit"},
+      {"range": "65-72%", "name": "X Light - Erotica"},
+      {"range": "73-80%", "name": "X - Pornographic"},
+      {"range": "81-90%", "name": "XXX - Hardcore"},
+      {"range": "91-100%", "name": "Extreme - No Limits"}
+    ]
+  }
+}
