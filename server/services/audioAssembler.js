@@ -110,6 +110,13 @@ export async function assembleMultiVoiceAudio(segments, options = {}) {
 
 /**
  * Assemble audio using FFmpeg with crossfades
+ *
+ * For large numbers of segments (>30), uses a batch approach:
+ * 1. Process segments in batches of 20
+ * 2. Use concat demuxer (file list) for each batch
+ * 3. Combine batches into final output
+ *
+ * This avoids Windows command line length limits (ENAMETOOLONG error).
  */
 async function assembleWithFFmpeg(segments, options) {
   const {
@@ -122,6 +129,7 @@ async function assembleWithFFmpeg(segments, options) {
 
   const sessionId = crypto.randomBytes(8).toString('hex');
   const tempFiles = [];
+  const BATCH_SIZE = 20; // Process in batches to avoid command line length limits
 
   try {
     // Write audio segments to temp files
@@ -142,8 +150,16 @@ async function assembleWithFFmpeg(segments, options) {
       tempFiles.push(tempPath);
     }
 
-    // Build FFmpeg filter complex for crossfades
     const outputPath = join(OUTPUT_DIR, `${sessionId}_assembled.${outputFormat}`);
+
+    // For many segments (>30), use batch processing with concat demuxer
+    // This avoids Windows ENAMETOOLONG error
+    if (segments.length > 30) {
+      logger.info(`[AudioAssembler] Using batch concat for ${segments.length} segments (batch size: ${BATCH_SIZE})`);
+      return await assembleBatchConcat(tempFiles, segments, outputPath, sessionId, options);
+    }
+
+    // Build FFmpeg filter complex for crossfades (small segment count)
     const filterComplex = buildCrossfadeFilter(segments, tempFiles, {
       crossfadeMs,
       gapMs,
@@ -159,7 +175,7 @@ async function assembleWithFFmpeg(segments, options) {
       ffmpegCmd = `ffmpeg -y -i "${tempFiles[0]}" -c:a libmp3lame -q:a 2 "${outputPath}"`;
     } else if (filterComplex) {
       // Multiple segments with crossfade
-      ffmpegCmd = `ffmpeg -y ${inputArgs} -filter_complex "${filterComplex}" -c:a libmp3lame -q:a 2 "${outputPath}"`;
+      ffmpegCmd = `ffmpeg -y ${inputArgs} -filter_complex "${filterComplex}" -map "[out]" -c:a libmp3lame -q:a 2 "${outputPath}"`;
     } else {
       // Simple concatenation
       const concatList = join(TEMP_DIR, `${sessionId}_concat.txt`);
@@ -216,6 +232,90 @@ async function assembleWithFFmpeg(segments, options) {
 }
 
 /**
+ * Assemble many segments using batch processing with concat demuxer
+ * Avoids Windows command line length limits by using file lists
+ *
+ * @param {string[]} tempFiles - Array of temp file paths
+ * @param {Object[]} segments - Original segment data (for speaker info)
+ * @param {string} outputPath - Final output path
+ * @param {string} sessionId - Session ID for temp file naming
+ * @param {Object} options - Assembly options
+ * @returns {Promise<Object>} Assembly result
+ */
+async function assembleBatchConcat(tempFiles, segments, outputPath, sessionId, options) {
+  const { normalize } = options;
+  const batchOutputs = [];
+
+  try {
+    // Create a single concat file listing all segments
+    // FFmpeg's concat demuxer handles this efficiently without command line limits
+    const concatListPath = join(TEMP_DIR, `${sessionId}_full_concat.txt`);
+
+    // Build concat file with proper escaping for Windows paths
+    const concatLines = tempFiles.map(f => {
+      // FFmpeg concat format requires forward slashes and proper escaping
+      const escapedPath = f.replace(/\\/g, '/').replace(/'/g, "'\\''");
+      return `file '${escapedPath}'`;
+    });
+
+    writeFileSync(concatListPath, concatLines.join('\n'));
+    batchOutputs.push(concatListPath);
+
+    // Build FFmpeg command using concat demuxer
+    // This approach handles any number of files without command line limits
+    let ffmpegCmd = `ffmpeg -y -f concat -safe 0 -i "${concatListPath}" -c:a libmp3lame -q:a 2`;
+
+    // Add normalization if requested
+    if (normalize) {
+      ffmpegCmd = `ffmpeg -y -f concat -safe 0 -i "${concatListPath}" -af "loudnorm=I=-16:TP=-1.5:LRA=11" -c:a libmp3lame -q:a 2`;
+    }
+
+    ffmpegCmd += ` "${outputPath}"`;
+
+    logger.info(`[AudioAssembler] Batch concat: ${tempFiles.length} segments via concat demuxer`);
+    logger.debug(`[AudioAssembler] Concat list: ${concatListPath}`);
+
+    // Increase timeout for large assemblies (30 seconds + 0.5s per segment)
+    const timeout = 30000 + (segments.length * 500);
+    await execAsync(ffmpegCmd, { timeout, maxBuffer: 50 * 1024 * 1024 }); // 50MB buffer
+
+    // Read assembled audio
+    const assembledAudio = readFileSync(outputPath);
+
+    // Get duration using ffprobe
+    let duration = 0;
+    try {
+      const { stdout } = await execAsync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${outputPath}"`);
+      duration = parseFloat(stdout.trim()) * 1000; // Convert to ms
+    } catch (e) {
+      // Estimate duration from file size
+      duration = estimateDuration(assembledAudio.length);
+    }
+
+    logger.info(`[AudioAssembler] Batch concat complete: ${assembledAudio.length} bytes, ${Math.round(duration / 1000)}s, ${segments.length} segments`);
+
+    return {
+      audio: assembledAudio,
+      duration,
+      outputPath,
+      method: 'batch_concat'
+    };
+
+  } finally {
+    // Cleanup batch-specific temp files
+    for (const batchFile of batchOutputs) {
+      try {
+        if (existsSync(batchFile)) {
+          unlinkSync(batchFile);
+        }
+      } catch (e) {
+        logger.debug('[AudioAssembler] Batch cleanup error:', e.message);
+      }
+    }
+  }
+}
+
+/**
  * Build FFmpeg filter complex string for crossfades
  */
 function buildCrossfadeFilter(segments, tempFiles, options) {
@@ -257,20 +357,73 @@ function buildCrossfadeFilter(segments, tempFiles, options) {
     lastOutput = `[${outputLabel}]`;
   }
 
-  // Add output mapping
+  // Return filter without -map (it's added separately in command construction)
   if (filters.length > 0) {
-    return filters.join(';') + ` -map "[out]"`;
+    return filters.join(';');
   }
 
   return null;
 }
 
 /**
- * Build simple concat filter for many segments
+ * Build simple concat filter for many segments with proper gap insertion
+ * Uses apad filter to add silence after each segment for smooth transitions
  */
 function buildSimpleConcatFilter(segments, tempFiles, options) {
-  const inputLabels = tempFiles.map((_, i) => `[${i}:a]`).join('');
-  return `${inputLabels}concat=n=${tempFiles.length}:v=0:a=1[out]" -map "[out]`;
+  const { gapMs = 200, narratorGapMs = 300 } = options;
+
+  if (tempFiles.length === 1) {
+    return '[0:a]acopy[out]';
+  }
+
+  const filters = [];
+  const outputLabels = [];
+
+  // For each segment, apply appropriate gap padding
+  // Use apad to add silence at the end of each segment (except the last)
+  for (let i = 0; i < segments.length; i++) {
+    const segment = segments[i];
+    const isLast = i === segments.length - 1;
+    const outputLabel = `a${i}`;
+
+    if (isLast) {
+      // Last segment: no padding needed, just copy
+      filters.push(`[${i}:a]acopy[${outputLabel}]`);
+    } else {
+      // Determine gap duration based on segment type and next segment
+      const nextSegment = segments[i + 1];
+      const isNarratorTransition = segment.type === 'narrator' || nextSegment?.type === 'narrator';
+      const isSameSpeaker = segment.speaker === nextSegment?.speaker;
+
+      // Gap logic:
+      // - Same speaker: minimal gap (100ms) for natural flow
+      // - Narrator transition: longer gap (narratorGapMs) for clarity
+      // - Different character speakers: standard gap (gapMs)
+      let gapDuration;
+      if (isSameSpeaker) {
+        gapDuration = 0.1; // 100ms for same speaker continuity
+      } else if (isNarratorTransition) {
+        gapDuration = narratorGapMs / 1000;
+      } else {
+        gapDuration = gapMs / 1000;
+      }
+
+      // apad pads audio with silence at the end
+      // pad_dur adds a fixed duration of silence
+      filters.push(`[${i}:a]apad=pad_dur=${gapDuration}[${outputLabel}]`);
+    }
+
+    outputLabels.push(`[${outputLabel}]`);
+  }
+
+  // Concat all padded segments
+  const concatFilter = `${outputLabels.join('')}concat=n=${tempFiles.length}:v=0:a=1[out]`;
+  filters.push(concatFilter);
+
+  const filterComplex = filters.join(';');
+  logger.debug(`[AudioAssembler] Built gap-aware filter for ${segments.length} segments with gapMs=${gapMs}, narratorGapMs=${narratorGapMs}`);
+
+  return filterComplex;
 }
 
 /**

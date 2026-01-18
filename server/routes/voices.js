@@ -207,14 +207,15 @@ router.post('/preview', rateLimiters.tts, async (req, res) => {
     const previewText = text || `Once upon a time, in a land of wonder and mystery, there lived a brave adventurer seeking fortune and glory.`;
 
     // Apply voice settings if provided (stability, similarity_boost, style, speed)
+    // V3 model supports audio emotion tags like [excited], [whisper], etc.
     const options = voice_settings ? {
       stability: voice_settings.stability ?? 0.5,
       similarity_boost: voice_settings.similarity_boost ?? 0.75,
       style: voice_settings.style ?? 0,
       use_speaker_boost: voice_settings.use_speaker_boost !== false,
-      model_id: voice_settings.model_id || 'eleven_multilingual_v2'
+      model_id: voice_settings.model_id || 'eleven_v3'
     } : {
-      model_id: 'eleven_multilingual_v2'
+      model_id: 'eleven_v3'
     };
 
     const audioBuffer = await elevenlabs.textToSpeech(previewText, voice_id, options);
@@ -379,7 +380,7 @@ router.post('/preview-sample', rateLimiters.tts, async (req, res) => {
       voicePreview.id,
       {
         ...voiceSettings,
-        model_id: 'eleven_multilingual_v2'
+        model_id: 'eleven_v3' // V3 supports audio emotion tags
       }
     );
 

@@ -156,7 +156,9 @@ function buildUserPrompt(characters, storyContext, narratorVoiceId, voiceLibrary
       gender: char.gender || 'unknown',
       description: char.description || '',
       personality: traits.personality || traits.traits || [],
-      age: traits.age || 'adult'
+      // FIX: Read age from char.age_group (DB field) first, then traits, then default
+      // char.age_group contains: 'child', 'teen', 'young_adult', 'adult', 'middle_aged', 'elderly'
+      age: char.age_group || char.age_specific || traits.age || 'adult'
     };
   });
 
@@ -440,6 +442,10 @@ export async function assignVoicesByLLM(characters, storyContext, narratorVoiceI
     if (!content) {
       throw new Error('Empty response from LLM');
     }
+
+    // ENHANCED LOGGING: Log raw LLM response for debugging voice casting issues
+    logger.info(`[VoiceAssignment] Raw LLM response (first 500 chars): ${content.substring(0, 500)}${content.length > 500 ? '...' : ''}`);
+    logger.debug(`[VoiceAssignment] Full LLM response: ${content}`);
 
     const result = JSON.parse(content);
 
