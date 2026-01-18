@@ -16,8 +16,11 @@ import {
   List,
   Maximize2,
   Minimize2,
-  Settings
+  Settings,
+  Volume2,
+  VolumeX
 } from 'lucide-react';
+import SFXPlayer from '../components/SFXPlayer';
 import { API_BASE, apiCall } from '../config';
 import { getStoredToken } from '../utils/authToken';
 import { stripAllTags } from '../utils/textUtils';
@@ -80,6 +83,7 @@ export default function Reader() {
   const [audioBuffering, setAudioBuffering] = useState(false);
   const [showScrollTop, setShowScrollTop] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [sfxEnabled, setSfxEnabled] = useState(true);
 
   // Line-level karaoke highlighting
   const [currentLineStart, setCurrentLineStart] = useState(-1);
@@ -93,6 +97,33 @@ export default function Reader() {
   const exportModalTriggeredRef = useRef(false);
   const autoPlayTimeoutRef = useRef(null);  // Track autoplay timeout for cleanup
   const currentScene = scenes[currentSceneIndex];
+
+  // Fix audio URL path - prepend /storyteller if needed for IIS routing
+  const fixedAudioUrl = useMemo(() => {
+    const url = currentScene?.audio_url;
+    if (!url) return null;
+    // If URL starts with /audio/ but not /storyteller, prepend the base path
+    if (url.startsWith('/audio/') && !url.startsWith('/storyteller/')) {
+      return `/storyteller${url}`;
+    }
+    return url;
+  }, [currentScene?.audio_url]);
+
+  // Parse SFX data from current scene for ambient sound effects
+  const sfxData = useMemo(() => {
+    if (!currentScene?.sfx_data) return [];
+    try {
+      const data = typeof currentScene.sfx_data === 'string'
+        ? JSON.parse(currentScene.sfx_data)
+        : currentScene.sfx_data;
+      // Handle both array format and object with array property
+      if (Array.isArray(data)) return data;
+      if (data?.sfx && Array.isArray(data.sfx)) return data.sfx;
+      return [];
+    } catch {
+      return [];
+    }
+  }, [currentScene?.sfx_data]);
 
   const getAuthHeaders = useCallback(() => {
     const token = getStoredToken();
@@ -321,7 +352,7 @@ export default function Reader() {
 
   // Audio controls
   const togglePlayPause = useCallback(() => {
-    if (!audioRef.current || !currentScene?.audio_url) return;
+    if (!audioRef.current || !fixedAudioUrl) return;
 
     if (isPlaying) {
       audioRef.current.pause();
@@ -329,7 +360,7 @@ export default function Reader() {
       audioRef.current.play();
     }
     setIsPlaying(!isPlaying);
-  }, [isPlaying, currentScene]);
+  }, [isPlaying, fixedAudioUrl]);
 
   const handleAudioEnded = useCallback(() => {
     setIsPlaying(false);
@@ -600,10 +631,10 @@ export default function Reader() {
       `}</style>
 
       {/* Hidden audio element */}
-      {currentScene?.audio_url && (
+      {fixedAudioUrl && (
         <audio
           ref={audioRef}
-          src={currentScene.audio_url}
+          src={fixedAudioUrl}
           onEnded={handleAudioEnded}
           onPlay={() => { setIsPlaying(true); setAudioBuffering(false); }}
           onPause={() => setIsPlaying(false)}
@@ -613,6 +644,17 @@ export default function Reader() {
           onWaiting={() => setAudioBuffering(true)}
           onPlaying={() => setAudioBuffering(false)}
           playbackRate={playbackSpeed}
+        />
+      )}
+
+      {/* SFX Player for ambient sound effects */}
+      {sfxData.length > 0 && (
+        <SFXPlayer
+          sfxData={sfxData}
+          currentTime={audioCurrentTime}
+          isPlaying={isPlaying}
+          masterVolume={0.3}
+          enabled={sfxEnabled}
         />
       )}
 
@@ -957,7 +999,7 @@ export default function Reader() {
           </button>
 
           {/* Play/Pause with Loading/Buffering indicator */}
-          {currentScene?.audio_url && (
+          {fixedAudioUrl && (
             <button
               onClick={togglePlayPause}
               disabled={audioLoading}
@@ -1013,6 +1055,27 @@ export default function Reader() {
           >
             ▶
           </button>
+
+          {/* SFX Toggle - only show if scene has SFX data */}
+          {sfxData.length > 0 && (
+            <button
+              onClick={() => setSfxEnabled(!sfxEnabled)}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: sfxEnabled ? colors.accent : colors.textMuted,
+                cursor: 'pointer',
+                padding: '10px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px'
+              }}
+              title={sfxEnabled ? 'Disable sound effects' : 'Enable sound effects'}
+            >
+              {sfxEnabled ? <Volume2 size={20} /> : <VolumeX size={20} />}
+              <span style={{ fontSize: '12px' }}>SFX</span>
+            </button>
+          )}
         </div>
 
         {/* Scene indicator */}

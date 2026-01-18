@@ -161,6 +161,85 @@ export function useStorySocket({
       );
     };
 
+    // Bug 3 Fix: Handle unified all-audio-ready event (intro + scene together)
+    // This ensures single progress bar and no premature synopsis playback
+    const handleAllAudioReady = (data) => {
+      socketLog.info(`RECV: all-audio-ready | hasIntro: ${!!data.intro} | hasScene: ${!!data.scene}`);
+
+      // Clear stall detection since we got audio (generation succeeded)
+      if (stallDetectionTimeoutRef.current) {
+        clearTimeout(stallDetectionTimeoutRef.current);
+        stallDetectionTimeoutRef.current = null;
+      }
+
+      // Queue intro audio first (if present)
+      if (data.intro) {
+        audioLog.info('STATE: IDLE → INTRO_QUEUED | introAudioQueued=true (from all-audio-ready)');
+        setIntroAudioQueued(true);
+        setSceneAudioStarted(false);
+        sceneAudioStartedRef.current = false;
+        queueAudio(
+          data.intro.audio,
+          data.intro.format,
+          () => { audioLog.info('STATE: INTRO_QUEUED → INTRO_PLAYING | intro audio started'); },
+          () => {
+            audioLog.info('STATE: INTRO_PLAYING → INTRO_COMPLETE | introAudioQueued=false');
+            setIntroAudioQueued(false);
+          }
+        );
+      }
+
+      // Queue scene audio (if present)
+      if (data.scene) {
+        // Store word timings for karaoke/read-along feature
+        if (data.scene.wordTimings) {
+          const wordCount = data.scene.wordTimings.words?.length || data.scene.wordTimings.word_count || 0;
+          audioLog.info(`WORD_TIMINGS_DEBUG (all-audio-ready) | count: ${wordCount}`);
+          setWordTimings(data.scene.wordTimings);
+        } else {
+          setWordTimings(null);
+        }
+
+        // Store scene images for picture book display
+        if (data.scene.sceneImages && data.scene.sceneImages.length > 0) {
+          setSceneImages(data.scene.sceneImages);
+        } else {
+          setSceneImages([]);
+        }
+
+        audioLog.info('STATE: * → SCENE_QUEUED | sceneAudioQueued=true (from all-audio-ready)');
+        setSceneAudioQueued(true);
+
+        queueAudio(
+          data.scene.audio,
+          data.scene.format,
+          // onStart callback - scene audio begins
+          () => {
+            audioLog.info('STATE: SCENE_QUEUED → SCENE_PLAYING | sceneAudioStarted=true (all-audio-ready onStart)');
+            if (!sceneAudioStartedRef.current) {
+              sceneAudioStartedRef.current = true;
+              setSceneAudioStarted(true);
+              setIsAudioQueued(false);
+
+              // Trigger SFX with actual audio duration for accurate timing
+              const currentSfxList = sfxDetailsRef.current?.sfxList;
+              const audioDurationSeconds = data.scene.wordTimings?.total_duration_ms
+                ? data.scene.wordTimings.total_duration_ms / 1000
+                : null;
+              if (currentSfxList && currentSfxList.length > 0 && sfxEnabledRef.current) {
+                sfxLog.info(`TRIGGER_SUCCESS | source: all-audio-ready | effects: ${currentSfxList.length}`);
+                playSfxWithState(currentSfxList, audioDurationSeconds);
+              }
+            }
+          },
+          // onEnd callback - scene audio finished
+          () => {
+            audioLog.info('STATE: SCENE_PLAYING → SCENE_COMPLETE | scene audio finished (all-audio-ready)');
+          }
+        );
+      }
+    };
+
     // Handle choice narration audio
     const handleChoiceAudioReady = (data) => {
       console.log('[Socket:Recv] EVENT: choice-audio-ready | hasAudio:', !!data.audio, '| format:', data.format);
@@ -204,20 +283,44 @@ export function useStorySocket({
         setGenerationProgress({
           step: data.step || 0,
           percent: data.percent || 0,
-          message: data.message || 'Creating your story...'
+          message: data.message || 'Creating your story...',
+          // Bug 1 Fix: Include server startTime so timer survives page refresh
+          startTime: data.startTime || null
         });
       }
 
-      // STALL DETECTION: Set timeout to detect if no update arrives for 120 seconds
+      // STALL DETECTION: Set timeout to detect if no update arrives for 5 minutes
+      // Complex stories with many characters can take 3-5 minutes for scene generation + validation
       stallDetectionTimeoutRef.current = setTimeout(() => {
         const timeSinceLastUpdate = Date.now() - lastProgressUpdateTimeRef.current;
-        if (timeSinceLastUpdate > 120000) {
-          console.error('[Stall Detection] No progress update for 120+ seconds. Generation may be stuck.');
+        if (timeSinceLastUpdate > 300000) { // 5 minutes
+          console.error('[Stall Detection] No progress update for 5+ minutes. Generation may be stuck.');
           setIsGenerating(false);
           setGenerationProgress({ step: 0, percent: 0, message: '' });
           setAudioError('Story generation is taking too long. Please refresh the page and try again.');
         }
-      }, 125000);
+      }, 305000); // Check after 5 min + 5 seconds
+    };
+
+    // P1 FIX: Handle launch progress - reset stall detection during launch phase
+    // During launch, the server emits 'launch-progress' events, not 'generating' events
+    // Without this, stall detection timer never resets and causes false timeout errors
+    const handleLaunchProgress = () => {
+      // Reset stall detection timer on launch progress (same logic as handleGenerating)
+      lastProgressUpdateTimeRef.current = Date.now();
+      if (stallDetectionTimeoutRef.current) {
+        clearTimeout(stallDetectionTimeoutRef.current);
+      }
+      // Set new timeout - reuses same stall detection logic (5 minute timeout)
+      stallDetectionTimeoutRef.current = setTimeout(() => {
+        const timeSinceLastUpdate = Date.now() - lastProgressUpdateTimeRef.current;
+        if (timeSinceLastUpdate > 300000) { // 5 minutes
+          console.error('[Stall Detection] No progress update for 5+ minutes during launch.');
+          setIsGenerating(false);
+          setGenerationProgress({ step: 0, percent: 0, message: '' });
+          setAudioError('Story generation is taking too long. Please refresh the page and try again.');
+        }
+      }, 305000); // Check after 5 min + 5 seconds
     };
 
     // Handle choice accepted
@@ -315,11 +418,13 @@ export function useStorySocket({
     // Subscribe to events
     socket.on('intro-audio-ready', handleIntroAudioReady);
     socket.on('audio-ready', handleAudioReady);
+    socket.on('all-audio-ready', handleAllAudioReady); // Bug 3 Fix: Unified audio event
     socket.on('choice-audio-ready', handleChoiceAudioReady);
     socket.on('choice-audio-error', handleChoiceAudioError);
     socket.on('scene-images-ready', handleSceneImagesReady);
     socket.on('picture-book-generating', handlePictureBookGenerating);
     socket.on('generating', handleGenerating);
+    socket.on('launch-progress', handleLaunchProgress); // P1 FIX: Reset stall detection during launch
     socket.on('choice-accepted', handleChoiceAccepted);
     socket.on('story-paused', handleStoryPaused);
     socket.on('story-resumed', handleStoryResumed);
@@ -336,11 +441,13 @@ export function useStorySocket({
 
       socket.off('intro-audio-ready', handleIntroAudioReady);
       socket.off('audio-ready', handleAudioReady);
+      socket.off('all-audio-ready', handleAllAudioReady); // Bug 3 Fix: Cleanup unified audio event
       socket.off('choice-audio-ready', handleChoiceAudioReady);
       socket.off('choice-audio-error', handleChoiceAudioError);
       socket.off('scene-images-ready', handleSceneImagesReady);
       socket.off('picture-book-generating', handlePictureBookGenerating);
       socket.off('generating', handleGenerating);
+      socket.off('launch-progress', handleLaunchProgress); // P1 FIX: Cleanup launch progress listener
       socket.off('choice-accepted', handleChoiceAccepted);
       socket.off('story-paused', handleStoryPaused);
       socket.off('story-resumed', handleStoryResumed);

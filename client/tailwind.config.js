@@ -52,8 +52,15 @@ export default {
           900: '#0f0d24',
           950: '#080716'
         },
-        // Accent colors
+        // Accent colors - golden amber tones for progress indicators
         'golden': {
+          300: '#fcd34d',  // amber-300
+          400: '#fbbf24',  // amber-400 - primary golden
+          500: '#f59e0b',  // amber-500
+          600: '#d97706'   // amber-600
+        },
+        // Legacy coral accent (kept for backward compatibility)
+        'coral': {
           400: '#FF6F61',
           500: '#ff5a4f',
           600: '#e64b41'
@@ -79,7 +86,8 @@ export default {
         'float': 'float 6s ease-in-out infinite',
         'twinkle': 'twinkle 2s ease-in-out infinite',
         'shimmer': 'shimmer 1.5s ease-in-out infinite',
-        'slide-in': 'slideIn 0.3s ease-out'
+        'slide-in': 'slideIn 0.3s ease-out',
+        'gauge-pulse': 'gaugePulse 2s ease-in-out infinite'
       },
       keyframes: {
         float: {
@@ -97,6 +105,10 @@ export default {
         slideIn: {
           '0%': { transform: 'translateX(-10px)', opacity: 0 },
           '100%': { transform: 'translateX(0)', opacity: 1 }
+        },
+        gaugePulse: {
+          '0%, 100%': { filter: 'drop-shadow(0 0 4px rgba(251, 191, 36, 0.4))' },
+          '50%': { filter: 'drop-shadow(0 0 12px rgba(251, 191, 36, 0.8))' }
         }
       }
     },

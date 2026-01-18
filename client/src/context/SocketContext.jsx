@@ -10,17 +10,36 @@ export function SocketProvider({ children }) {
   const [socket, setSocket] = useState(null);
   const [connected, setConnected] = useState(false);
   const [sessionId, setSessionId] = useState(null);
-  const { user } = useAuth();
+  const [reconnecting, setReconnecting] = useState(false);
+  const { user, loading: authLoading } = useAuth();
 
   // Track connection state to prevent premature disconnection
   const isConnectingRef = useRef(false);
   const socketRef = useRef(null);
   const reconnectAttemptsRef = useRef(0);
   const mountedRef = useRef(true);
-  const maxReconnectAttempts = 15;
+  const hasInitializedRef = useRef(false); // Track if socket was ever initialized this mount
+  const maxReconnectAttempts = 50; // Increased from 15 for better resilience
 
+  // Primary socket initialization effect - runs once when auth is ready
+  // FIX: Use empty dependency array to prevent double-initialization
+  // The user?.id dependency was causing socket to reinit when auth completes
   useEffect(() => {
     mountedRef.current = true;
+
+    // Wait for auth to finish loading before initializing
+    // This prevents the double-init issue where socket connects with undefined user,
+    // then effect re-runs when user becomes available
+    if (authLoading) {
+      console.log('[Socket] SKIP_INIT | auth still loading');
+      return;
+    }
+
+    // Already initialized this mount cycle - skip
+    if (hasInitializedRef.current) {
+      console.log('[Socket] SKIP_INIT | already initialized this mount');
+      return;
+    }
 
     // Prevent duplicate connections
     if (socketRef.current?.connected) {
@@ -48,6 +67,15 @@ export function SocketProvider({ children }) {
 
     const token = getStoredToken();
 
+    // No token = not authenticated, don't connect yet
+    if (!token) {
+      console.log('[Socket] SKIP_INIT | no auth token available');
+      return;
+    }
+
+    // Mark as initialized to prevent re-running
+    hasInitializedRef.current = true;
+
     // Create socket with autoConnect: false, then connect manually
     // This gives us more control over the connection lifecycle
     const socketInstance = io(window.location.origin, {
@@ -57,7 +85,8 @@ export function SocketProvider({ children }) {
       upgrade: false,             // Don't upgrade to websocket (avoids premature close errors)
       reconnection: true,
       reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000,
+      reconnectionDelayMax: 10000, // Increased max delay for stability
+      randomizationFactor: 0.5,    // Add jitter to prevent thundering herd
       reconnectionAttempts: maxReconnectAttempts,
       timeout: 30000,
       ackTimeout: 120000,
@@ -76,6 +105,7 @@ export function SocketProvider({ children }) {
       console.log('[Socket] CONNECTED | id:', socketInstance.id, '| authenticated:', !!token);
       isConnectingRef.current = false;
       reconnectAttemptsRef.current = 0;
+      setReconnecting(false);
       setConnected(true);
     });
 
@@ -88,7 +118,12 @@ export function SocketProvider({ children }) {
       if (reason === 'io server disconnect' && mountedRef.current) {
         // Server disconnected us - try to reconnect
         console.log('[Socket] Server initiated disconnect, attempting reconnect...');
+        setReconnecting(true);
         socketInstance.connect();
+      } else if (reason === 'transport close' || reason === 'ping timeout') {
+        // Network issue - show reconnecting status
+        console.log('[Socket] Network issue, will auto-reconnect...');
+        setReconnecting(true);
       }
       // 'io client disconnect' means we called disconnect() - don't auto-reconnect
     });
@@ -98,6 +133,7 @@ export function SocketProvider({ children }) {
       console.error('[Socket] CONNECTION_ERROR | error:', error?.message || error, '| attempt:', reconnectAttemptsRef.current);
       isConnectingRef.current = false;
       setConnected(false);
+      setReconnecting(true);
       reconnectAttemptsRef.current++;
 
       // If we've exceeded max attempts, try a fresh connection after delay
@@ -116,15 +152,18 @@ export function SocketProvider({ children }) {
       if (!mountedRef.current) return;
       console.log('[Socket] RECONNECTED | attempt:', attemptNumber);
       reconnectAttemptsRef.current = 0;
+      setReconnecting(false);
       setConnected(true);
     });
 
     socketInstance.on('reconnect_attempt', (attemptNumber) => {
       console.log('[Socket] RECONNECT_ATTEMPT | attempt:', attemptNumber);
+      setReconnecting(true);
     });
 
     socketInstance.on('reconnect_failed', () => {
       console.error('[Socket] RECONNECT_FAILED | all attempts exhausted');
+      setReconnecting(false);
     });
 
     setSocket(socketInstance);
@@ -148,8 +187,23 @@ export function SocketProvider({ children }) {
         socketRef.current = null;
       }
       isConnectingRef.current = false;
+      hasInitializedRef.current = false; // Reset for potential remount
     };
-  }, [user?.id]); // Only reconnect when user ID changes, not entire user object
+  }, [authLoading]); // Only depend on authLoading - runs once when auth completes
+
+  // Separate effect for handling logout - disconnect socket when user logs out
+  useEffect(() => {
+    // If user becomes null/undefined (logout) and we have a socket, disconnect
+    if (!user && !authLoading && socketRef.current) {
+      console.log('[Socket] User logged out - disconnecting socket');
+      socketRef.current.disconnect();
+      socketRef.current = null;
+      hasInitializedRef.current = false; // Allow reinitialization on next login
+      setSocket(null);
+      setConnected(false);
+      setSessionId(null);
+    }
+  }, [user, authLoading]);
 
   const joinSession = useCallback((id) => {
     if (socket && id) {
@@ -170,10 +224,11 @@ export function SocketProvider({ children }) {
   const value = useMemo(() => ({
     socket,
     connected,
+    reconnecting,
     sessionId,
     joinSession,
     leaveSession
-  }), [socket, connected, sessionId, joinSession, leaveSession]);
+  }), [socket, connected, reconnecting, sessionId, joinSession, leaveSession]);
 
   return (
     <SocketContext.Provider value={value}>

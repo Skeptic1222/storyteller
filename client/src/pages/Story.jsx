@@ -40,7 +40,7 @@ function Story() {
   const { sessionId } = useParams();
   const navigate = useNavigate();
   const { socket, connected, joinSession, leaveSession } = useSocket();
-  const { isPlaying, isPaused, isStartingPlayback, playAudio, queueAudio, pause, resume, stop, isUnlocked, hasPendingAudio, volume, setVolume, currentTime, duration } = useAudio();
+  const { isPlaying, isPaused, isStartingPlayback, playAudio, playUrl, queueAudio, pause, resume, stop, isUnlocked, hasPendingAudio, volume, setVolume, currentTime, duration } = useAudio();
   const audioUnlockAttempted = useRef(false);
 
   const [session, setSession] = useState(null);
@@ -345,6 +345,9 @@ function Story() {
     // Audio generation (deferred TTS after Begin Chapter)
     isGeneratingAudio,
     audioGenerationStatus,
+    // Pre-synthesized audio (unified progress)
+    preloadedAudio,
+    setPreloadedAudio,
     autoplayEnabled,
     setAutoplayEnabled,
     allStagesComplete,
@@ -428,6 +431,11 @@ function Story() {
       setIsGenerating(false);
     }
   });
+
+  // Memoize errors array to prevent LaunchScreen re-renders
+  const launchErrors = useMemo(() => {
+    return launchError ? [launchError] : [];
+  }, [launchError]);
 
   // QA checks hook - bridges socket events to QAChecksPanel
   useQAChecks(socket);
@@ -584,9 +592,87 @@ function Story() {
     console.log('[Story] Starting playback via launch sequence...');
     setManualContinue(false); // Reset manual continue flag - user clicked Begin Chapter
     setPlaybackRequested(true);
+
+    // Check if we have preloaded audio from unified progress bar
+    // This eliminates the second "Synthesizing" progress bar
+    if (preloadedAudio && preloadedAudio.hasAudio) {
+      console.log('[Story] USING_PRELOADED_AUDIO | hasIntro:', !!preloadedAudio.intro, '| hasScene:', !!preloadedAudio.scene, '| segments:', preloadedAudio.totalSegments);
+
+      // Queue intro audio first (title/synopsis narration)
+      if (preloadedAudio.intro && preloadedAudio.intro.base64) {
+        console.log('[Audio] Queueing preloaded intro audio');
+        setIntroAudioQueued(true);
+        setSceneAudioStarted(false);
+        sceneAudioStartedRef.current = false;
+        queueAudio(
+          preloadedAudio.intro.base64,
+          'mp3', // ElevenLabs returns mp3
+          // onStart callback
+          () => {
+            console.log('[Audio] STATE: INTRO_QUEUED → INTRO_PLAYING | preloaded intro started');
+          },
+          // onEnd callback
+          () => {
+            console.log('[Audio] STATE: INTRO_PLAYING → INTRO_COMPLETE | preloaded intro finished');
+            setIntroAudioQueued(false);
+          }
+        );
+      }
+
+      // Queue scene audio (main narration)
+      if (preloadedAudio.scene && preloadedAudio.scene.base64) {
+        console.log('[Audio] Queueing preloaded scene audio');
+
+        // Store word timings for karaoke/read-along feature
+        if (preloadedAudio.scene.wordTimings) {
+          const wordCount = preloadedAudio.scene.wordTimings.words?.length || preloadedAudio.scene.wordTimings.word_count || 0;
+          console.log('[Audio] WORD_TIMINGS_DEBUG (preloaded) | count:', wordCount);
+          setWordTimings(preloadedAudio.scene.wordTimings);
+        } else {
+          setWordTimings(null);
+        }
+
+        setSceneAudioQueued(true);
+        queueAudio(
+          preloadedAudio.scene.base64,
+          'mp3',
+          // onStart callback - scene audio begins
+          () => {
+            console.log('[Audio] STATE: SCENE_QUEUED → SCENE_PLAYING | preloaded scene started');
+            if (!sceneAudioStartedRef.current) {
+              sceneAudioStartedRef.current = true;
+              setSceneAudioStarted(true);
+              setIsAudioQueued(false);
+
+              // Trigger SFX with actual audio duration for accurate timing
+              const sfxList = sfxDetails?.sfxList;
+              const audioDurationSeconds = preloadedAudio.scene.wordTimings?.total_duration_ms
+                ? preloadedAudio.scene.wordTimings.total_duration_ms / 1000
+                : null;
+              if (sfxList && sfxList.length > 0 && sfxEnabled) {
+                console.log('[SFX] TRIGGER_SUCCESS | source: preloaded_audio | effects:', sfxList.length);
+                playSfxWithState(sfxList, audioDurationSeconds);
+              }
+            }
+          },
+          // onEnd callback - scene audio finished
+          () => {
+            console.log('[Audio] STATE: SCENE_PLAYING → SCENE_COMPLETE | preloaded scene finished');
+          }
+        );
+      }
+
+      // Clear preloaded audio after use (one-time use)
+      setPreloadedAudio(null);
+      return;
+    }
+
+    // Fallback: No preloaded audio - request server-side audio generation
+    // This triggers the legacy flow with a second progress bar
+    console.log('[Story] No preloaded audio, falling back to triggerPlayback()');
     triggerPlayback();
     // SFX is NOT triggered here - it triggers when wordTimings change (scene audio ready)
-  }, [socket, sessionId, triggerPlayback]);
+  }, [socket, sessionId, triggerPlayback, preloadedAudio, setPreloadedAudio, queueAudio, setIntroAudioQueued, setSceneAudioStarted, setSceneAudioQueued, setIsAudioQueued, setWordTimings, sfxDetails, sfxEnabled, playSfxWithState]);
 
   // Cancel playback - uses launch sequence hook
   const handleCancelPlayback = useCallback(() => {
@@ -870,21 +956,18 @@ function Story() {
       ? currentScene.audio_url
       : `${window.location.origin}${currentScene.audio_url}`;
 
-    // Queue the audio for playback
-    // Use queueAudio to respect the audio context's queue management
+    // Play stored audio directly using playUrl
+    // Note: queueAudio expects (audioData, format, onStart, onEnd) - not an options object
     const playStoredAudio = async () => {
       try {
-        console.log('[Story] Replay mode: queueing stored audio:', fullUrl);
-        await queueAudio(fullUrl, {
-          isSceneAudio: true,
-          onStart: () => {
-            console.log('[Audio] Replay: stored audio playback started');
-            setSceneAudioStarted(true);
-            sceneAudioStartedRef.current = true;
-          }
-        });
+        console.log('[Story] Replay mode: playing stored audio:', fullUrl);
+        await playUrl(fullUrl);
+        // Set state after playUrl resolves (audio has started playing)
+        console.log('[Audio] Replay: stored audio playback started');
+        setSceneAudioStarted(true);
+        sceneAudioStartedRef.current = true;
       } catch (error) {
-        console.error('[Story] Replay mode: failed to queue stored audio:', error);
+        console.error('[Story] Replay mode: failed to play stored audio:', error);
         setAudioError('Failed to play stored audio. Try regenerating the chapter.');
       }
     };
@@ -892,7 +975,7 @@ function Story() {
     // Small delay to ensure UI is ready
     const timer = setTimeout(playStoredAudio, 100);
     return () => clearTimeout(timer);
-  }, [currentScene?.audio_url, isGenerating, launchActive, sceneAudioStarted, isPlaying, isPaused, queueAudio]);
+  }, [currentScene?.audio_url, isGenerating, launchActive, sceneAudioStarted, isPlaying, isPaused, playUrl]);
 
   // Effect for autoplay when countdown finishes and autoplay is enabled
   // The useLaunchSequence hook handles autoplay internally, but we listen for playback start
@@ -1011,8 +1094,16 @@ function Story() {
       // Handle initial playback start when ready but not yet playing
       console.log('[Story] togglePause: Starting playback from ready state');
       handleStartPlayback();
+    } else if (currentScene?.scene_id && !isGeneratingAudio) {
+      // Handle existing story - request audio for current scene
+      console.log('[Story] togglePause: Requesting audio for existing scene', currentScene.scene_id);
+      setPlaybackRequested(true);
+      socket?.emit('request-scene-audio', {
+        session_id: sessionId,
+        scene_id: currentScene.scene_id
+      });
     }
-  }, [isPlaying, isPaused, isReadyToPlay, socket, sessionId, handleStartPlayback]);
+  }, [isPlaying, isPaused, isReadyToPlay, socket, sessionId, handleStartPlayback, currentScene, isGeneratingAudio]);
 
   const endStory = useCallback(async () => {
     try {
@@ -1465,9 +1556,10 @@ function Story() {
           // Show overlay ONLY while:
           // 1. Story isn't ended, AND
           // 2. Generating OR Launch is active OR audio is queued (covers entire generation-to-playback flow)
-          // 3. Audio hasn't started playing (sceneAudioStarted indicates playback begun)
+          // 3. Audio hasn't started playing OR launch is still active (launchActive takes precedence)
           // CRITICAL: Including isGenerating ensures progress bar shows immediately when generation starts
-          const showLaunchOverlay = !storyEnded && (isGenerating || launchActive || isAudioQueued) && !sceneAudioStarted;
+          // FIX: Keep overlay visible during entire launch phase even after audio starts
+          const showLaunchOverlay = !storyEnded && (isGenerating || launchActive || isAudioQueued) && (!sceneAudioStarted || launchActive);
 
           if (!showLaunchOverlay) return null;
 
@@ -1489,7 +1581,7 @@ function Story() {
                 stageStatuses={stageStatuses}
                 stageDetails={stageDetails}
                 isReadyToPlay={isReadyToPlay}
-                isGeneratingAudio={isGeneratingAudio || playbackRequested}
+                isGeneratingAudio={(isGeneratingAudio || playbackRequested) && !currentScene?.audio_url}
                 audioGenerationStatus={audioGenerationStatus}
                 isAudioQueued={isAudioQueued}
                 autoplayEnabled={autoplayEnabled}
@@ -1498,7 +1590,7 @@ function Story() {
                 onStartTextOnly={handleStartTextOnly}
                 onCancel={handleCancelPlayback}
                 warnings={launchWarnings}
-                errors={launchError ? [launchError] : []}
+                errors={launchErrors}
                 canRetryStages={canRetryStages}
                 retryingStage={retryingStage}
                 onRetryStage={retryStage}
@@ -1558,14 +1650,8 @@ function Story() {
             isCyoaEnabled={isCyoaEnabled}
             hasCheckpoints={checkpoints.length > 0}
             isPlayingRecording={isPlayingRecording}
-            audioStatus={(!storyEnded && !isPlaying && !isStartingPlayback && (playbackRequested || isGeneratingAudio || (isAudioQueued && !sceneAudioStarted)))
-              ? {
-                message: audioGenerationStatus?.message
-                  || (isAudioQueued ? 'Narration queued — starting playback…' : 'Preparing narration…'),
-                progress: Number.isFinite(audioGenerationStatus?.progress) ? audioGenerationStatus.progress : null,
-                onCancel: handleCancelPlayback
-              }
-              : null}
+            // Note: audioStatus prop removed (Bug Fix 3) - secondary progress bar eliminated
+            // All progress is now unified in LaunchScreen
             // Chapter number for "Next Chapter X" button label
             nextChapterNumber={(currentScene?.scene_index ?? 0) + 2}
             // Story format for dynamic terminology

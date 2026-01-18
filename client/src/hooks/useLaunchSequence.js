@@ -62,7 +62,8 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
     [STAGES.VOICES]: STATUS.PENDING,
     [STAGES.SFX]: STATUS.PENDING,
     [STAGES.COVER]: STATUS.PENDING,
-    [STAGES.QA]: STATUS.PENDING
+    [STAGES.QA]: STATUS.PENDING,
+    [STAGES.AUDIO]: STATUS.PENDING  // Audio synthesis stage
   });
   const [stageDetails, setStageDetails] = useState({});
   const [isReady, setIsReady] = useState(false);
@@ -105,6 +106,9 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
   // Audio queued state - bridges gap between audio-ready and audio-playing
   // This keeps the loading indicator visible until audio actually starts
   const [isAudioQueued, setIsAudioQueued] = useState(false);
+
+  // Pre-synthesized audio data from unified progress (no second progress bar!)
+  const [preloadedAudio, setPreloadedAudio] = useState(null);
 
   // HUD state - Agent status tracking
   const [agents, setAgents] = useState(() => {
@@ -177,7 +181,8 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
       [STAGES.VOICES]: STATUS.PENDING,
       [STAGES.SFX]: STATUS.PENDING,
       [STAGES.COVER]: STATUS.PENDING,
-      [STAGES.QA]: STATUS.PENDING
+      [STAGES.QA]: STATUS.PENDING,
+      [STAGES.AUDIO]: STATUS.PENDING
     });
     setStageDetails({});
     setIsReady(false);
@@ -191,6 +196,7 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
     setIsRegeneratingCover(false);
     setIsGeneratingAudio(false);
     setAudioGenerationStatus(null);
+    setPreloadedAudio(null);  // Clear pre-synthesized audio
 
     // Reset HUD state
     const initialAgents = {};
@@ -473,6 +479,22 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
           totalCharacters: data.voiceDetails.totalCharacters || data.voiceDetails.characters.length,
           totalVoices: data.voiceDetails.totalVoices || data.voiceDetails.characters.length
         });
+      }
+
+      // Store pre-synthesized audio if available (unified progress - no second progress bar!)
+      if (data.audioDetails && data.audioDetails.hasAudio) {
+        console.log('[Launch] AUDIO_PRELOADED | hasIntro:', !!data.audioDetails.intro, '| hasScene:', !!data.audioDetails.scene, '| segments:', data.audioDetails.totalSegments);
+        setPreloadedAudio(data.audioDetails);
+        // Mark narrator agent as complete since audio is pre-synthesized
+        setAgents(prev => ({
+          ...prev,
+          narrator: {
+            ...prev.narrator,
+            status: 'complete',
+            message: `Audio ready (${data.audioDetails.totalSegments} segments)`,
+            progress: 100
+          }
+        }));
       }
 
       // Confirm ready event received (cancels server watchdog)
@@ -856,24 +878,24 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
     ([_, status]) => status === STATUS.IN_PROGRESS
   )?.[0] || null;
 
-  // Helper functions for usage display
-  const formatCost = (cost) => {
+  // Helper functions for usage display - memoized to prevent re-renders
+  const formatCost = useCallback((cost) => {
     if (cost === undefined || cost === null) return '$0.00';
     return `$${cost.toFixed(4)}`;
-  };
+  }, []);
 
-  const formatTokens = (tokens) => {
+  const formatTokens = useCallback((tokens) => {
     if (!tokens) return '0';
     if (tokens >= 1000000) return `${(tokens / 1000000).toFixed(1)}M`;
     if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}k`;
     return tokens.toString();
-  };
+  }, []);
 
-  const formatCharacters = (chars) => {
+  const formatCharacters = useCallback((chars) => {
     if (!chars) return '0';
     if (chars >= 1000) return `${(chars / 1000).toFixed(1)}k`;
     return chars.toString();
-  };
+  }, []);
 
   return {
     // State
@@ -907,6 +929,10 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
     // Audio generation (deferred TTS)
     isGeneratingAudio,
     audioGenerationStatus,
+
+    // Pre-synthesized audio (unified progress - no second progress bar)
+    preloadedAudio,
+    setPreloadedAudio,
 
     // HUD data
     agents,
