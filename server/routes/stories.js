@@ -681,14 +681,22 @@ router.post('/:id/generate-outline', requireAuth, validateSessionId, requireSess
 
   } catch (error) {
     const { id } = req.params;
-    logger.error(`[GenerateOutline] Error for session ${id}:`, error.message);
-    // FIX: Pass specific error message to client for better UX
+    // PHASE 2 FIX: Log full error with stack trace for debugging
+    logger.error(`[GenerateOutline] Error for session ${id}:`, {
+      message: error.message,
+      stack: error.stack,
+      name: error.name
+    });
+    // Pass specific error message to client for better UX
     const clientMessage = error.message.includes('Outline generation failed')
+      || error.message.includes('Failed to load session')
+      || error.message.includes('invalid title')
+      || error.message.includes('no characters')
       ? error.message
       : 'Failed to generate outline. Please try again.';
     res.status(500).json({
       error: clientMessage,
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 });

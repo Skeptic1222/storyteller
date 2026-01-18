@@ -79,3 +79,77 @@ database/*.db
 database/*.sqlite
 
 .claude-session
+
+# Claude Code session artifacts
+.codex-session
+.playwright-mcp/
+tmpclaude-*
+
+# Analysis and documentation files (session artifacts)
+*_ANALYSIS*.md
+*_SUMMARY*.md
+*_REPORT*.md
+*_FINDINGS*.md
+ACCESSIBILITY_*.md
+AUDIO_TTS_*.md
+CODE_REVIEW*.md
+COMPREHENSIVE_*.md
+CONTENT_SAFETY_*.md
+DATABASE_OPTIMIZATION*.md
+FIXES_DOCUMENTATION*.md
+GOOGLE_OAUTH*.md
+HOTFIX_*.md
+IIS_*.md
+IMPLEMENTATION_SUMMARY*.md
+INVESTIGATION_*.md
+OAUTH_*.md
+PERFORMANCE_OPTIMIZATION*.md
+READING_SCREEN*.md
+SESSION_SUMMARY*.md
+TESTING_*.md
+
+# Temporary SQL query files
+temp_*.sql
+temp*.sql
+test_query.sql
+analysis_query.sql
+check_*.sql
+
+# Test scripts (one-time debugging)
+test-*.js
+check-*.js
+continue-story.js
+create-*.js
+
+# Test screenshots additional patterns
+test_*.png
+venice_test_*.png
+test-results/
+test-screenshots*/
+
+# Temporary report files
+*-routing-test-report.txt
+venice-routing-test-report.txt
+
+# Generated asset directories (runtime only)
+public/covers/
+public/portraits/
+public/sfx/
+
+# Shell-created broken paths (copy command artifacts)
+*\357\200\*
+"C\357*
+"public/*
+"client/*
+
+# Audience directory (if accidentally created at root)
+audience/
+
+# One-time fix scripts
+apply-*.ps1
+apply_*.ps1
+apply_*.py
+check_braces.cjs
+
+# Client public assets (generated at runtime, copied from node_modules)
+client/public/assets/

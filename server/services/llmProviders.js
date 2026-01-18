@@ -105,10 +105,10 @@ export { GORE_THRESHOLDS, ROMANCE_THRESHOLDS, VIOLENCE_THRESHOLDS };
 // Optimized parameters for reducing repetition and improving creative output
 // ============================================================================
 const VENICE_PARAMS = {
-  temperature: 0.85,          // Slightly higher for creativity
-  frequency_penalty: 0.4,     // Reduce word/phrase repetition
-  presence_penalty: 0.3,      // Encourage topic diversity
-  top_p: 0.92                 // Nucleus sampling for quality
+  temperature: 0.75,          // Balanced: creative but coherent
+  frequency_penalty: 0.6,     // Strong repetition reduction for longer content
+  presence_penalty: 0.4,      // Encourage topic diversity
+  top_p: 0.90                 // Slightly tighter sampling for quality
 };
 
 /**
@@ -430,6 +430,8 @@ export function analyzeContentRequirements(settings) {
   const adultContent = intensity.adultContent || 0;
   const sensuality = intensity.sensuality || 0;
   const explicitness = intensity.explicitness || 0;
+  const language = intensity.language || 0;
+  const sexualViolence = intensity.sexualViolence || 0;
 
   // Children or general audience always use OpenAI
   if (audience !== 'mature') {
@@ -437,29 +439,44 @@ export function analyzeContentRequirements(settings) {
       provider: PROVIDERS.OPENAI,
       reason: 'Non-mature audience uses safe provider',
       requiresVenice: false,
-      intensity: { gore, violence, romance, scary, adultContent, sensuality, explicitness }
+      intensity: { gore, violence, romance, scary, adultContent, sensuality, explicitness, language, sexualViolence }
     };
   }
 
   // Check if any intensity exceeds Venice threshold
-  // Using >= for consistency: 60+ gore, 50+ adultContent triggers Venice for explicit content
-  // FIXED: Changed from > to >= so that boundary values (60 gore, 50 adult) actually trigger Venice
+  // Thresholds aligned with client-side PROVIDER_THRESHOLDS:
+  // - violence: 61+ (graphic violence)
+  // - gore: 61+ (graphic gore)
+  // - romance: 71+ (explicit romance)
+  // - adultContent: 50+ (explicit adult content)
+  // - sensuality: 71+ (explicit sensuality)
+  // - explicitness: 71+ (explicit content)
+  // - scary: 71+ (intense horror)
+  // - language: 51+ (heavy profanity)
+  // - sexualViolence: 1+ (ANY non-zero triggers Venice - critical content type)
   const requiresVenice =
-    gore >= GORE_THRESHOLDS.MODERATE ||
-    violence >= VIOLENCE_THRESHOLDS.MODERATE ||
-    romance >= ROMANCE_THRESHOLDS.STEAMY ||
+    gore >= 61 ||
+    violence >= 61 ||
+    romance >= 71 ||
     adultContent >= 50 ||
-    explicitness >= 70 ||
-    sensuality >= 70;
+    explicitness >= 71 ||
+    sensuality >= 71 ||
+    scary >= 71 ||
+    language >= 51 ||
+    sexualViolence >= 1; // ANY non-zero value triggers Venice for this sensitive content type
 
   // Estimate provider split for this configuration
   let venicePercentage = 0;
   if (requiresVenice) {
+    // Sexual violence content ALWAYS needs Venice for ALL scenes - prioritize this check
+    if (sexualViolence > 0) {
+      venicePercentage = 50; // Sexual violence content requires Venice throughout
+    }
     // Estimate based on how much content likely needs Venice
     // High explicitness or adultContent > 70 = very explicit, needs Venice for most scenes
-    if (gore > 80 || violence > 80 || romance > 80 || adultContent > 70 || explicitness > 80) {
+    else if (gore > 80 || violence > 80 || romance > 80 || adultContent > 70 || explicitness > 80) {
       venicePercentage = 40; // Very intense - many scenes need Venice
-    } else if (gore > 60 || violence > 60 || romance > 60 || adultContent > 50 || explicitness > 70 || sensuality > 70) {
+    } else if (gore > 60 || violence > 60 || romance > 60 || adultContent > 50 || explicitness > 70 || sensuality > 70 || scary > 70 || language > 50) {
       venicePercentage = 25; // Intense - some scenes need Venice
     } else {
       venicePercentage = 10; // Moderate - few scenes need Venice
@@ -469,11 +486,11 @@ export function analyzeContentRequirements(settings) {
   return {
     provider: requiresVenice ? PROVIDERS.VENICE : PROVIDERS.OPENAI,
     reason: requiresVenice
-      ? `Mature content with high intensity (gore:${gore}, violence:${violence}, romance:${romance}, adultContent:${adultContent}, sensuality:${sensuality}, explicitness:${explicitness})`
+      ? `Mature content with high intensity (gore:${gore}, violence:${violence}, romance:${romance}, adultContent:${adultContent}, sensuality:${sensuality}, explicitness:${explicitness}, scary:${scary}, language:${language}, sexualViolence:${sexualViolence})`
       : 'Mature audience with moderate intensity - OpenAI can handle',
     requiresVenice,
     venicePercentage,
-    intensity: { gore, violence, romance, scary, adultContent, sensuality, explicitness }
+    intensity: { gore, violence, romance, scary, adultContent, sensuality, explicitness, language, sexualViolence }
   };
 }
 

@@ -1061,6 +1061,9 @@ ${endingInstructions}`;
         throw new Error('Empty content returned from AI');
       }
 
+      // PHASE 2 FIX: Log raw response for debugging before parsing
+      logger.debug(`[generateOutline] Raw LLM response (preview): ${result.content.substring(0, 800)}`);
+
       const parsed = parseJsonResponse(result.content);
 
       // Validate critical fields
@@ -1073,25 +1076,27 @@ ${endingInstructions}`;
         throw new Error('Generated outline has no characters');
       }
 
-      // CRITICAL: Validate gender for ALL characters - fail loud if missing
-      // This ensures LLM provides gender, eliminating need for regex inference
+      // PHASE 2 FIX: Gender validation with fallback instead of failure
+      // Log warnings but assign default gender to prevent generation failure
       const validGenders = ['male', 'female', 'non-binary', 'neutral'];
-      const genderErrors = [];
+      const genderWarnings = [];
 
       for (const char of parsed.main_characters) {
         const gender = char.gender?.toLowerCase()?.trim();
         if (!gender || !validGenders.includes(gender)) {
-          genderErrors.push(`"${char.name}": gender is "${char.gender || 'MISSING'}"`);
+          genderWarnings.push(`"${char.name}": gender was "${char.gender || 'MISSING'}", defaulting to "neutral"`);
+          // Assign default gender instead of failing
+          char.gender = 'neutral';
         }
       }
 
-      if (genderErrors.length > 0) {
-        logger.error(`[generateOutline] Gender validation FAILED for ${genderErrors.length} characters:`);
-        genderErrors.forEach(err => logger.error(`[generateOutline]   - ${err}`));
-        throw new Error(`Outline missing valid gender for: ${genderErrors.join(', ')}. Gender MUST be one of: male, female, non-binary, neutral`);
+      if (genderWarnings.length > 0) {
+        logger.warn(`[generateOutline] Gender validation: ${genderWarnings.length} characters needed default gender:`);
+        genderWarnings.forEach(warn => logger.warn(`[generateOutline]   - ${warn}`));
+        logger.warn(`[generateOutline] Generation continues with defaults. Valid genders: male, female, non-binary, neutral`);
+      } else {
+        logger.info(`[generateOutline] Gender validation PASSED - all ${parsed.main_characters.length} characters have valid gender`);
       }
-
-      logger.info(`[generateOutline] Gender validation PASSED - all ${parsed.main_characters.length} characters have valid gender`);
 
       // VERBOSE LOGGING: Log outline generation success
       logger.info(`[Outline] ============================================================`);
@@ -1154,7 +1159,8 @@ export async function generateSceneWithDialogue(context) {
     contextSummary = null,
     complexity = 0.5,
     sessionId = null,
-    storyBibleContext = null // ★ ADVANCED MODE: Full Story Bible context
+    storyBibleContext = null, // ★ ADVANCED MODE: Full Story Bible context
+    customPrompt = null // P0 FIX: User's original premise for scene continuity
   } = context;
 
   logger.info(`[Scene+Dialogue] ============================================================`);
@@ -1334,6 +1340,17 @@ Current act: ${outline.acts?.[Math.floor(sceneIndex / 3)]?.summary || 'Main stor
   // ★ ADVANCED MODE: Add full Story Bible context from library ★
   if (storyBibleSection) {
     scenePrompt += storyBibleSection;
+  }
+
+  // P0 FIX: Include user's original premise so scenes fulfill the request
+  if (customPrompt?.trim()) {
+    scenePrompt += `\n\n=== USER'S ORIGINAL REQUEST ===
+${customPrompt}
+=== END ORIGINAL REQUEST ===
+
+CRITICAL: Your scene MUST fulfill the user's original request above.
+This is what they asked for - make sure the story delivers it.`;
+    logger.info(`[Scene+Dialogue] Added custom prompt context: ${customPrompt.substring(0, 100)}...`);
   }
 
   // Format instructions - Adjusted by story_length (short, medium, long)
@@ -3144,12 +3161,168 @@ Return ONLY the fixed text with no explanation or markup.`;
   }
 }
 
+/**
+ * Generate a scaffolded scene with placeholders for mature content
+ *
+ * This is part of the Venice Scaffolding Architecture:
+ * 1. OpenAI generates structure with placeholders (this function)
+ * 2. Venice expands placeholders with explicit content
+ * 3. Content is stitched back together
+ *
+ * @param {Object} context - Scene generation context
+ * @param {Object} intensitySettings - Intensity slider values
+ * @param {Object} authorStyle - Author style configuration
+ * @returns {Promise<string>} Scaffolded scene with placeholders
+ */
+export async function generateScaffoldedScene(context, intensitySettings, authorStyle) {
+  const {
+    outline,
+    sceneIndex,
+    previousScene,
+    characters,
+    preferences,
+    lorebookContext = '',
+    storyBibleContext = null,
+    contextSummary = null,
+    complexity = 0.5,
+    sessionId = null,
+    customPrompt = null
+  } = context;
+
+  // Import placeholder instructions builder
+  const { buildPlaceholderInstructions } = await import('./prompts/scaffoldPromptTemplates.js');
+
+  logger.info(`[ScaffoldGen] ============================================================`);
+  logger.info(`[ScaffoldGen] GENERATING SCAFFOLDED SCENE ${sceneIndex + 1}`);
+  logger.info(`[ScaffoldGen] Session: ${sessionId || 'N/A'} | Story: "${outline?.title || 'Unknown'}"`);
+  logger.info(`[ScaffoldGen] Intensity: violence=${intensitySettings?.violence || 50}, gore=${intensitySettings?.gore || 50}, romance=${intensitySettings?.romance || 50}, adult=${intensitySettings?.adultContent || 0}, language=${intensitySettings?.language || 50}`);
+  logger.info(`[ScaffoldGen] Author Style: ${authorStyle?.name || 'Default'}`);
+  logger.info(`[ScaffoldGen] ============================================================`);
+
+  // Build character context
+  const characterList = characters?.map(c => ({
+    name: c.name,
+    gender: c.gender || 'unknown',
+    role: c.role || 'character',
+    description: c.description || '',
+    voice_description: c.voice_description || ''
+  })) || [];
+
+  // Build placeholder instructions based on intensity settings
+  const placeholderInstructions = buildPlaceholderInstructions(intensitySettings);
+
+  // Get scene beat information
+  const currentSceneBeat = outline?.scenes?.[sceneIndex] || {};
+  const nextSceneBeat = outline?.scenes?.[sceneIndex + 1] || null;
+
+  // Build author style section
+  const authorStyleSection = authorStyle ? `
+=== AUTHOR STYLE: ${authorStyle.name} ===
+${authorStyle.algorithm || ''}
+
+VOICE & TONE:
+- Narrative Style: ${authorStyle.style?.narrative || 'Third person limited'}
+- Dialogue Style: ${authorStyle.style?.dialogue || 'Natural and character-driven'}
+- Tone: ${authorStyle.style?.tone || 'Engaging and immersive'}
+- Language: ${authorStyle.style?.language || 'Literary but accessible'}
+
+Maintain this author's distinctive voice throughout the scaffold.
+The placeholders will be expanded to match this style.
+` : '';
+
+  // Build the scaffold generation prompt
+  const scaffoldPrompt = `You are a master storyteller generating a SCAFFOLD for a mature story scene.
+
+${authorStyleSection}
+
+=== STORY CONTEXT ===
+Title: ${outline?.title || 'Unknown'}
+Genre: ${outline?.genre || preferences?.genre || 'Fiction'}
+Setting: ${outline?.setting || 'A rich and detailed world'}
+
+=== CHARACTERS ===
+${characterList.map(c => `- ${c.name} (${c.gender}): ${c.role}${c.description ? ` - ${c.description}` : ''}`).join('\n')}
+
+=== CURRENT SCENE ===
+Scene ${sceneIndex + 1}: ${currentSceneBeat.title || currentSceneBeat.summary || 'Continue the story'}
+${currentSceneBeat.description ? `Description: ${currentSceneBeat.description}` : ''}
+${currentSceneBeat.mood ? `Mood: ${currentSceneBeat.mood}` : ''}
+
+${previousScene ? `=== PREVIOUS SCENE SUMMARY ===\n${typeof previousScene === 'string' ? previousScene.substring(0, 500) : previousScene.summary || 'The story continues...'}\n` : ''}
+
+${contextSummary ? `=== STORY CONTEXT ===\n${contextSummary}\n` : ''}
+
+${lorebookContext ? `=== WORLD LORE ===\n${lorebookContext}\n` : ''}
+
+${customPrompt ? `=== USER'S STORY PREMISE ===\n${customPrompt}\n` : ''}
+
+${nextSceneBeat ? `=== UPCOMING (for foreshadowing) ===\nNext scene will involve: ${nextSceneBeat.title || nextSceneBeat.summary || 'the story continues'}\n` : ''}
+
+${placeholderInstructions}
+
+=== YOUR TASK ===
+Write Scene ${sceneIndex + 1} as a SCAFFOLD with placeholders for mature content.
+
+Requirements:
+1. Write rich, complete narrative AROUND the placeholders
+2. Maintain ${authorStyle?.name || 'the author'}'s distinctive voice
+3. Include character thoughts, emotions, atmospheric details
+4. Use dialogue naturally (with dialogue tags)
+5. Insert appropriate PLACEHOLDERS where mature content belongs
+6. Target approximately ${Math.round(300 + (complexity * 400))} words (excluding placeholder expansions)
+
+The scaffold should be a complete scene that reads well even with placeholders visible.
+Each placeholder will be seamlessly replaced with content matching its intensity level.
+
+BEGIN SCENE ${sceneIndex + 1}:
+`;
+
+  try {
+    // Use OpenAI for scaffold generation (its strength is structure and style)
+    const response = await callLLM({
+      messages: [{ role: 'user', content: scaffoldPrompt }],
+      model: getCreativeModel(),
+      forceProvider: PROVIDERS.OPENAI, // Always use OpenAI for scaffolding
+      temperature: 0.8,
+      max_tokens: 3000,
+      agent_name: 'scaffold_generator'
+    });
+
+    if (!response || typeof response !== 'string') {
+      throw new Error('OpenAI returned empty scaffold');
+    }
+
+    logger.info(`[ScaffoldGen] Generated scaffold: ${response.length} chars`);
+
+    // Log placeholder count for monitoring
+    const placeholderCount = (response.match(/\[[A-Z_]+:/g) || []).length;
+    logger.info(`[ScaffoldGen] Placeholders inserted: ${placeholderCount}`);
+
+    // Track usage
+    usageTracker.recordLLMCall({
+      provider: 'openai',
+      model: getCreativeModel(),
+      inputTokens: Math.round(scaffoldPrompt.length / 4),
+      outputTokens: Math.round(response.length / 4),
+      agent_name: 'scaffold_generator',
+      sessionId
+    });
+
+    return response.trim();
+
+  } catch (error) {
+    logger.error(`[ScaffoldGen] Error generating scaffold:`, error);
+    throw error;
+  }
+}
+
 export default {
   completion,
   completionWithRouting,
   callAgent,
   generateOutline,
   generateScene,
+  generateScaffoldedScene,
   polishForNarration,
   checkSafety,
   generateChoices,

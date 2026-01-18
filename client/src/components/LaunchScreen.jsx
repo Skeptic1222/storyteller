@@ -16,7 +16,7 @@ import {
   Mic, Volume2, Image, Shield, Check, X, AlertCircle,
   Loader2, Play, ChevronDown, Users, Clock, Sparkles,
   RefreshCw, RotateCcw, Activity, DollarSign, BookOpen,
-  Pen, UserPlus, Wand2, Star, Zap, Timer
+  Pen, UserPlus, Wand2, Star, Zap, Timer, AudioLines
 } from 'lucide-react';
 
 // Import HUD components
@@ -521,7 +521,9 @@ const LaunchScreen = memo(function LaunchScreen({
   const [progressLogExpanded, setProgressLogExpanded] = useState(true);
 
   // Elapsed time tracking for user engagement
-  const startTimeRef = useRef(null);
+  // Bug 1 Fix: Use server's startTime from generationProgress (survives page refresh)
+  // Falls back to local time only if server hasn't provided one
+  const localStartTimeRef = useRef(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
   // Check if all stages are pending (needed for timer logic)
@@ -530,34 +532,39 @@ const LaunchScreen = memo(function LaunchScreen({
   );
 
   // Track elapsed time when generation is active
+  // Bug 1 Fix: Prefer server startTime over local time for refresh resilience
   useEffect(() => {
-    // Start timer when generation begins
-    if ((isGenerating || !allStagesPendingForTimer) && !startTimeRef.current) {
-      startTimeRef.current = Date.now();
-    }
-
     // Stop tracking when ready to play
     if (isReadyToPlay) {
       return;
     }
 
+    // Start local timer as fallback when generation begins (server time may not be available yet)
+    if ((isGenerating || !allStagesPendingForTimer) && !localStartTimeRef.current) {
+      localStartTimeRef.current = Date.now();
+    }
+
     // Update elapsed time every second
     const interval = setInterval(() => {
-      if (startTimeRef.current) {
-        const elapsed = Math.floor((Date.now() - startTimeRef.current) / 1000);
+      // Bug 1 Fix: Prefer server startTime (survives refresh) over local time
+      const serverStartTime = generationProgress?.startTime;
+      const effectiveStartTime = serverStartTime || localStartTimeRef.current;
+
+      if (effectiveStartTime) {
+        const elapsed = Math.floor((Date.now() - effectiveStartTime) / 1000);
         setElapsedSeconds(elapsed);
       }
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [isGenerating, isReadyToPlay, allStagesPendingForTimer]);
+  }, [isGenerating, isReadyToPlay, allStagesPendingForTimer, generationProgress?.startTime]);
 
   // Reset timer when component becomes visible for a new generation
   useEffect(() => {
     if (isVisible && !isReadyToPlay) {
       // Only reset if we're starting fresh (all stages pending and not generating yet)
       if (allStagesPendingForTimer && !isGenerating) {
-        startTimeRef.current = null;
+        localStartTimeRef.current = null;
         setElapsedSeconds(0);
       }
     }
@@ -655,17 +662,20 @@ const LaunchScreen = memo(function LaunchScreen({
   const activityProgressPercent = Math.max(5, Math.min(100, currentActivityProgress));
   const effectiveDisplayPercent = isPlaybackPreparing ? playbackProgress : displayPercent;
 
-  // Debug logging for data flow
-  console.log('[LaunchScreen] Render state:', {
-    showHUD,
-    hasStats: !!stats,
-    statsNarratorCount: stats?.narratorCount,
-    statsSfxCount: stats?.sfxCount,
-    statsTitle: stats?.title,
-    statsSynopsis: stats?.synopsis?.substring(0, 50),
-    sfxDetails: sfxDetails ? { sfxCount: sfxDetails.sfxCount, sfxListLength: sfxDetails.sfxList?.length } : null,
-    characterVoicesCount: characterVoices?.length
-  });
+  // PHASE 3 FIX: Remove production debug logging (was causing 80+ console entries)
+  // Enable temporarily by setting localStorage.debug = 'launchscreen'
+  if (typeof window !== 'undefined' && window.localStorage?.getItem('debug')?.includes('launchscreen')) {
+    console.log('[LaunchScreen] Render state:', {
+      showHUD,
+      hasStats: !!stats,
+      statsNarratorCount: stats?.narratorCount,
+      statsSfxCount: stats?.sfxCount,
+      statsTitle: stats?.title,
+      statsSynopsis: stats?.synopsis?.substring(0, 50),
+      sfxDetails: sfxDetails ? { sfxCount: sfxDetails.sfxCount, sfxListLength: sfxDetails.sfxList?.length } : null,
+      characterVoicesCount: characterVoices?.length
+    });
+  }
 
   return (
     <div className="max-w-3xl mx-auto w-full animate-fade-in px-4 flex flex-col" style={{ maxHeight: 'calc(100vh - 120px)' }}>
@@ -772,14 +782,16 @@ const LaunchScreen = memo(function LaunchScreen({
                       { name: 'Writing', icon: Pen, shortName: 'Write' },
                       { name: 'Characters', icon: UserPlus, shortName: 'Cast' },
                       { name: 'Finalizing', icon: Wand2, shortName: 'Magic' }
-                    ].map((phase, index) => {
-                      const position = ((index + 1) / 4) * 100;
+                    ].map((phase, index, arr) => {
+                      // Position badges evenly: 0%, 33%, 66%, 100%
+                      const position = (index / (arr.length - 1)) * 100;
                       const phasePercent = (index + 1) * 25;
                       const isComplete = generationPercent >= phasePercent;
                       const isActive = generationPercent >= phasePercent - 25 && generationPercent < phasePercent;
                       // Adjust label position for edge badges to prevent cutoff
+                      const isLeftEdge = position <= 10;
                       const isRightEdge = position >= 90;
-                      const labelAlign = isRightEdge ? 'right-0' : 'left-1/2 -translate-x-1/2';
+                      const labelAlign = isLeftEdge ? 'left-0' : isRightEdge ? 'right-0' : 'left-1/2 -translate-x-1/2';
                       const PhaseIcon = phase.icon;
 
                       return (
@@ -1186,6 +1198,37 @@ const LaunchScreen = memo(function LaunchScreen({
                       ? 'All checks passed'
                       : stageStatuses[STAGES.QA] === STATUS.IN_PROGRESS
                         ? 'Validating content...'
+                        : 'Waiting...'}
+                  </p>
+                </div>
+
+                {/* Audio Synthesis Agent - Shows audio generation progress */}
+                <div className={`p-3 rounded-xl border transition-all ${
+                  stageStatuses[STAGES.AUDIO] === STATUS.IN_PROGRESS
+                    ? 'bg-blue-500/10 border-blue-500/50 ring-2 ring-blue-500/20'
+                    : stageStatuses[STAGES.AUDIO] === STATUS.SUCCESS
+                      ? 'bg-green-500/10 border-green-500/30'
+                      : 'bg-slate-800/50 border-slate-700'
+                }`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <AudioLines className={`w-4 h-4 ${
+                        stageStatuses[STAGES.AUDIO] === STATUS.IN_PROGRESS ? 'text-blue-400 animate-pulse' :
+                        stageStatuses[STAGES.AUDIO] === STATUS.SUCCESS ? 'text-green-400' : 'text-slate-500'
+                      }`} />
+                      <span className="text-xs font-medium text-slate-300">Audio</span>
+                    </div>
+                    {stageStatuses[STAGES.AUDIO] === STATUS.SUCCESS && (
+                      <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-green-500/20 text-green-400 inline-flex items-center">
+                        <Check className="w-3 h-3" />
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-slate-500">
+                    {stageStatuses[STAGES.AUDIO] === STATUS.SUCCESS
+                      ? 'Audio ready'
+                      : stageStatuses[STAGES.AUDIO] === STATUS.IN_PROGRESS
+                        ? 'Synthesizing narration...'
                         : 'Waiting...'}
                   </p>
                 </div>

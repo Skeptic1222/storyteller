@@ -102,6 +102,7 @@ import {
   callAgent,
   generateOutline,
   generateSceneWithDialogue,
+  generateScaffoldedScene,
   polishForNarration,
   checkSafety,
   generateChoices,
@@ -111,6 +112,11 @@ import {
   determineComplexity,
   validateStoryText
 } from './openai.js';
+
+// Venice Scaffolding Pipeline - OpenAI creates structure, Venice enhances explicit content
+import { shouldUseScaffoldingPipeline } from './prompts/scaffoldPromptTemplates.js';
+import { runScaffoldingPipeline } from './veniceEnhancer.js';
+import { getAuthorStyle } from './authorStyles.js';
 
 // External services
 import { ElevenLabsService, getVoiceNameById } from './elevenlabs.js';
@@ -128,6 +134,10 @@ import { convertDialogueMapToSegments } from './agents/dialogueSegmentUtils.js';
 import { filterSpeechTagsWithLLM } from './agents/speechTagFilterAgent.js';
 import { extractSpeakers, stripTags, parseTaggedProse } from './agents/tagParser.js';
 import { directVoiceActing } from './agents/voiceDirectorAgent.js';
+
+// Voice profile agents - generate mood and character voice profiles at story creation
+import { generateStoryMoodProfile } from './agents/storyMoodProfileAgent.js';
+import { generateCharacterVoiceProfiles } from './agents/characterVoiceProfileAgent.js';
 
 // P1 FIX: Minimum word count for chapters to ensure quality content
 // Picture books use a lower threshold (150 words), all others use 1500
@@ -328,36 +338,67 @@ export class Orchestrator {
     // Initialize usage tracking
     usageTracker.initSessionUsage(sessionId);
     logger.info(`[Orchestrator] Usage tracking initialized for session ${sessionId}`);
+
+    // Heartbeat mechanism for long-running operations
+    this._heartbeatInterval = null;
+    this._heartbeatCount = 0;
   }
 
   /**
    * Load all session data
+   * OPTIMIZED: Parallelized independent loads for faster startup
    */
   async loadSession() {
-    this.session = await loadSessionData(this.sessionId);
+    // OPTIMIZATION: Batch 1 - Load independent data in parallel
+    const [sessionData, storyBibleSession, outline, storyBible, contextSummary] = await Promise.all([
+      loadSessionData(this.sessionId),
+      loadStoryBibleSession(this.sessionId),
+      loadOutline(this.sessionId),
+      loadStoryBible(this.sessionId),
+      loadContextSummary(this.sessionId)
+    ]);
 
-    logger.info(`[Orchestrator] Session loaded | id: ${this.sessionId} | hide_speech_tags: ${this.session.config_json?.hide_speech_tags} | multi_voice: ${this.session.config_json?.multi_voice}`);
-
-    // Load Story Bible context for Advanced Mode
-    this.storyBibleContext = await loadStoryBibleSession(this.sessionId);
+    this.session = sessionData;
+    this.storyBibleContext = storyBibleSession;
     this.isAdvancedMode = !!this.storyBibleContext;
+    this.storyBible = storyBible;
+    this.contextSummary = contextSummary;
 
-    // Load outline
-    this.outline = await loadOutline(this.sessionId);
+    // Set outline (use storyBibleContext fallback if needed)
+    this.outline = outline;
     if (!this.outline && this.storyBibleContext?.outline) {
       this.outline = this.storyBibleContext.outline;
     }
 
-    // Load characters and lore
-    this.characters = await loadCharacters(this.sessionId, this.storyBibleContext);
-    this.lore = await loadLore(this.sessionId, this.storyBibleContext);
+    logger.info(`[Orchestrator] Session loaded | id: ${this.sessionId} | hide_speech_tags: ${this.session.config_json?.hide_speech_tags} | multi_voice: ${this.session.config_json?.multi_voice}`);
 
-    // Load story bible and context summary
-    this.storyBible = await loadStoryBible(this.sessionId);
-    this.contextSummary = await loadContextSummary(this.sessionId);
+    // OPTIMIZATION: Batch 2 - Load characters and lore in parallel (depend on storyBibleContext)
+    const [characters, lore] = await Promise.all([
+      loadCharacters(this.sessionId, this.storyBibleContext),
+      loadLore(this.sessionId, this.storyBibleContext)
+    ]);
 
-    // Load lorebook entries
+    this.characters = characters;
+    this.lore = lore;
+
+    // Load lorebook entries (depends on sessionId only)
     await this.lorebook.loadEntries();
+
+    // Load voice profiles from config_json if they exist (generated during outline creation)
+    const config = this.session.config_json || {};
+    if (config.story_mood_profile) {
+      this.storyMoodProfile = config.story_mood_profile;
+      logger.info(`[Orchestrator] Loaded story mood profile: ${this.storyMoodProfile.overall_mood}, pacing=${this.storyMoodProfile.pacing}`);
+    }
+
+    if (config.character_voice_profiles) {
+      // Convert from JSON object back to Map for easier lookup
+      this.characterVoiceProfiles = new Map();
+      for (const [name, profile] of Object.entries(config.character_voice_profiles)) {
+        this.characterVoiceProfiles.set(name, profile);
+      }
+      logger.info(`[Orchestrator] Loaded ${this.characterVoiceProfiles.size} character voice profiles`);
+    }
 
     return this.session;
   }
@@ -418,6 +459,59 @@ export class Orchestrator {
   }
 
   /**
+   * Start heartbeat progress updates for long-running operations
+   * Emits progress every 30 seconds to prevent stall detection false positives
+   * @param {string} phase - The progress phase name
+   * @param {string} baseMessage - Base message to display (will be appended with elapsed time)
+   */
+  startHeartbeat(phase, baseMessage) {
+    // Clear any existing heartbeat
+    this.stopHeartbeat();
+
+    this._heartbeatCount = 0;
+    const startTime = Date.now();
+
+    // Emit immediately
+    this.emitProgress(phase, baseMessage);
+
+    // Then emit every 30 seconds
+    this._heartbeatInterval = setInterval(() => {
+      this._heartbeatCount++;
+      const elapsedSeconds = Math.round((Date.now() - startTime) / 1000);
+      const elapsedMin = Math.floor(elapsedSeconds / 60);
+      const elapsedSec = elapsedSeconds % 60;
+      const timeStr = elapsedMin > 0 ? `${elapsedMin}m ${elapsedSec}s` : `${elapsedSec}s`;
+
+      // Cycle through encouraging messages
+      const messages = [
+        `${baseMessage} (${timeStr} elapsed)`,
+        `Still working... complex stories take time (${timeStr})`,
+        `Processing characters and dialogue (${timeStr})`,
+        `Building your story (${timeStr} elapsed)`,
+        `Almost there... finalizing content (${timeStr})`
+      ];
+      const messageIndex = this._heartbeatCount % messages.length;
+
+      this.emitProgress(phase, messages[messageIndex]);
+      logger.info(`[Orchestrator] HEARTBEAT | phase: ${phase} | count: ${this._heartbeatCount} | elapsed: ${timeStr}`);
+    }, 30000); // 30 seconds
+
+    logger.info(`[Orchestrator] Heartbeat started for phase: ${phase}`);
+  }
+
+  /**
+   * Stop heartbeat progress updates
+   */
+  stopHeartbeat() {
+    if (this._heartbeatInterval) {
+      clearInterval(this._heartbeatInterval);
+      this._heartbeatInterval = null;
+      this._heartbeatCount = 0;
+      logger.info(`[Orchestrator] Heartbeat stopped`);
+    }
+  }
+
+  /**
    * Process configuration input
    */
   async processConfiguration(input) {
@@ -450,7 +544,17 @@ export class Orchestrator {
    */
   async generateOutline() {
     this.emitProgress('outline_loading');
-    await this.loadSession();
+
+    // PHASE 2 FIX: Add try-catch around loadSession for better error context
+    try {
+      await this.loadSession();
+    } catch (loadError) {
+      logger.error(`[Orchestrator] Failed to load session ${this.sessionId}:`, {
+        error: loadError.message,
+        stack: loadError.stack
+      });
+      throw new Error(`Failed to load session: ${loadError.message}`);
+    }
 
     const config = this.session.config_json || {};
     const preferences = buildOutlinePreferences(this.session, config);
@@ -518,6 +622,88 @@ export class Orchestrator {
     });
 
     this.outline = { ...result, ...outline };
+
+    // ★ NEW: Generate voice profiles for better emotional narration ★
+    // This runs in parallel to avoid slowing down outline generation too much
+    try {
+      this.emitProgress('outline_analyzing_mood');
+
+      const config = this.session.config_json || {};
+      const genreForProfile = config.genre || config.genres?.primary || 'general fiction';
+      const themes = outline.themes || config.themes || [];
+      const audience = config.audience || 'general';
+
+      // Calculate average intensity from all intensity settings
+      const intensity = config.intensity || {};
+      const intensityValues = [
+        intensity.violence || 0,
+        intensity.romance || 0,
+        intensity.adultContent || 0,
+        intensity.gore || 0
+      ];
+      const avgIntensity = intensityValues.reduce((a, b) => a + b, 0) / intensityValues.length;
+
+      // Generate story mood profile
+      const storyMoodProfile = await generateStoryMoodProfile({
+        synopsis: outline.synopsis || '',
+        genre: genreForProfile,
+        themes,
+        targetAudience: audience,
+        intensityLevel: avgIntensity
+      });
+
+      logger.info(`[Orchestrator] Story mood profile generated: ${storyMoodProfile.overall_mood}, pacing=${storyMoodProfile.pacing}`);
+
+      // Generate character voice profiles for all main characters
+      const characterVoiceProfiles = new Map();
+      if (outline.main_characters?.length > 0) {
+        const storyContext = {
+          genre: genreForProfile,
+          mood: storyMoodProfile.overall_mood,
+          themes
+        };
+
+        const profiles = await generateCharacterVoiceProfiles(outline.main_characters, storyContext);
+        for (const [name, profile] of profiles) {
+          characterVoiceProfiles.set(name, profile);
+        }
+
+        logger.info(`[Orchestrator] Character voice profiles generated for ${profiles.size} characters`);
+      }
+
+      // Store profiles in config_json for later use during audio generation
+      // Convert Map to object for JSON storage
+      const characterProfilesObj = {};
+      for (const [name, profile] of characterVoiceProfiles) {
+        characterProfilesObj[name] = profile;
+      }
+
+      await pool.query(`
+        UPDATE story_sessions
+        SET config_json = jsonb_set(
+          jsonb_set(config_json, '{story_mood_profile}', $2::jsonb),
+          '{character_voice_profiles}', $3::jsonb
+        )
+        WHERE id = $1
+      `, [
+        this.sessionId,
+        JSON.stringify(storyMoodProfile),
+        JSON.stringify(characterProfilesObj)
+      ]);
+
+      // Store on instance for immediate use
+      this.storyMoodProfile = storyMoodProfile;
+      this.characterVoiceProfiles = characterVoiceProfiles;
+
+      logger.info('[Orchestrator] Voice profiles stored in session config');
+
+    } catch (profileError) {
+      // Don't fail outline generation if voice profiles fail - they're enhancement only
+      logger.warn(`[Orchestrator] Voice profile generation failed (continuing without): ${profileError.message}`);
+      this.storyMoodProfile = null;
+      this.characterVoiceProfiles = new Map();
+    }
+
     this.emitProgress('outline_complete');
     logger.info(`Outline generated: ${outline.title}`);
 
@@ -542,8 +728,12 @@ export class Orchestrator {
       throw new Error('No outline found. Generate outline first.');
     }
 
-    const sceneIndex = await getSceneCount(this.sessionId);
-    const previousScene = sceneIndex > 0 ? await getPreviousScene(this.sessionId) : null;
+    // OPTIMIZATION: Parallelize scene count and previous scene queries
+    const [sceneIndex, previousSceneResult] = await Promise.all([
+      getSceneCount(this.sessionId),
+      getPreviousScene(this.sessionId)
+    ]);
+    const previousScene = sceneIndex > 0 ? previousSceneResult : null;
     const targetScenes = getTargetSceneCount(this.session.config_json);
     const isFinal = sceneIndex >= targetScenes - 1;
 
@@ -565,11 +755,15 @@ export class Orchestrator {
       }
     }
 
-    // Check multi-voice early
-    const multiVoiceEnabled = this.session.config_json?.multi_voice === true || this.session.config_json?.multiVoice === true;
-    const willUseMultiVoice = multiVoiceEnabled && this.characters.length > 0;
+    // Check multi-voice early - BUG FIX: Use same logic as voiceHelpers.shouldUseMultiVoice
+    // Previously this was inconsistent: orchestrator required explicit true, voiceHelpers defaulted to enabled
+    // Now both use the same logic: enabled if explicitly true OR if characters exist (unless explicitly false)
+    const willUseMultiVoice = shouldUseMultiVoice({
+      config: this.session.config_json,
+      characters: this.characters
+    });
 
-    logger.info(`[Orchestrator] MULTI-VOICE CHECK | config.multi_voice: ${this.session.config_json?.multi_voice} | characters: ${this.characters.length} | willUseMultiVoice: ${willUseMultiVoice}`);
+    logger.info(`[Orchestrator] MULTI-VOICE CHECK | config.multi_voice: ${this.session.config_json?.multi_voice} | config.multiVoice: ${this.session.config_json?.multiVoice} | characters: ${this.characters.length} | willUseMultiVoice: ${willUseMultiVoice}`);
 
     // ★ HYBRID PIPELINE: Intent Validation for Mature Content ★
     // Analyze user's intent to ensure Venice.ai generates appropriately explicit content
@@ -626,11 +820,20 @@ export class Orchestrator {
       scenePreferences.pacing = intentAnalysis.pacing;
     }
 
-    // ★ HYBRID PIPELINE DECISION ★
+    // ★ SCAFFOLDING PIPELINE DECISION ★
+    // The scaffolding pipeline is the PREFERRED approach for mature content:
+    // 1. OpenAI generates structure with placeholders (leverages its strength)
+    // 2. Venice expands placeholders with explicit content (leverages its strength)
+    // 3. Content is stitched and optionally polished
+    const useScaffoldingPipeline = shouldUseScaffoldingPipeline(audienceSetting, intensitySettings);
+
+    // ★ HYBRID PIPELINE DECISION ★ (Legacy fallback)
     // For high explicit content, use the full hybrid pipeline
     // which has Venice.ai generate with tags, then OpenAI polishes non-explicit sections
     // P1 FIX: Include violence and gore in the full hybrid pipeline trigger
-    const useFullHybridPipeline = useHybridPipeline &&
+    // NOTE: Scaffolding pipeline is now preferred over hybrid pipeline
+    const useFullHybridPipeline = !useScaffoldingPipeline &&
+                                   useHybridPipeline &&
                                    (intensitySettings.adultContent >= 80 ||
                                     intensitySettings.romance >= 80 ||
                                     intensitySettings.violence >= 80 ||
@@ -639,10 +842,101 @@ export class Orchestrator {
 
     let sceneResult;
 
-    if (useFullHybridPipeline) {
+    if (useScaffoldingPipeline) {
+      // ★ SCAFFOLDING PIPELINE: OpenAI Scaffold + Venice Expansion + Stitch ★
+      logger.info(`[Orchestrator] ★ USING SCAFFOLDING PIPELINE for mature content | adult:${intensitySettings.adultContent} romance:${intensitySettings.romance} violence:${intensitySettings.violence} gore:${intensitySettings.gore} language:${intensitySettings.language || 50}`);
+      this.emitProgress('scaffold_generating', 'Generating story structure...');
+
+      try {
+        // Get author style for consistent voice throughout
+        const authorStyleId = this.session.config_json?.author_style || 'default';
+        const authorStyle = getAuthorStyle(authorStyleId);
+
+        // Build story context for the scaffold
+        const scaffoldContext = {
+          outline: {
+            title: this.outline?.title,
+            setting: this.outline?.setting,
+            scenes: this.outline?.scenes || this.outline?.acts,
+            synopsis: this.storyBibleContext?.synopsis?.synopsis || this.outline?.synopsis
+          },
+          sceneIndex,
+          previousScene,
+          characters: this.characters,
+          preferences: scenePreferences,
+          lorebookContext,
+          storyBibleContext: this.isAdvancedMode ? buildAdvancedModeContext(this.storyBibleContext, this.lore) : null,
+          contextSummary: this.contextSummary,
+          complexity,
+          sessionId: this.sessionId,
+          customPrompt: this.session.config_json?.custom_prompt
+        };
+
+        // Phase 1: Generate scaffold with OpenAI (can take 30-60 seconds)
+        // START HEARTBEAT to prevent stall detection false positives
+        this.startHeartbeat('scaffold_structure', 'Creating narrative structure...');
+        const scaffoldContent = await generateScaffoldedScene(scaffoldContext, intensitySettings, authorStyle);
+        this.stopHeartbeat();
+
+        // Phase 2-4: Expand placeholders with Venice and stitch (can take 2-3 minutes)
+        this.startHeartbeat('scaffold_expanding', 'Enhancing mature content...');
+        const pipelineResult = await runScaffoldingPipeline(scaffoldContent, scaffoldContext, authorStyle, {
+          logPrefix: `[Orchestrator:Scaffold:${this.sessionId}]`,
+          parallel: true,
+          coherencePass: (intensitySettings.adultContent >= 70 || intensitySettings.violence >= 70 || intensitySettings.gore >= 70),
+          maxConcurrent: 3,
+          onProgress: (progress) => {
+            if (progress.phase === 'expanding') {
+              this.emitProgress('scaffold_expanding', `Expanding placeholder ${progress.current}/${progress.total}`);
+            } else if (progress.phase === 'coherence') {
+              this.emitProgress('scaffold_coherence', 'Polishing transitions...');
+            }
+          }
+        });
+
+        // STOP HEARTBEAT after pipeline completes
+        this.stopHeartbeat();
+
+        logger.info(`[Orchestrator] Scaffolding pipeline complete:`, {
+          placeholdersExpanded: pipelineResult.stats.placeholdersExpanded,
+          byType: pipelineResult.stats.byType,
+          coherenceApplied: pipelineResult.stats.coherencePassApplied,
+          duration: pipelineResult.duration
+        });
+
+        // Convert to scene result format
+        sceneResult = {
+          content: pipelineResult.content,
+          dialogue_map: [],  // Will be extracted below if multi-voice needed
+          new_characters: [],
+          prose_format: 'scaffold',
+          wasScaffoldProcessed: true,
+          scaffoldStats: pipelineResult.stats
+        };
+
+        // If multi-voice is enabled, extract dialogue from the scaffolded content
+        if (willUseMultiVoice && this.characters.length > 0) {
+          logger.info('[Orchestrator] Extracting dialogue from scaffolded content for multi-voice');
+          const dialogueExtracted = extractDialogueFromContent(pipelineResult.content, this.characters);
+          sceneResult.dialogue_map = dialogueExtracted.dialogueMap;
+          sceneResult.new_characters = dialogueExtracted.newCharacters;
+          sceneResult.prose_format = dialogueExtracted.format;
+        }
+
+      } catch (scaffoldError) {
+        // STOP HEARTBEAT on error
+        this.stopHeartbeat();
+        // Fallback to normal flow if scaffolding fails
+        logger.error(`[Orchestrator] Scaffolding pipeline failed, falling back to normal flow:`, scaffoldError);
+        sceneResult = null; // Will trigger fallback below
+      }
+    }
+
+    if (!sceneResult && useFullHybridPipeline) {
       // ★ HYBRID PIPELINE: Venice + Tag Extraction + OpenAI Polish + Restore ★
       logger.info(`[Orchestrator] ★ USING FULL HYBRID PIPELINE for explicit content | adult:${intensitySettings.adultContent} romance:${intensitySettings.romance} violence:${intensitySettings.violence} gore:${intensitySettings.gore}`);
-      this.emitProgress('hybrid_generating');
+      // START HEARTBEAT for hybrid pipeline (can take 2-4 minutes)
+      this.startHeartbeat('hybrid_generating', 'Running hybrid content pipeline...');
 
       // Build the scene generation prompt
       const scenePrompt = `Write scene ${sceneIndex + 1} of the story "${this.outline?.title || 'Untitled'}".
@@ -669,6 +963,9 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
         skipOpenAIPolish: false,  // Let OpenAI improve non-explicit narrative sections
         skipCoherenceCheck: false // Validate final coherence via Venice
       });
+
+      // STOP HEARTBEAT after hybrid pipeline completes
+      this.stopHeartbeat();
 
       logger.info(`[Orchestrator] Hybrid pipeline complete:`, {
         wasHybridProcessed: hybridResult.wasHybridProcessed,
@@ -699,8 +996,14 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
         sceneResult.prose_format = dialogueExtracted.format;
       }
 
-    } else {
-      // ★ NORMAL FLOW: generateSceneWithDialogue with provider routing to Venice ★
+    }
+
+    // ★ NORMAL FLOW: Fallback if scaffolding/hybrid not used or failed ★
+    if (!sceneResult) {
+      // Normal flow: generateSceneWithDialogue with provider routing to Venice
+      logger.info(`[Orchestrator] Using normal scene generation flow`);
+      // START HEARTBEAT for normal scene generation (can take 30-90 seconds)
+      this.startHeartbeat('generating', 'Generating scene content...');
       sceneResult = await generateSceneWithDialogue({
         outline: {
           title: this.outline?.title,
@@ -717,8 +1020,11 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
         contextSummary: this.contextSummary,
         complexity,
         sessionId: this.sessionId,
-        storyBibleContext: this.isAdvancedMode ? buildAdvancedModeContext(this.storyBibleContext, this.lore) : null
+        storyBibleContext: this.isAdvancedMode ? buildAdvancedModeContext(this.storyBibleContext, this.lore) : null,
+        customPrompt: this.session.config_json?.custom_prompt // P0 FIX: Include user's original premise
       });
+      // STOP HEARTBEAT after scene generation
+      this.stopHeartbeat();
     }
 
     let rawText = sceneResult.content;
@@ -746,6 +1052,9 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
         isRetryForLength: true
       };
 
+      // START HEARTBEAT for regeneration (can take 30-90 seconds)
+      this.startHeartbeat('regenerating', `Regenerating chapter (was ${enhancedContext.previousWordCount} words, need ${enhancedContext.minRequiredWords})...`);
+
       // Skip hybrid pipeline for regeneration - use normal flow for better control
       const regenResult = await generateSceneWithDialogue({
         outline: {
@@ -763,8 +1072,12 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
         contextSummary: this.contextSummary,
         complexity,
         sessionId: this.sessionId,
-        storyBibleContext: this.isAdvancedMode ? buildAdvancedModeContext(this.storyBibleContext, this.lore) : null
+        storyBibleContext: this.isAdvancedMode ? buildAdvancedModeContext(this.storyBibleContext, this.lore) : null,
+        customPrompt: this.session.config_json?.custom_prompt // P0 FIX: Include user's original premise
       });
+
+      // STOP HEARTBEAT after regeneration
+      this.stopHeartbeat();
 
       return regenResult.content;
     };
@@ -942,13 +1255,12 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
       await markDialogueTaggingSkipped(scene.id);
     }
 
-    // Save choices
+    // OPTIMIZATION: Batch DB writes in parallel (saveChoices + updateSessionAfterScene)
+    const postSceneDbWrites = [updateSessionAfterScene(this.sessionId)];
     if (choices.length > 0) {
-      await saveChoices(this.sessionId, scene.id, choices);
+      postSceneDbWrites.push(saveChoices(this.sessionId, scene.id, choices));
     }
-
-    // Update session
-    await updateSessionAfterScene(this.sessionId);
+    await Promise.all(postSceneDbWrites);
 
     // Generate audio if not deferred
     let audioUrl = null;
@@ -1075,35 +1387,37 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
 
     logSegmentAnalysis(segments, finalText);
 
-    // P1 FIX: Enhance dialogue segments with voice direction for better emotion/prosody
+    // P1 FIX: Enhance ALL segments with voice direction for better emotion/prosody
+    // BUG FIX: Include narrator (not just dialogue), use correct field names, replace segments entirely
     try {
       const storyContext = {
         title: this.session.title || this.outline?.title,
-        genres: this.session.config_json?.genres || {},
-        mood: this.session.config_json?.mood || 'neutral',
+        // BUG FIX: Use 'genre' (singular string), not 'genres' (plural object)
+        genre: this.session.config_json?.genre || this.session.config_json?.genres?.primary || 'general fiction',
+        mood: this.session.config_json?.mood || this.session.config_json?.story_mood || 'neutral',
         audience: this.session.config_json?.audience || 'general',
-        characters: this.characters
+        characters: this.characters,
+        // Pass character voice profiles if available
+        characterProfiles: this.characterVoiceProfiles || {}
       };
 
-      // Only direct dialogue segments (narrator handled separately)
-      const dialogueSegments = segments.filter(s => s.type === 'dialogue' || s.type === 'DIALOGUE');
-      if (dialogueSegments.length > 0) {
-        const directions = await directVoiceActing(segments, storyContext, this.sessionId);
+      // BUG FIX: Direct ALL segments including narrator - narrator emotion matters!
+      if (segments.length > 0) {
+        // directVoiceActing returns NEW segments with v3AudioTags, voiceStability, voiceStyle already applied
+        const directedSegments = await directVoiceActing(segments, storyContext, this.sessionId);
 
-        // Apply directions to segments
-        if (directions && directions.length > 0) {
-          for (const direction of directions) {
-            const targetSegment = segments.find(s =>
-              s.text?.substring(0, 50) === direction.text?.substring(0, 50)
-            );
-            if (targetSegment && direction.audio_tags) {
-              targetSegment.audio_tags = direction.audio_tags;
-              targetSegment.stability = direction.stability;
-              targetSegment.style_exaggeration = direction.style;
-              targetSegment.voiceDirected = true;
-            }
-          }
-          logger.info(`[Orchestrator] Voice direction applied to ${directions.length} segments`);
+        // BUG FIX: Replace segments entirely instead of trying to match and apply manually
+        // The voiceDirectorAgent returns segments with:
+        // - v3AudioTags (ElevenLabs V3 tags)
+        // - voiceStability (0.0-1.0)
+        // - voiceStyle (0.0-1.0)
+        // - voiceSpeedModifier (0.85-1.15)
+        // - voiceDirected (boolean)
+        // - emotion (for preset lookup)
+        if (directedSegments && directedSegments.length > 0) {
+          segments = directedSegments;
+          const directedCount = segments.filter(s => s.voiceDirected).length;
+          logger.info(`[Orchestrator] Voice direction applied to ${directedCount}/${segments.length} segments (including narrator)`);
         }
       }
     } catch (error) {

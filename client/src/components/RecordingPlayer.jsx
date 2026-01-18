@@ -26,6 +26,17 @@ function RecordingPlayer({
     return segments?.[currentSegmentIndex] || null;
   }, [segments, currentSegmentIndex]);
 
+  // Fix audio URL path - prepend /storyteller if needed for IIS routing
+  const fixedAudioUrl = useMemo(() => {
+    const url = currentSegment?.audio_url;
+    if (!url) return null;
+    // If URL starts with /audio/ but not /storyteller, prepend the base path
+    if (url.startsWith('/audio/') && !url.startsWith('/storyteller/')) {
+      return `/storyteller${url}`;
+    }
+    return url;
+  }, [currentSegment?.audio_url]);
+
   const totalDuration = useMemo(() => {
     return segments?.reduce((sum, seg) => sum + (seg.duration_seconds || 0), 0) || 0;
   }, [segments]);
@@ -253,7 +264,7 @@ function RecordingPlayer({
           {showReadAlong ? (
             <ReadAlongPlayer
               segment={currentSegment}
-              audioUrl={currentSegment?.audio_url}
+              audioUrl={fixedAudioUrl}
               wordTimings={wordTimings}
               coverImageUrl={currentSegment?.image_url || recording?.cover_image_url}
               isPlaying={isPlaying}
@@ -280,7 +291,7 @@ function RecordingPlayer({
               )}
 
               <audio
-                src={currentSegment?.audio_url}
+                src={fixedAudioUrl}
                 autoPlay={isPlaying}
                 onEnded={handleSegmentEnded}
                 onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}

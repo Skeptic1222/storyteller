@@ -302,7 +302,8 @@ The content INSIDE the tags should be maximally explicit per the user's settings
     const result = await callVeniceWithFallback({
       messages: [{ role: 'user', content: taggedPrompt }],
       model: 'llama-3.3-70b',
-      temperature: 0.85,
+      temperature: 0.75,
+      frequency_penalty: 0.6,
       max_tokens: 8000
     });
 

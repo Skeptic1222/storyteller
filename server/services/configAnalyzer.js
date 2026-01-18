@@ -46,6 +46,9 @@ Analyze the premise and return JSON with the following structure (be precise and
     "adultContent": 0-100,
     "sensuality": 0-100,
     "explicitness": 0-100,
+    "language": 0-100,
+    "bleakness": 0-100,
+    "sexualViolence": 0-100,
     "reasoning": "Justify each intensity level based on premise language and context"
   },
   "mood": "calm|exciting|scary|funny|mysterious|dramatic",
@@ -124,6 +127,152 @@ CRITICAL INSTRUCTIONS:
 12. Never guess: If unclear, say "low" for any intensity, pick format that fits best, explain reasoning
 13. WORD BOUNDARY AWARENESS: Parse words at word boundaries, NOT substrings. "between" is NOT "tween", "therapist" is NOT "the rapist"
 
+INTENSITY TIER GUIDE (use these to calibrate your 0-100 ratings):
+
+VIOLENCE (10 tiers):
+- 0-9%: K-6 safe - Playground scuffles, pillow fights, slapstick cartoon antics (Sesame Street)
+- 10-19%: Family PG - Action without harm, superhero punches without blood (Spider-Man cartoon)
+- 20-29%: PG Action - Fist fights, sword clashes, no visible injuries (Pirates of the Caribbean)
+- 30-39%: PG-13 Combat - Visible bruises, non-graphic battles (Lord of the Rings)
+- 40-49%: Teen Action - Intense fight scenes, moderate blood (The Hunger Games)
+- 50-59%: Hard PG-13 - Brutal combat, painful injuries (The Dark Knight)
+- 60-69%: Soft R Violence - Graphic fights, blood spray, bone breaks (John Wick)
+- 70-79%: Hard R Violence - Torture scenes, graphic suffering (The Passion of the Christ)
+- 80-89%: NC-17 Violence - Unflinching brutality, extreme gore (Hostel)
+- 90-100%: Banned/Extreme - War crimes, torture porn, likely censored (A Serbian Film violence)
+
+SEMANTIC VIOLENCE DETECTION:
+- "Dark", "brutal", "savage", "merciless" → 50%+ minimum
+- Torture, interrogation, punishment scenes → 60%+
+- War/battle focus, combat-heavy premise → 40-70% depending on detail level
+- Survival horror, fighting for life → 50%+
+- Revenge narratives → often 50%+ (violence is the point)
+- "Graphic", "unflinching", "realistic violence" → 60%+ minimum
+
+GORE (7 tiers):
+- 0-14%: No blood - Injuries implied, Disney-level (Frozen)
+- 15-29%: Light blood - Scrapes, minor cuts, red stains (Harry Potter)
+- 30-44%: Visible wounds - Bleeding injuries, bandages (Game of Thrones TV)
+- 45-59%: Detailed injuries - Graphic wounds, surgery scenes (ER, Grey's Anatomy)
+- 60-74%: Body horror - Dismemberment, visceral descriptions (The Walking Dead)
+- 75-89%: Extreme gore - Organs visible, surgical detail (Saw franchise)
+- 90-100%: Splatter - Medical textbook detail, torture porn levels (Cannibal Holocaust)
+
+SEMANTIC GORE DETECTION:
+- Body horror, transformation, mutation themes → 50%+
+- Zombie/undead narratives → often 45%+ (decay, biting, infection)
+- Medical horror, surgery gone wrong → 50%+
+- Monster attacks with feeding/devouring → 50%+
+- "Visceral", "graphic injuries", "blood-soaked" → 60%+
+- Torture with physical damage → 60%+
+
+SCARY (6 tiers):
+- 0-16%: Cozy tension - Mild suspense, always resolves well (Scooby-Doo)
+- 17-33%: Spooky fun - Jump scares that make you laugh after (Goosebumps)
+- 34-50%: Genuinely creepy - Sustained dread, disturbing imagery (Stranger Things)
+- 51-67%: Horror - Nightmares likely, visceral fear (The Conjuring)
+- 68-84%: Intense horror - Deeply disturbing, existential dread (Hereditary)
+- 85-100%: Extreme horror - Psychological damage possible (The Exorcist, Event Horizon)
+
+SEMANTIC SCARY DETECTION:
+- "Horror" genre explicitly stated → 50%+ minimum
+- Psychological thriller, mind games → 40%+
+- Supernatural threats (demons, ghosts, possession) → 50%+
+- Cosmic horror, Lovecraftian, unknowable entities → 60%+
+- Isolation horror (alone, trapped, hunted) → 45%+
+- "Terrifying", "nightmarish", "disturbing" → 60%+
+- Child in danger scenarios → often 50%+ (primal fear)
+- Body snatchers, imposters, paranoia themes → 50%+
+
+LANGUAGE (5 tiers mapping to ratings):
+- 0-19%: G-rated - No profanity, "gosh darn" substitutes (Disney)
+- 20-39%: PG - Mild language (damn, hell), no F-bombs (Marvel movies)
+- 40-59%: PG-13 - One F-word allowed, moderate profanity (Jurassic World)
+- 60-79%: R-rated - Frequent strong language, creative profanity (Pulp Fiction)
+- 80-100%: Unrestricted - Constant F-bombs, slurs contextually (The Wolf of Wall Street)
+
+ADULT CONTENT / SENSUALITY / EXPLICITNESS (10 tiers):
+- 0-9%: Clean - No romantic content, friendship only (kids' shows)
+- 10-19%: Sweet - Hand-holding, quick kisses, declarations of love (Hallmark)
+- 20-29%: Warm - Passionate kisses, romantic tension (Pride and Prejudice)
+- 30-39%: Steamy - Making out, heavy petting implied (Bridgerton Season 1)
+- 40-49%: Sensual - Fade-to-black, morning after scenes (Outlander TV)
+- 50-59%: Mature - Brief tasteful nudity, implied sex (Game of Thrones)
+- 60-69%: Explicit lite - Detailed sex scenes, soft focus (50 Shades of Grey)
+- 70-79%: Explicit - Graphic sex, nothing hidden (Literotica standard)
+- 80-89%: Very explicit - Multiple scenes, detailed acts (Adult romance novels)
+- 90-100%: Erotica focus - Sex is the primary content (dedicated erotica)
+
+SEMANTIC ADULT/EXPLICIT DETECTION:
+- "Erotica", "smut", "steamy", "spicy" → 70%+ for all three (adultContent, sensuality, explicitness)
+- "Sex scene", "explicit", "NSFW", "18+" → 80%+ for all three
+- "Dark romance", "enemies to lovers", "possessive" → often 40-60%
+- Harem, reverse harem, polyamory romance → often 50%+
+- "Slow burn" with adult themes → start at 30%, scale up
+- Monster romance, alien romance with "mating" → often 60%+
+- BDSM, kink, power exchange → 60%+ for sensuality/explicitness
+- "Porn with plot", "PWP" → 90%+ for all three
+- Seduction, temptation themes → 40%+ minimum
+
+BLEAKNESS (8 tiers - grimdark to hopepunk spectrum):
+- 0-12%: Pure sunshine - Guaranteed happy ending, no lasting darkness (Disney princess)
+- 13-24%: Hopeful - Dark moments exist but hope always wins (Marvel movies)
+- 25-37%: Bittersweet - Mixed outcomes, some loss but growth (Harry Potter)
+- 38-49%: Realistic - Life has both joy and sorrow, no guarantees (literary fiction)
+- 50-62%: Dark - Significant tragedy, pyrrhic victories common (Game of Thrones)
+- 63-74%: Grimdark lite - Hope is rare, death is common (The Walking Dead)
+- 75-87%: Grimdark - Existential despair, nihilistic themes (Blood Meridian)
+- 88-100%: Cosmic nihilism - No hope, existence is suffering (The Road, Ligotti)
+
+SEMANTIC BLEAKNESS DETECTION:
+- "Dark", "grim", "bleak" explicitly stated → 50%+ minimum
+- Post-apocalyptic, dystopian settings → often 50%+
+- Tragedy genre, doomed romance → 50%+
+- "Grimdark", "no heroes", "everyone dies" → 65%+
+- Abuse, trauma, suffering focus → 50%+
+- Hopeless situations, inevitable doom → 60%+
+- "Nihilistic", "meaningless", "despair" → 70%+
+- Revenge that destroys the protagonist too → 55%+
+
+SEXUAL VIOLENCE (10 tiers - handle with EXTREME care):
+- 0-9%: Topic completely absent from story - no coercion, no power imbalance exploitation
+- 10-19%: Referenced in backstory only, never depicted (survivor narratives, past trauma mentioned)
+- 20-29%: Non-graphic threat or intimidation, Law & Order SVU handling (implied danger, menacing situations)
+- 30-39%: Attempted assault interrupted/prevented, coercion without completion, blackmail scenarios
+- 40-49%: Assault occurs off-page, aftermath explored, captivity with sexual undertones
+- 50-59%: On-page assault, not gratuitous (The Accused handling), dubious consent depicted
+- 60-69%: Detailed assault scenes, exploitation film territory, slavery/trafficking themes explicit
+- 70-79%: Graphic assault content, extreme exploitation, prolonged suffering
+- 80-89%: A Serbian Film territory, torture combined with assault
+- 90-100%: Maximum graphic assault, no limits, torture porn
+
+SEMANTIC DETECTION FOR SEXUAL VIOLENCE (USE CONTEXTUAL UNDERSTANDING):
+Detect these THEMES and CONTEXTS that indicate non-zero sexualViolence:
+- Captivity/imprisonment with romantic/sexual elements (kidnapping, slavery, trafficking)
+- Power imbalance exploitation (boss/employee, captor/prisoner, teacher/student with sexual context)
+- Coercion, blackmail, or manipulation for sexual purposes
+- Forced marriage, arranged marriage with resistance, "claimed by" scenarios
+- Non-consent themes: "taken against will", "forced to", "made to submit"
+- Dubious consent: intoxication, spell/mind control, "reluctant but aroused"
+- Dark romance tropes: "enemies to lovers" with power imbalance, "monster claims maiden"
+- War scenarios with conquest/plunder implications
+- Revenge themes with sexual humiliation
+- Any "dark" + "erotic" combination typically implies some non-consent elements
+
+DO NOT use simple keyword matching. Use semantic understanding:
+- "A woman kidnapped by pirates who claim her as their prize" → 30-50% (captivity + claiming)
+- "Dark romance where the villain keeps the heroine prisoner" → 20-40% (captivity + romance)
+- "Post-apocalyptic survival where women are traded as currency" → 40-60% (trafficking themes)
+- "Erotica with light bondage between consenting adults" → 0% (consensual BDSM is NOT sexual violence)
+- "Monster romance with enthusiastic consent" → 0% (consent negates sexual violence)
+
+If sexualViolence > 0, audience MUST be "mature"
+
+CRITICAL: 81% must mean MORE intense than 80%. Each percentage point matters.
+If a premise says "graphic violence" - that's 60%+ (R-rated), not 40%.
+If a premise says "extreme gore" - that's 75%+, not 50%.
+Use the EXACT tier that matches the user's language intensity.
+
 Return ONLY valid JSON, no markdown, no explanations outside JSON.`;
 
     const response = await completion({
@@ -196,7 +345,10 @@ export function convertLLMAnalysisToKeywordFormat(llmAnalysis) {
       romance: llmAnalysis.intensity?.romance || 0,
       adultContent: llmAnalysis.intensity?.adultContent || 0,
       sensuality: llmAnalysis.intensity?.sensuality || 0,
-      explicitness: llmAnalysis.intensity?.explicitness || 0
+      explicitness: llmAnalysis.intensity?.explicitness || 0,
+      language: llmAnalysis.intensity?.language || 0,
+      bleakness: llmAnalysis.intensity?.bleakness || 0,
+      sexualViolence: llmAnalysis.intensity?.sexualViolence || 0
     },
     mood: llmAnalysis.mood || null,
     format: llmAnalysis.format || null,

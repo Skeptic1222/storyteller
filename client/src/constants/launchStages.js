@@ -2,7 +2,7 @@
  * Launch Stage Constants
  * Shared constants for LaunchScreen and related components
  */
-import { Sparkles, Mic, Volume2, Image, Shield } from 'lucide-react';
+import { Sparkles, Mic, Volume2, Image, Shield, AudioLines } from 'lucide-react';
 
 // Validation stage definitions matching server
 export const STAGES = {
@@ -10,7 +10,8 @@ export const STAGES = {
   VOICES: 'voices',
   SFX: 'sfx',
   COVER: 'cover',
-  QA: 'qa'
+  QA: 'qa',
+  AUDIO: 'audio'  // Audio synthesis - generates all TTS before reveal
 };
 
 export const STATUS = {
@@ -73,6 +74,15 @@ export const STAGE_CONFIG = {
     color: 'green',
     activeColor: 'text-green-400',
     bgColor: 'bg-green-500/20'
+  },
+  [STAGES.AUDIO]: {
+    name: 'Audio Synthesis',
+    shortName: 'Audio',
+    icon: AudioLines,
+    description: 'Synthesizing narration',
+    color: 'blue',
+    activeColor: 'text-blue-400',
+    bgColor: 'bg-blue-500/20'
   }
 };
 

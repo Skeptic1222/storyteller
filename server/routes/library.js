@@ -209,6 +209,7 @@ router.get('/:storyId', async (req, res) => {
     // Phase 2: Get scenes, characters, bookmarks in parallel (all independent)
     const [scenes, characters, bookmarks] = await Promise.all([
       // Scenes query - joins with recording_segments if available
+      // Also aggregates SFX data from scene_sfx table with audio URLs from sfx_cache
       pool.query(`
         SELECT
           sc.id,
@@ -221,7 +222,26 @@ router.get('/:storyId', async (req, res) => {
           COALESCE(rs.word_timings, sc.word_timings) as word_timings,
           sc.mood,
           sc.word_count,
-          rs.sfx_data,
+          COALESCE(
+            NULLIF(rs.sfx_data::jsonb, '[]'::jsonb),
+            (SELECT jsonb_agg(jsonb_build_object(
+              'sfx_id', sf.id,
+              'sfx_key', sf.sfx_key,
+              'volume', sf.volume,
+              'trigger_at_seconds', sf.start_offset_seconds,
+              'duration_seconds', COALESCE(sfc.duration_seconds, 30),
+              'fade_in_ms', (sf.fade_in_seconds * 1000)::int,
+              'fade_out_ms', (sf.fade_out_seconds * 1000)::int,
+              'audio_url', CASE
+                WHEN sfc.file_path IS NOT NULL
+                THEN REPLACE(sfc.file_path, 'C:\\inetpub\\wwwroot\\storyteller\\public', '')
+                ELSE NULL
+              END,
+              'loop', sfc.is_looping
+            )) FROM scene_sfx sf
+            LEFT JOIN sfx_cache sfc ON sf.sfx_cache_id = sfc.id
+            WHERE sf.scene_id = sc.id)
+          ) as sfx_data,
           (SELECT json_agg(json_build_object(
             'id', c.id,
             'key', c.choice_key,

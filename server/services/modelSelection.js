@@ -177,6 +177,20 @@ export function getAgentCategory(agentName) {
 // MAIN API
 // ============================================================================
 
+// Agents that should NEVER use reasoning models (gpt-5.x family)
+// These do simple text transformation where reasoning tokens would be wasted
+// GPT-5-mini uses ALL tokens for reasoning, leaving 0 for content output
+const NON_REASONING_AGENTS = new Set([
+  'narrator',           // Text polishing - simple transformation
+  'narrator_director',  // Voice direction - classification
+  'fact_extractor',     // Extract facts - structured output
+  'safety',             // Safety check - classification
+  'safety_agent',       // Safety check alias
+  'sfx',                // SFX tagging - classification
+  'sfx_coordinator',    // SFX coordination - classification
+  'dialogue_parser'     // Dialogue parsing - structured output
+]);
+
 /**
  * Get the appropriate model for an agent based on current tier
  *
@@ -186,7 +200,7 @@ export function getAgentCategory(agentName) {
  *
  * @example
  * getModelForAgent('planner')           // 'gpt-5.2' in premium, 'gpt-4.1' in standard
- * getModelForAgent('safety')            // 'gpt-5-mini' in premium, 'gpt-5-nano' in standard
+ * getModelForAgent('safety')            // 'gpt-4o-mini' (non-reasoning agent)
  * getModelForAgent('writer', 'standard') // 'gpt-4.1' (forced standard)
  */
 export function getModelForAgent(agentName, tierOverride = null) {
@@ -195,6 +209,15 @@ export function getModelForAgent(agentName, tierOverride = null) {
   if (envOverride) {
     logger.debug(`[ModelSelection] Using env override for ${agentName}: ${envOverride}`);
     return envOverride;
+  }
+
+  // CRITICAL: Some agents must NOT use reasoning models (gpt-5.x family)
+  // GPT-5-mini uses ALL tokens for reasoning, leaving 0 for content output
+  // These simple tasks work better with gpt-4o-mini
+  const normalized = agentName.toLowerCase().replace(/[-\s]/g, '_');
+  if (NON_REASONING_AGENTS.has(normalized)) {
+    logger.debug(`[ModelSelection] Agent "${agentName}" using gpt-4o-mini (non-reasoning agent)`);
+    return MODELS.GPT_4O_MINI;
   }
 
   // Get tier and category

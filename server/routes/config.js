@@ -554,7 +554,7 @@ router.get('/auto-select-status', (req, res) => {
       narrator_voice: { enabled: false, label: 'Narrator Voice' },
       voice_style: { enabled: false, label: 'Voice Style' },
       writing_style: { enabled: false, label: 'Writing Style' },
-      story_mood: { enabled: false, label: 'Story Mood' },
+      story_mood: { enabled: true, label: 'Story Mood' },
       genre_sliders: { enabled: false, label: 'Genre Mix' },
       story_format: { enabled: false, label: 'Story Format' },
       content_intensity: { enabled: false, label: 'Content Intensity' }

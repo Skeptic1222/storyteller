@@ -199,7 +199,7 @@ function VoiceSelector({ selectedVoice, onSelect, narratorStyle = 'warm', skipAu
             stability: styleConfig.stability,
             similarity_boost: styleConfig.similarity,
             style: styleConfig.style,
-            model_id: 'eleven_multilingual_v2'
+            model_id: 'eleven_v3' // V3 supports audio emotion tags
           }
         })
       });

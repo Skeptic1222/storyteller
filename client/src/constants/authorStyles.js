@@ -4,12 +4,18 @@
  */
 
 // Provider threshold constants (must match server-side llmProviders.js)
+// These define when Venice.ai is used instead of OpenAI for uncensored content
 export const PROVIDER_THRESHOLDS = {
+  violence: { value: 61, label: 'Venice.ai', icon: '\uD83D\uDD13' },     // Graphic violence
   gore: { value: 61, label: 'Venice.ai', icon: '\uD83D\uDD13' },
   romance: { value: 71, label: 'Venice.ai', icon: '\uD83D\uDD13' },
   adultContent: { value: 50, label: 'Venice.ai', icon: '\uD83D\uDD13' },
   sensuality: { value: 71, label: 'Venice.ai', icon: '\uD83D\uDD13' },
-  explicitness: { value: 71, label: 'Venice.ai', icon: '\uD83D\uDD13' }
+  explicitness: { value: 71, label: 'Venice.ai', icon: '\uD83D\uDD13' },
+  scary: { value: 71, label: 'Venice.ai', icon: '\uD83D\uDD13' },        // Intense horror
+  language: { value: 51, label: 'Venice.ai', icon: '\uD83D\uDD13' },     // Heavy profanity
+  sexualViolence: { value: 1, label: 'Venice.ai', icon: '\u26A0\uFE0F' } // ANY non-zero triggers Venice
+  // Note: bleakness is tonal, not explicit content - no Venice threshold needed
 };
 
 // Author styles data organized by category

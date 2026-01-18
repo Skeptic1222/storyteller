@@ -62,7 +62,9 @@ function Configure() {
       language: 10,
       adultContent: 0,     // Overall adult content level (50+ triggers Venice.ai)
       sensuality: 0,       // Suggestive content, flirtation, tension (mature only)
-      explicitness: 0      // How graphic intimate scenes are (mature only)
+      explicitness: 0,     // How graphic intimate scenes are (mature only)
+      bleakness: 25,       // Hopeful (25%) to nihilistic (100%) spectrum
+      sexualViolence: 0    // Default OFF - only enable with explicit user consent
     },
 
     // Audience Level
@@ -77,7 +79,7 @@ function Configure() {
     voice_id: null,
     multi_voice: false, // Multi-narrator (different voices for characters)
     hide_speech_tags: false, // Hide speech attributions ("Ortiz suggests", "she whispered") when using multi-voice - OFF by default
-    sfx_enabled: true, // Ambient sound effects (rain, footsteps, etc.)
+    sfx_enabled: false, // Ambient sound effects (rain, footsteps, etc.) - OFF by default
     sfx_level: 'low', // SFX intensity: 'low' (default), 'medium' (more sounds), 'high' (lots of sounds)
 
     // Playback settings
@@ -433,7 +435,8 @@ function Configure() {
             romance: 0, horror: 0, humor: 0, fairytale: 0
           };
           const defaultIntensity = {
-            violence: 0, gore: 0, scary: 0, romance: 0, language: 0, adultContent: 0
+            violence: 0, gore: 0, scary: 0, romance: 0, language: 0, adultContent: 0,
+            sensuality: 0, explicitness: 0, bleakness: 25, sexualViolence: 0
           };
 
           // Apply suggested configuration ONLY to sections with auto-select enabled
@@ -553,6 +556,17 @@ function Configure() {
             });
           }
 
+          // CRITICAL: Sync showAdvanced with auto-detected audience
+          // If LLM suggests mature content, auto-expand advanced sliders including Sexual Violence
+          if (autoSelect.intensity && data.suggestedConfig.audience) {
+            if (data.suggestedConfig.audience === 'mature') {
+              setShowAdvanced(true);
+            } else {
+              // Hide advanced sliders for children and general
+              setShowAdvanced(false);
+            }
+          }
+
           // Build reasoning list based on what was actually updated
           const appliedReasons = [];
           if (autoSelect.story_type) appliedReasons.push(`Story type: ${data.suggestedConfig.story_type || 'narrative'}`);
@@ -658,7 +672,9 @@ function Configure() {
           language: 0,
           adultContent: 0,
           sensuality: 0,
-          explicitness: 0
+          explicitness: 0,
+          bleakness: Math.min(prev.intensity.bleakness || 25, 25), // Max 25% for children (hopeful)
+          sexualViolence: 0  // Always 0 for children
         };
         newConfig.genres = {
           ...prev.genres,
@@ -666,13 +682,14 @@ function Configure() {
           romance: 0
         };
       } else if (audience === 'general') {
-        // General audience - reset mature content
+        // General audience - reset mature content but preserve bleakness
         newConfig.intensity = {
           ...prev.intensity,
           gore: 0,
           adultContent: 0,
           sensuality: 0,
-          explicitness: 0
+          explicitness: 0,
+          sexualViolence: 0  // Always 0 for general audience
         };
       } else if (audience === 'mature') {
         // Allow higher limits and preserve mature-specific settings
@@ -684,7 +701,9 @@ function Configure() {
           language: prev.intensity.language,
           adultContent: prev.intensity.adultContent || 0,
           sensuality: prev.intensity.sensuality || 0,
-          explicitness: prev.intensity.explicitness || 0
+          explicitness: prev.intensity.explicitness || 0,
+          bleakness: prev.intensity.bleakness || 25,
+          sexualViolence: prev.intensity.sexualViolence || 0  // Preserve but default to 0
         };
       }
 
@@ -695,8 +714,9 @@ function Configure() {
     // This ensures adult content sliders are visible by default when Mature is selected
     if (audience === 'mature') {
       setShowAdvanced(true);
-    } else if (audience === 'children') {
-      // Hide advanced sliders for children (not applicable anyway)
+    } else {
+      // Hide advanced sliders for children AND general audiences
+      // BUG FIX: Previously only children was explicitly handled, leaving general with stale state
       setShowAdvanced(false);
     }
   };
@@ -1490,6 +1510,7 @@ function Configure() {
               icon="🧙"
               value={config.genres.fantasy}
               onChange={(v) => updateGenre('fantasy', v)}
+              sliderType="fantasy"
               animating={animatingSections.genres}
             />
             <GenreSlider
@@ -1497,6 +1518,7 @@ function Configure() {
               icon="⚔️"
               value={config.genres.adventure}
               onChange={(v) => updateGenre('adventure', v)}
+              sliderType="adventure"
               animating={animatingSections.genres}
             />
             <GenreSlider
@@ -1504,6 +1526,7 @@ function Configure() {
               icon="🔍"
               value={config.genres.mystery}
               onChange={(v) => updateGenre('mystery', v)}
+              sliderType="mystery"
               animating={animatingSections.genres}
             />
             <GenreSlider
@@ -1511,6 +1534,7 @@ function Configure() {
               icon="🚀"
               value={config.genres.scifi}
               onChange={(v) => updateGenre('scifi', v)}
+              sliderType="scifi"
               animating={animatingSections.genres}
             />
             <GenreSlider
@@ -1518,6 +1542,7 @@ function Configure() {
               icon="🏰"
               value={config.genres.fairytale}
               onChange={(v) => updateGenre('fairytale', v)}
+              sliderType="fairytale"
               animating={animatingSections.genres}
             />
             <GenreSlider
@@ -1525,6 +1550,7 @@ function Configure() {
               icon="😄"
               value={config.genres.humor}
               onChange={(v) => updateGenre('humor', v)}
+              sliderType="humor"
               animating={animatingSections.genres}
             />
             {config.audience !== 'children' && (
@@ -1534,6 +1560,7 @@ function Configure() {
                   icon="👻"
                   value={config.genres.horror}
                   onChange={(v) => updateGenre('horror', v)}
+                  sliderType="horror"
                   max={config.audience === 'mature' ? 100 : 50}
                   animating={animatingSections.genres}
                 />
@@ -1542,6 +1569,7 @@ function Configure() {
                   icon="💕"
                   value={config.genres.romance}
                   onChange={(v) => updateGenre('romance', v)}
+                  sliderType="romance"
                   max={config.audience === 'mature' ? 100 : 30}
                   animating={animatingSections.genres}
                 />
@@ -1569,7 +1597,7 @@ function Configure() {
               value={config.intensity.scary}
               onChange={(v) => updateIntensity('scary', v)}
               max={config.audience === 'children' ? 15 : 100}
-              colorClass="from-green-500 to-orange-500"
+              sliderType="scary"
               animating={animatingSections.intensity}
             />
 
@@ -1580,7 +1608,23 @@ function Configure() {
                 value={config.intensity.violence}
                 onChange={(v) => updateIntensity('violence', v)}
                 max={config.audience === 'mature' ? 100 : 50}
-                colorClass="from-yellow-500 to-red-500"
+                sliderType="violence"
+                threshold={config.audience === 'mature' ? PROVIDER_THRESHOLDS.violence : null}
+                showProvider={config.audience === 'mature'}
+                animating={animatingSections.intensity}
+              />
+            )}
+
+            {/* Bleakness slider - visible for general and mature audiences */}
+            {config.audience !== 'children' && (
+              <GenreSlider
+                label="Bleakness"
+                icon="🌑"
+                value={config.intensity.bleakness}
+                onChange={(v) => updateIntensity('bleakness', v)}
+                max={100}
+                colorClass="from-slate-400 to-slate-700"
+                sliderType="bleakness"
                 animating={animatingSections.intensity}
               />
             )}
@@ -1594,7 +1638,7 @@ function Configure() {
                     value={config.intensity.gore}
                     onChange={(v) => updateIntensity('gore', v)}
                     max={100}
-                    colorClass="from-red-400 to-red-700"
+                    sliderType="gore"
                     threshold={PROVIDER_THRESHOLDS.gore}
                     showProvider={true}
                     animating={animatingSections.intensity}
@@ -1607,7 +1651,7 @@ function Configure() {
                   value={config.intensity.romance}
                   onChange={(v) => updateIntensity('romance', v)}
                   max={config.audience === 'mature' ? 100 : 20}
-                  colorClass="from-pink-400 to-rose-600"
+                  sliderType="romance"
                   threshold={config.audience === 'mature' ? PROVIDER_THRESHOLDS.romance : null}
                   showProvider={config.audience === 'mature'}
                   animating={animatingSections.intensity}
@@ -1620,6 +1664,7 @@ function Configure() {
                   onChange={(v) => updateIntensity('language', v)}
                   max={config.audience === 'mature' ? 50 : 10}
                   colorClass="from-gray-400 to-gray-600"
+                  sliderType="language"
                   animating={animatingSections.intensity}
                 />
 
@@ -1632,6 +1677,7 @@ function Configure() {
                       onChange={(v) => updateIntensity('adultContent', v)}
                       max={100}
                       colorClass="from-rose-400 to-fuchsia-600"
+                      sliderType="adultContent"
                       threshold={PROVIDER_THRESHOLDS.adultContent}
                       showProvider={true}
                       animating={animatingSections.intensity}
@@ -1645,9 +1691,9 @@ function Configure() {
                       onChange={(v) => updateIntensity('sensuality', v)}
                       max={100}
                       colorClass="from-pink-300 to-pink-500"
+                      sliderType="sensuality"
                       threshold={PROVIDER_THRESHOLDS.sensuality}
                       showProvider={true}
-                      description="Flirtation, tension, suggestive content"
                       animating={animatingSections.intensity}
                     />
 
@@ -1658,11 +1704,33 @@ function Configure() {
                       onChange={(v) => updateIntensity('explicitness', v)}
                       max={100}
                       colorClass="from-orange-400 to-red-600"
+                      sliderType="explicitness"
                       threshold={PROVIDER_THRESHOLDS.explicitness}
                       showProvider={true}
-                      description="How graphic intimate scenes are described"
                       animating={animatingSections.intensity}
                     />
+
+                    {/* Sexual Violence slider - mature only with strong warning */}
+                    <div className="mt-4 pt-4 border-t border-red-900/30">
+                      <div className="mb-2 p-2 rounded bg-red-950/50 border border-red-800/50">
+                        <p className="text-red-400 text-xs">
+                          ⚠️ <strong>Content Warning:</strong> This slider controls depictions of sexual assault.
+                          Default is 0 (absent). Only enable if your story specifically requires this content type.
+                        </p>
+                      </div>
+                      <GenreSlider
+                        label="Sexual Violence"
+                        icon="⚠️"
+                        value={config.intensity.sexualViolence}
+                        onChange={(v) => updateIntensity('sexualViolence', v)}
+                        max={100}
+                        colorClass="from-red-800 to-red-950"
+                        sliderType="sexualViolence"
+                        threshold={PROVIDER_THRESHOLDS.sexualViolence}
+                        showProvider={true}
+                        animating={animatingSections.intensity}
+                      />
+                    </div>
                   </>
                 )}
               </>
