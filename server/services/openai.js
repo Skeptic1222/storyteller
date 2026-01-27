@@ -74,7 +74,8 @@ logConfiguration();
 
 // Legacy env vars kept for backward compatibility with hardcoded uses
 // New code should use getModelForAgent() instead
-const STORY_MODEL = process.env.STORY_MODEL || 'gpt-4';
+// MEDIUM-18 FIX: Updated default from gpt-4 to gpt-5.2 (January 2026)
+const STORY_MODEL = process.env.STORY_MODEL || 'gpt-5.2';
 const FAST_MODEL = process.env.FAST_MODEL || 'gpt-4o-mini';
 
 /**
@@ -166,13 +167,49 @@ export async function completion(options) {
     //   - Result: 0 content tokens, complete failure
     //   - Reasoning models can use 16000+ tokens for chain-of-thought
     //
-    // Solution: Add 20000 token buffer (doubled from 10000) to ensure room for
-    // both heavy reasoning (up to 16000+) AND actual content output (6000+).
+    // OPTIMIZATION (2026-01-26): Dynamic token budgets based on agent category
+    // - Reasoning-heavy agents (planner, sceneGenerator, etc.) get full buffer
+    // - Utility agents (safety, sfx, emotion, narrator) need minimal reasoning
+    // - This reduces cost by ~60% for utility agents
     if (model === 'gpt-5.2') {
       const originalTokens = requestParams.max_completion_tokens;
-      // Minimum 28000 tokens: allows 20000 reasoning + 8000 content
-      requestParams.max_completion_tokens = Math.max(originalTokens + 20000, 28000);
-      logger.info(`[Agent:${agent_name}] GPT-5.2 token budget increased: ${originalTokens} -> ${requestParams.max_completion_tokens} (reasoning buffer x2)`);
+
+      // Define agent categories for dynamic token budgeting
+      const REASONING_HEAVY_AGENTS = [
+        'planner', 'sceneGenerator', 'voiceDirector', 'beatArchitect',
+        'writer', 'storyGenerator', 'proseWriter', 'outliner',
+        'characterCreator', 'worldBuilder', 'dialogueWriter'
+      ];
+      const UTILITY_AGENTS = [
+        'safety', 'sfx', 'narrator', 'emotion', 'lore', 'polish',
+        'validator', 'tagger', 'formatter', 'summarizer', 'classifier'
+      ];
+
+      // Normalize agent name for matching (handle variations like 'SafetyAgent', 'safety_agent', etc.)
+      const normalizedAgent = agent_name.toLowerCase().replace(/[_-]/g, '').replace(/agent$/, '');
+
+      const isReasoningHeavy = REASONING_HEAVY_AGENTS.some(a => normalizedAgent.includes(a.toLowerCase()));
+      const isUtility = UTILITY_AGENTS.some(a => normalizedAgent.includes(a.toLowerCase()));
+
+      let newTokenBudget;
+      let budgetReason;
+
+      if (isReasoningHeavy) {
+        // Full reasoning buffer for complex creative tasks
+        newTokenBudget = Math.max(originalTokens + 20000, 28000);
+        budgetReason = 'reasoning-heavy';
+      } else if (isUtility) {
+        // Minimal buffer for utility tasks - they don't need extensive reasoning
+        newTokenBudget = Math.min(originalTokens + 2000, 8000);
+        budgetReason = 'utility';
+      } else {
+        // Default: moderate buffer for unclassified agents
+        newTokenBudget = Math.max(originalTokens + 8000, 12000);
+        budgetReason = 'default';
+      }
+
+      requestParams.max_completion_tokens = newTokenBudget;
+      logger.info(`[Agent:${agent_name}] GPT-5.2 token budget: ${originalTokens} -> ${newTokenBudget} (${budgetReason})`);
     }
 
     // Note: gpt-5.x models may not support response_format parameter
@@ -411,7 +448,7 @@ export async function generateWithVision(options) {
     imageBase64,
     mimeType,
     prompt,
-    model = 'gpt-4o'
+    model = 'gpt-5.2'  // MEDIUM-18 FIX: Updated from gpt-4o
   } = options;
 
   const startTime = Date.now();
@@ -1022,19 +1059,12 @@ ${cyoaStructureInstructions}
 ${endingInstructions}`;
 
   // Request JSON format to ensure parseable response
-  // Attempt with primary model first, fall back to GPT-4o if it fails
+  // Premium fail-loud: no cross-model fallback (only retries on same model)
   const maxRetries = 2;
   let lastError = null;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    // On retry, force GPT-4o model which has better JSON reliability
-    const useModelOverride = attempt > 1 ? 'gpt-4o' : null;
-
     try {
-      if (useModelOverride) {
-        logger.warn(`[generateOutline] Retry ${attempt}/${maxRetries} with fallback model: ${useModelOverride}`);
-      }
-
       // Build content settings for Venice routing on mature content
       const contentSettings = {
         audience: preferences.audience || 'general',
@@ -1051,7 +1081,7 @@ ${endingInstructions}`;
         userPreferences: preferences,
         sessionId,
         response_format: { type: 'json_object' },
-        modelOverride: useModelOverride,  // Force specific model on retry
+        modelOverride: null,  // No model fallback; retry uses same model
         contentSettings,  // Enable Venice routing for mature content
         agentCategory: 'creative'
       });
@@ -1076,26 +1106,14 @@ ${endingInstructions}`;
         throw new Error('Generated outline has no characters');
       }
 
-      // PHASE 2 FIX: Gender validation with fallback instead of failure
-      // Log warnings but assign default gender to prevent generation failure
+      // Gender validation – fail loud (no defaults)
       const validGenders = ['male', 'female', 'non-binary', 'neutral'];
-      const genderWarnings = [];
-
-      for (const char of parsed.main_characters) {
-        const gender = char.gender?.toLowerCase()?.trim();
-        if (!gender || !validGenders.includes(gender)) {
-          genderWarnings.push(`"${char.name}": gender was "${char.gender || 'MISSING'}", defaulting to "neutral"`);
-          // Assign default gender instead of failing
-          char.gender = 'neutral';
-        }
-      }
-
-      if (genderWarnings.length > 0) {
-        logger.warn(`[generateOutline] Gender validation: ${genderWarnings.length} characters needed default gender:`);
-        genderWarnings.forEach(warn => logger.warn(`[generateOutline]   - ${warn}`));
-        logger.warn(`[generateOutline] Generation continues with defaults. Valid genders: male, female, non-binary, neutral`);
-      } else {
-        logger.info(`[generateOutline] Gender validation PASSED - all ${parsed.main_characters.length} characters have valid gender`);
+      const invalid = (parsed.main_characters || []).filter(
+        (char) => !validGenders.includes(char.gender?.toLowerCase()?.trim())
+      );
+      if (invalid.length > 0) {
+        const details = invalid.map(c => `"${c.name}" gender="${c.gender || 'MISSING'}"`).join(', ');
+        throw new Error(`Outline contains invalid/missing genders: ${details}`);
       }
 
       // VERBOSE LOGGING: Log outline generation success
@@ -1116,10 +1134,6 @@ ${endingInstructions}`;
     } catch (e) {
       lastError = e;
       logger.error(`[generateOutline] Attempt ${attempt}/${maxRetries} failed: ${e.message}`);
-
-      if (attempt < maxRetries) {
-        logger.info(`[generateOutline] Will retry with fallback model...`);
-      }
     }
   }
 
@@ -1930,8 +1944,16 @@ Remember: Return JSON with "prose", "dialogue_map", and "new_characters" fields.
         }
 
         if (found && bestMatch) {
+          // FIX (2026-01-23): Use the ACTUAL prose text, not the LLM's quote
+          // The LLM sometimes generates slightly different text in dialogue_map vs prose
+          // Using the prose text ensures SegmentBuilder will find an exact match
+          const actualQuoteText = bestMatch.matchedText;
+          if (actualQuoteText !== `"${d.quote}"` && actualQuoteText !== `"${d.quote}"`) {
+            logger.debug(`[Scene+Dialogue] QUOTE[${dialogueIdx}] QUOTE_SYNC | original: "${d.quote?.substring(0, 50)}..." | actual: "${actualQuoteText?.substring(0, 50)}..."`);
+          }
           enrichedDialogueMap.push({
             ...d,
+            quote: actualQuoteText, // Use actual prose text, not LLM's version
             start_char: bestMatch.start_char,
             end_char: bestMatch.end_char
           });
@@ -1949,8 +1971,12 @@ Remember: Return JSON with "prose", "dialogue_map", and "new_characters" fields.
             const closeIdx = findClosingQuote(prose, idx + 1);
             const endIdx = closeIdx !== -1 ? closeIdx + 1 : idx + d.quote.length + 2;
 
+            // FIX (2026-01-23): Use actual prose text, not LLM's version
+            const actualQuoteText = prose.slice(idx, endIdx);
+
             enrichedDialogueMap.push({
               ...d,
+              quote: actualQuoteText,
               start_char: idx,
               end_char: endIdx
             });
@@ -2903,6 +2929,165 @@ export function countTokens(text) {
 }
 
 /**
+ * HIGH-4 FIX: Model context limits for pre-flight token validation
+ * These are the maximum input context window sizes for each model
+ */
+const MODEL_CONTEXT_LIMITS = {
+  // GPT-5.x models
+  'gpt-5.2': 128000,
+  'gpt-5.2-pro': 128000,
+  'gpt-5.2-instant': 128000,
+  'gpt-5.1': 128000,
+  'gpt-5': 128000,
+
+  // GPT-4.x models
+  'gpt-4o': 128000,
+  'gpt-4o-mini': 128000,
+  'gpt-4-turbo': 128000,
+  'gpt-4-turbo-preview': 128000,
+  'gpt-4': 8192,
+  'gpt-4-32k': 32768,
+
+  // GPT-3.5
+  'gpt-3.5-turbo': 16385,
+  'gpt-3.5-turbo-16k': 16385,
+
+  // Default fallback
+  'default': 128000
+};
+
+/**
+ * HIGH-4 FIX: Pre-flight token count validation
+ * Estimates input tokens BEFORE making API calls to prevent silent truncation
+ *
+ * @param {Array|Object} messages - OpenAI messages array or full request params
+ * @param {string} model - Model name being used
+ * @param {Object} options - Additional options
+ * @param {number} options.maxOutputTokens - Expected max output tokens (default: 4000)
+ * @param {boolean} options.throwOnExceed - Throw error if limit exceeded (default: false)
+ * @returns {Object} { estimatedInputTokens, contextLimit, remainingTokens, willFit, warning }
+ */
+export function validateTokenBudget(messages, model = 'gpt-5.2', options = {}) {
+  const { maxOutputTokens = 4000, throwOnExceed = false } = options;
+
+  // Calculate input tokens from messages
+  let estimatedInputTokens = 0;
+
+  // Handle both direct messages array and full params object
+  const messageArray = Array.isArray(messages) ? messages : (messages?.messages || []);
+
+  for (const msg of messageArray) {
+    if (typeof msg.content === 'string') {
+      estimatedInputTokens += countTokens(msg.content);
+    } else if (Array.isArray(msg.content)) {
+      // Handle multi-part content (e.g., with images)
+      for (const part of msg.content) {
+        if (part.type === 'text') {
+          estimatedInputTokens += countTokens(part.text);
+        } else if (part.type === 'image_url') {
+          // Images add roughly 85-170 tokens for low/high detail
+          estimatedInputTokens += 150;
+        }
+      }
+    }
+    // Add overhead for message structure (~4 tokens per message)
+    estimatedInputTokens += 4;
+  }
+
+  // Get model context limit
+  const modelKey = Object.keys(MODEL_CONTEXT_LIMITS).find(k =>
+    model.includes(k) || k.includes(model)
+  ) || 'default';
+  const contextLimit = MODEL_CONTEXT_LIMITS[modelKey];
+
+  // Calculate remaining space after input and expected output
+  const remainingTokens = contextLimit - estimatedInputTokens - maxOutputTokens;
+  const willFit = remainingTokens > 0;
+
+  // Generate warning messages
+  let warning = null;
+  const utilizationPercent = Math.round((estimatedInputTokens / contextLimit) * 100);
+
+  if (!willFit) {
+    warning = `TOKEN_LIMIT_EXCEEDED: Input (~${estimatedInputTokens} tokens) + output (~${maxOutputTokens}) exceeds ${model} limit of ${contextLimit}. ` +
+      `Overflow: ${Math.abs(remainingTokens)} tokens. Request may be truncated or fail.`;
+    logger.error(`[TokenValidator] ${warning}`);
+
+    if (throwOnExceed) {
+      throw new Error(warning);
+    }
+  } else if (utilizationPercent >= 80) {
+    warning = `TOKEN_WARNING: Using ${utilizationPercent}% of ${model} context window (${estimatedInputTokens}/${contextLimit} tokens). ` +
+      `Only ${remainingTokens} tokens remaining for output.`;
+    logger.warn(`[TokenValidator] ${warning}`);
+  }
+
+  const result = {
+    estimatedInputTokens,
+    contextLimit,
+    remainingTokens: Math.max(0, remainingTokens),
+    maxOutputTokens,
+    willFit,
+    utilizationPercent,
+    warning,
+    model: modelKey
+  };
+
+  // Log high utilization for monitoring
+  if (utilizationPercent >= 50) {
+    logger.info(`[TokenValidator] ${model}: ${estimatedInputTokens} input tokens (${utilizationPercent}% of ${contextLimit} limit)`);
+  }
+
+  return result;
+}
+
+/**
+ * HIGH-4 FIX: Wrapper to validate tokens before chat completion
+ * Use this instead of direct openai.chat.completions.create for safety
+ *
+ * @param {Object} params - OpenAI chat completion params
+ * @param {Object} options - Validation options
+ * @returns {Promise<Object>} OpenAI response
+ */
+export async function safeCreateChatCompletion(params, options = {}) {
+  const model = params.model || 'gpt-5.2';
+  const maxOutputTokens = params.max_tokens || params.max_completion_tokens || 4000;
+
+  // Pre-flight validation
+  const validation = validateTokenBudget(params.messages, model, {
+    maxOutputTokens,
+    throwOnExceed: options.throwOnExceed || false
+  });
+
+  // Attach validation info to request for logging
+  const requestWithValidation = {
+    ...params,
+    _tokenValidation: validation
+  };
+
+  // Log if over warning threshold
+  if (validation.warning) {
+    logger.warn(`[TokenValidator] Request to ${model} | ${validation.warning}`);
+  }
+
+  // Make the actual API call
+  const response = await openai.chat.completions.create(params);
+
+  // Log actual usage vs estimated for calibration
+  if (response?.usage) {
+    const { prompt_tokens, completion_tokens, total_tokens } = response.usage;
+    const estimationDelta = Math.abs(validation.estimatedInputTokens - prompt_tokens);
+    const estimationAccuracy = Math.round((1 - (estimationDelta / prompt_tokens)) * 100);
+
+    if (estimationAccuracy < 90) {
+      logger.debug(`[TokenValidator] Estimation calibration: estimated ${validation.estimatedInputTokens}, actual ${prompt_tokens} (${estimationAccuracy}% accurate)`);
+    }
+  }
+
+  return response;
+}
+
+/**
  * Summarize story context for long sessions
  * Called when context window approaches limit
  */
@@ -3248,7 +3433,7 @@ Scene ${sceneIndex + 1}: ${currentSceneBeat.title || currentSceneBeat.summary ||
 ${currentSceneBeat.description ? `Description: ${currentSceneBeat.description}` : ''}
 ${currentSceneBeat.mood ? `Mood: ${currentSceneBeat.mood}` : ''}
 
-${previousScene ? `=== PREVIOUS SCENE SUMMARY ===\n${typeof previousScene === 'string' ? previousScene.substring(0, 500) : previousScene.summary || 'The story continues...'}\n` : ''}
+${previousScene ? `=== PREVIOUS SCENE SUMMARY ===\n${typeof previousScene === 'string' ? previousScene.substring(0, 1200) : previousScene.summary || 'The story continues...'}\n` : ''}
 
 ${contextSummary ? `=== STORY CONTEXT ===\n${contextSummary}\n` : ''}
 
@@ -3331,6 +3516,8 @@ export default {
   parseDialogueSegments,
   assignCharacterVoices,
   countTokens,
+  validateTokenBudget,        // HIGH-4: Pre-flight token validation
+  safeCreateChatCompletion,   // HIGH-4: Safe wrapper for chat completions
   summarizeContext,
   extractStoryFacts,
   determineComplexity,

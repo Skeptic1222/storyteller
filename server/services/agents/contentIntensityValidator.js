@@ -32,10 +32,37 @@ const INTENSITY_DIMENSIONS = [
 ];
 
 /**
- * Tolerance thresholds for mismatch detection
- * These define how much variance we accept before flagging
+ * MEDIUM-15 FIX: Per-dimension tolerance modifiers
+ * Some content types require stricter validation than others:
+ * - Gore/sexualViolence: STRICT (these are the most sensitive)
+ * - AdultContent/explicitness: STRICT (legal concerns)
+ * - Violence/romance/sensuality: MODERATE
+ * - Language/scary/bleakness: LENIENT (artistic license)
  */
-const TOLERANCE = {
+const DIMENSION_TOLERANCE_MODIFIERS = {
+  // STRICT: Reduce base tolerance by 4 points (sensitive content)
+  gore: -4,
+  sexualViolence: -4,
+  adultContent: -3,
+  explicitness: -3,
+
+  // MODERATE: Use base tolerance (default)
+  violence: 0,
+  romance: 0,
+  sensuality: 0,
+
+  // LENIENT: Increase base tolerance by 3 points (artistic variance OK)
+  language: 3,
+  scary: 3,
+  bleakness: 5  // Bleakness is very subjective
+};
+
+/**
+ * Base tolerance thresholds for mismatch detection
+ * These define how much variance we accept before flagging
+ * Actual tolerance = base + dimension modifier
+ */
+const BASE_TOLERANCE = {
   // For low settings (0-30%), allow ±10% variance
   low: { range: [0, 30], tolerance: 10 },
   // For medium settings (31-60%), allow ±12% variance
@@ -45,13 +72,34 @@ const TOLERANCE = {
   high: { range: [61, 100], tolerance: 15 }
 };
 
+// Legacy alias for backwards compatibility
+const TOLERANCE = BASE_TOLERANCE;
+
 /**
- * Get tolerance for a given intensity level
+ * Get tolerance for a given intensity level and dimension
+ * MEDIUM-15 FIX: Now applies per-dimension modifiers
+ *
+ * @param {number} level - The intensity level (0-100)
+ * @param {string} dimension - The content dimension (e.g., 'gore', 'language')
+ * @returns {number} The tolerance threshold
  */
-function getToleranceForLevel(level) {
-  if (level <= TOLERANCE.low.range[1]) return TOLERANCE.low.tolerance;
-  if (level <= TOLERANCE.medium.range[1]) return TOLERANCE.medium.tolerance;
-  return TOLERANCE.high.tolerance;
+function getToleranceForLevel(level, dimension = null) {
+  // Get base tolerance from level
+  let baseTolerance;
+  if (level <= TOLERANCE.low.range[1]) {
+    baseTolerance = TOLERANCE.low.tolerance;
+  } else if (level <= TOLERANCE.medium.range[1]) {
+    baseTolerance = TOLERANCE.medium.tolerance;
+  } else {
+    baseTolerance = TOLERANCE.high.tolerance;
+  }
+
+  // Apply dimension-specific modifier if dimension provided
+  if (dimension && DIMENSION_TOLERANCE_MODIFIERS[dimension] !== undefined) {
+    baseTolerance = Math.max(3, baseTolerance + DIMENSION_TOLERANCE_MODIFIERS[dimension]);
+  }
+
+  return baseTolerance;
 }
 
 /**
@@ -168,7 +216,8 @@ Return ONLY valid JSON:
     for (const dim of INTENSITY_DIMENSIONS) {
       const expected = sliderSettings[dim] ?? 0;
       const actual = analyzed[dim] ?? 0;
-      const tolerance = getToleranceForLevel(expected);
+      // MEDIUM-15: Pass dimension for per-type tolerance modifiers
+      const tolerance = getToleranceForLevel(expected, dim);
       const delta = actual - expected;
 
       // Check if mismatch exceeds tolerance

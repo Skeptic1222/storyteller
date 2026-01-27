@@ -32,7 +32,8 @@ export async function generateBeatsWithPipeline(params) {
     openai,
     pool,
     synopsisId,
-    preferences  // Added for mature content support
+    preferences,  // Added for mature content support
+    previousChapterState  // MEDIUM-11: Previous chapter's final state for cross-chapter validation
   } = params;
 
   logger.info(`[BeatPipeline] Starting multi-agent beat generation for Chapter ${chapterNumber}`);
@@ -68,7 +69,7 @@ export async function generateBeatsWithPipeline(params) {
     // Phase 3.5: Validate and correct locations
     const locationValidatedBeats = validateAndCorrectLocations(initialBeats, context.locations);
 
-    // Phase 4: Validate continuity
+    // Phase 4: Validate continuity (within-chapter)
     const validationResult = await validateContinuity({
       beats: locationValidatedBeats,
       chapter,
@@ -78,6 +79,29 @@ export async function generateBeatsWithPipeline(params) {
       outline,
       openai
     });
+
+    // Phase 4.5: MEDIUM-11 - Cross-chapter continuity validation
+    const crossChapterIssues = validateCrossChapterContinuity({
+      previousChapterState,
+      beats: locationValidatedBeats,
+      context,
+      chapterNumber
+    });
+
+    // Merge cross-chapter issues into validation result
+    if (crossChapterIssues.length > 0) {
+      validationResult.issues = [...(validationResult.issues || []), ...crossChapterIssues];
+      validationResult.cross_chapter_validation = {
+        issues_found: crossChapterIssues.length,
+        issues: crossChapterIssues
+      };
+      // Mark as invalid if there are critical cross-chapter issues
+      const hasCriticalCrossChapter = crossChapterIssues.some(i => i.severity === 'critical');
+      if (hasCriticalCrossChapter) {
+        validationResult.is_valid = false;
+      }
+      logger.warn(`[BeatPipeline] Cross-chapter validation found ${crossChapterIssues.length} issues (${crossChapterIssues.filter(i => i.severity === 'critical').length} critical)`);
+    }
 
     // Phase 5: Refine beats if needed
     let finalBeats = locationValidatedBeats;
@@ -100,10 +124,14 @@ export async function generateBeatsWithPipeline(params) {
 
     logger.info(`[BeatPipeline] Generated ${linkedBeats.length} beats for Chapter ${chapterNumber}`);
 
+    // MEDIUM-11: Extract final state for cross-chapter validation of subsequent chapters
+    const chapterFinalState = extractChapterFinalState(linkedBeats, context, chapterNumber);
+
     return {
       beats: linkedBeats,
       timeline,
-      validation: validationResult
+      validation: validationResult,
+      chapterFinalState  // MEDIUM-11: Include for cross-chapter continuity
     };
 
   } catch (error) {
@@ -401,11 +429,484 @@ Generate 15-25 beats that tell this chapter's story while respecting the timelin
 }
 
 /**
+ * HIGH-3 FIX: Character Introduction Validator
+ * Validates that characters are properly introduced before performing actions
+ * @param {Array} beats - The story beats to validate
+ * @param {Object} context - Context including characters and previous chapters
+ * @param {number} chapterNumber - Current chapter number
+ * @returns {Array} Array of introduction issues found
+ */
+function validateCharacterIntroductions(beats, context, chapterNumber) {
+  const issues = [];
+  const { characters, previousChapters } = context;
+
+  // Build set of characters already introduced in previous chapters
+  const introducedCharacters = new Set();
+
+  // Characters mentioned in previous chapter summaries/events are considered introduced
+  for (const prevChapter of previousChapters) {
+    const chapterText = `${prevChapter.summary || ''} ${(prevChapter.key_events || []).join(' ')}`.toLowerCase();
+    for (const char of characters) {
+      if (chapterText.includes(char.name.toLowerCase())) {
+        introducedCharacters.add(char.name.toLowerCase());
+      }
+    }
+  }
+
+  // For Chapter 1, only main/protagonist characters are pre-introduced
+  if (chapterNumber === 1) {
+    for (const char of characters) {
+      const role = (char.role || '').toLowerCase();
+      if (role.includes('protagonist') || role.includes('main') || role.includes('narrator')) {
+        introducedCharacters.add(char.name.toLowerCase());
+      }
+    }
+  }
+
+  logger.info(`[BeatPipeline:CharacterValidator] Pre-introduced characters: ${[...introducedCharacters].join(', ') || 'none'}`);
+
+  // Track introduction beats within this chapter
+  const introductionBeats = new Map(); // character -> beat number where introduced
+
+  // Analyze each beat
+  for (const beat of beats) {
+    const beatChars = (beat.characters || []).map(c => c.toLowerCase());
+    const beatText = `${beat.summary || ''} ${beat.dialogue_hint || ''}`.toLowerCase();
+    const beatType = (beat.type || '').toLowerCase();
+
+    // Check if this beat introduces new characters
+    const isIntroductionBeat = beatType === 'opening' ||
+      beatText.includes('introduc') ||
+      beatText.includes('first meet') ||
+      beatText.includes('first see') ||
+      beatText.includes('encounter') ||
+      beatText.includes('arrives') ||
+      beatText.includes('enters') ||
+      beatText.includes('appears for the first time');
+
+    for (const charName of beatChars) {
+      // Skip if already introduced
+      if (introducedCharacters.has(charName)) continue;
+
+      // Check if this beat could serve as introduction
+      if (isIntroductionBeat || beatText.includes(charName)) {
+        // This beat introduces the character
+        introducedCharacters.add(charName);
+        introductionBeats.set(charName, beat.beat_number);
+        logger.debug(`[BeatPipeline:CharacterValidator] Character "${charName}" introduced in beat ${beat.beat_number}`);
+      } else {
+        // Character appears but wasn't introduced - this is an issue
+        issues.push({
+          beat_number: beat.beat_number,
+          severity: 'warning',
+          type: 'character_introduction_missing',
+          description: `Character "${charName}" appears in beat ${beat.beat_number} but hasn't been introduced yet. First appearance should include an introduction.`,
+          fix_suggestion: `Either add an introduction for "${charName}" in an earlier beat, or modify beat ${beat.beat_number} to include their introduction.`,
+          character: charName
+        });
+
+        // Still mark as introduced to avoid duplicate warnings
+        introducedCharacters.add(charName);
+        introductionBeats.set(charName, beat.beat_number);
+      }
+    }
+
+    // Check for characters mentioned in summary/dialogue but not in characters list
+    for (const char of characters) {
+      const charNameLower = char.name.toLowerCase();
+      if (beatText.includes(charNameLower) && !beatChars.includes(charNameLower)) {
+        // Character mentioned but not in characters array - might be issue
+        if (!introducedCharacters.has(charNameLower)) {
+          issues.push({
+            beat_number: beat.beat_number,
+            severity: 'suggestion',
+            type: 'character_mention_without_presence',
+            description: `Character "${char.name}" is mentioned in beat ${beat.beat_number} summary but not listed in beat's characters array.`,
+            fix_suggestion: `Add "${char.name}" to the characters array if they are present in the scene.`,
+            character: char.name
+          });
+        }
+      }
+    }
+  }
+
+  logger.info(`[BeatPipeline:CharacterValidator] Found ${issues.length} character introduction issues`);
+  return issues;
+}
+
+/**
+ * MEDIUM-12: Scene Transition Validator
+ * Detects abrupt transitions between consecutive beats (location, time, character jumps)
+ * and suggests transitional elements where needed.
+ *
+ * @param {Array} beats - The story beats to validate
+ * @param {Object} context - Context including locations and characters
+ * @returns {Array} Array of transition issues found
+ */
+function validateSceneTransitions(beats, context) {
+  const issues = [];
+
+  if (!beats || beats.length < 2) return issues;
+
+  const { locations = [] } = context;
+
+  // Build location map for proximity/relationship analysis
+  const locationMap = new Map();
+  for (const loc of locations) {
+    if (loc.name) {
+      locationMap.set(loc.name.toLowerCase(), {
+        name: loc.name,
+        type: loc.type || loc.location_type || 'unknown',
+        parentLocation: loc.parent_location || loc.parentLocation || null,
+        region: loc.region || null,
+        description: loc.description || ''
+      });
+    }
+  }
+
+  // Beat types that represent intentional narrative jumps (don't flag these)
+  const INTENTIONAL_JUMP_TYPES = [
+    'flashback', 'flash_forward', 'interlude', 'parallel',
+    'dream', 'vision', 'memory', 'cutaway', 'montage'
+  ];
+
+  // Transition markers in text that indicate intentional jumps
+  const INTENTIONAL_MARKERS = [
+    'meanwhile', 'elsewhere', 'at the same time', 'back at',
+    'hours later', 'days later', 'the next day', 'that night',
+    'earlier that', 'later that', 'some time later', 'years ago',
+    'in a flashback', 'remembers when', 'dreams of', 'envisions'
+  ];
+
+  logger.info(`[BeatPipeline:TransitionValidator] Checking ${beats.length} beats for transition issues`);
+
+  for (let i = 0; i < beats.length - 1; i++) {
+    const currentBeat = beats[i];
+    const nextBeat = beats[i + 1];
+
+    // Skip validation if next beat is an intentional narrative jump
+    const nextType = (nextBeat.type || '').toLowerCase();
+    const currentType = (currentBeat.type || '').toLowerCase();
+
+    if (INTENTIONAL_JUMP_TYPES.some(t => nextType.includes(t) || currentType.includes(t))) {
+      logger.debug(`[BeatPipeline:TransitionValidator] Skipping beat ${nextBeat.beat_number} - intentional jump type: ${nextType}`);
+      continue;
+    }
+
+    // Check summary text for intentional transition markers
+    const nextSummary = (nextBeat.summary || '').toLowerCase();
+    const hasIntentionalMarker = INTENTIONAL_MARKERS.some(marker => nextSummary.includes(marker));
+    if (hasIntentionalMarker) {
+      logger.debug(`[BeatPipeline:TransitionValidator] Skipping beat ${nextBeat.beat_number} - has transition marker in summary`);
+      continue;
+    }
+
+    // Check for abrupt location transitions
+    const locationIssue = checkLocationTransition(currentBeat, nextBeat, locationMap);
+    if (locationIssue) {
+      issues.push({
+        beat_number: nextBeat.beat_number,
+        previous_beat: currentBeat.beat_number,
+        severity: locationIssue.severity,
+        type: 'scene_transition_location',
+        description: locationIssue.description,
+        fix_suggestion: locationIssue.suggestion
+      });
+    }
+
+    // Check for abrupt character presence changes
+    const characterIssue = checkCharacterPresenceTransition(currentBeat, nextBeat);
+    if (characterIssue) {
+      issues.push({
+        beat_number: nextBeat.beat_number,
+        previous_beat: currentBeat.beat_number,
+        severity: characterIssue.severity,
+        type: 'scene_transition_characters',
+        description: characterIssue.description,
+        fix_suggestion: characterIssue.suggestion
+      });
+    }
+
+    // Check for abrupt mood/tone shifts
+    const moodIssue = checkMoodTransition(currentBeat, nextBeat);
+    if (moodIssue) {
+      issues.push({
+        beat_number: nextBeat.beat_number,
+        previous_beat: currentBeat.beat_number,
+        severity: moodIssue.severity,
+        type: 'scene_transition_mood',
+        description: moodIssue.description,
+        fix_suggestion: moodIssue.suggestion
+      });
+    }
+  }
+
+  if (issues.length > 0) {
+    logger.warn(`[BeatPipeline:TransitionValidator] Found ${issues.length} scene transition issues`);
+  } else {
+    logger.info(`[BeatPipeline:TransitionValidator] No abrupt scene transitions detected`);
+  }
+
+  return issues;
+}
+
+/**
+ * Check for abrupt location changes between beats
+ * @private
+ */
+function checkLocationTransition(currentBeat, nextBeat, locationMap) {
+  const currentLoc = (currentBeat.location || '').toLowerCase().trim();
+  const nextLoc = (nextBeat.location || '').toLowerCase().trim();
+
+  // No issue if locations are the same or not specified
+  if (!currentLoc || !nextLoc || currentLoc === nextLoc) {
+    return null;
+  }
+
+  // Check if locations are related (same parent, same region, etc.)
+  const currentLocInfo = locationMap.get(currentLoc);
+  const nextLocInfo = locationMap.get(nextLoc);
+
+  // If we have location metadata, check for relationships
+  if (currentLocInfo && nextLocInfo) {
+    // Same parent location = nearby, no issue
+    if (currentLocInfo.parentLocation && nextLocInfo.parentLocation &&
+        currentLocInfo.parentLocation.toLowerCase() === nextLocInfo.parentLocation.toLowerCase()) {
+      return null;
+    }
+
+    // Same region = relatively close, minor issue at most
+    if (currentLocInfo.region && nextLocInfo.region &&
+        currentLocInfo.region.toLowerCase() === nextLocInfo.region.toLowerCase()) {
+      return null; // Same region is acceptable
+    }
+
+    // One is parent of the other = movement within same area
+    if (currentLoc.includes(nextLoc) || nextLoc.includes(currentLoc)) {
+      return null;
+    }
+  }
+
+  // Check summary for travel/movement indicators
+  const nextSummary = (nextBeat.summary || '').toLowerCase();
+  const travelIndicators = [
+    'arrives at', 'reaches', 'travels to', 'journeys to', 'walks to',
+    'rides to', 'flies to', 'sails to', 'drives to', 'heads to',
+    'makes their way', 'returns to', 'enters', 'steps into',
+    'after the journey', 'upon arriving', 'having traveled'
+  ];
+
+  const hasTravel = travelIndicators.some(indicator => nextSummary.includes(indicator));
+  if (hasTravel) {
+    return null; // Travel is mentioned, no issue
+  }
+
+  // Check if current beat ends with departure
+  const currentSummary = (currentBeat.summary || '').toLowerCase();
+  const departureIndicators = [
+    'leaves', 'departs', 'sets off', 'heads out', 'begins the journey',
+    'starts traveling', 'mounts', 'boards', 'exits'
+  ];
+  const hasDeparture = departureIndicators.some(indicator => currentSummary.includes(indicator));
+  if (hasDeparture) {
+    return null; // Departure mentioned, transition is acceptable
+  }
+
+  // Calculate how different the locations are
+  const currentWords = new Set(currentLoc.split(/\s+/).filter(w => w.length > 2));
+  const nextWords = new Set(nextLoc.split(/\s+/).filter(w => w.length > 2));
+  const commonWords = [...currentWords].filter(w => nextWords.has(w));
+
+  // If locations share significant words, they might be related
+  if (commonWords.length > 0) {
+    return null; // Likely related locations
+  }
+
+  // This is an abrupt location change
+  return {
+    severity: 'warning',
+    description: `Abrupt location change from "${currentBeat.location}" (beat ${currentBeat.beat_number}) to "${nextBeat.location}" (beat ${nextBeat.beat_number}) with no travel or transition indicated.`,
+    suggestion: `Add a transition beat showing travel from "${currentBeat.location}" to "${nextBeat.location}", or add travel description to beat ${nextBeat.beat_number}'s summary (e.g., "After traveling to ${nextBeat.location}...").`
+  };
+}
+
+/**
+ * Check for abrupt character presence changes between beats
+ * @private
+ */
+function checkCharacterPresenceTransition(currentBeat, nextBeat) {
+  const currentChars = new Set((currentBeat.characters || []).map(c => c.toLowerCase().trim()));
+  const nextChars = new Set((nextBeat.characters || []).map(c => c.toLowerCase().trim()));
+
+  // Skip if either beat has no characters listed
+  if (currentChars.size === 0 || nextChars.size === 0) {
+    return null;
+  }
+
+  // Find characters who appear in next but not current (new arrivals)
+  const newArrivals = [...nextChars].filter(c => !currentChars.has(c));
+
+  // Find characters who were in current but not next (departures)
+  const departures = [...currentChars].filter(c => !nextChars.has(c));
+
+  // Check summaries for arrival/departure explanations
+  const nextSummary = (nextBeat.summary || '').toLowerCase();
+  const currentSummary = (currentBeat.summary || '').toLowerCase();
+
+  const arrivalIndicators = [
+    'arrives', 'joins', 'enters', 'appears', 'shows up', 'comes in',
+    'approaches', 'meets', 'encounters', 'finds', 'discovers',
+    'interrupted by', 'is joined by', 'welcomes'
+  ];
+
+  const departureIndicators = [
+    'leaves', 'departs', 'exits', 'goes', 'walks away', 'storms off',
+    'slips away', 'disappears', 'sends away', 'dismisses', 'alone'
+  ];
+
+  // Check for unexplained new arrivals
+  const unexplainedArrivals = newArrivals.filter(char => {
+    // Check if arrival is explained in next beat's summary
+    const charMentioned = nextSummary.includes(char);
+    const hasArrivalIndicator = arrivalIndicators.some(ind => nextSummary.includes(ind));
+    return !(charMentioned && hasArrivalIndicator);
+  });
+
+  // Check for unexplained departures (character was present, suddenly gone)
+  const unexplainedDepartures = departures.filter(char => {
+    // If location changed, characters naturally don't follow
+    if (currentBeat.location !== nextBeat.location) {
+      return false;
+    }
+    // Check if departure is explained in current beat
+    const charMentioned = currentSummary.includes(char);
+    const hasDepartureIndicator = departureIndicators.some(ind => currentSummary.includes(ind));
+    return !(charMentioned && hasDepartureIndicator);
+  });
+
+  // Only flag if there are multiple unexplained changes or significant main character issues
+  const totalUnexplained = unexplainedArrivals.length + unexplainedDepartures.length;
+
+  // Single character change is often acceptable in storytelling
+  if (totalUnexplained <= 1) {
+    return null;
+  }
+
+  // Complete cast change is suspicious (unless location changed)
+  const isCompleteCastChange = currentChars.size > 1 && nextChars.size > 1 &&
+    [...currentChars].every(c => !nextChars.has(c));
+
+  if (isCompleteCastChange && currentBeat.location === nextBeat.location) {
+    return {
+      severity: 'warning',
+      description: `Complete character cast change between beat ${currentBeat.beat_number} and ${nextBeat.beat_number} at the same location ("${currentBeat.location}"). Previous: [${[...currentChars].join(', ')}], Next: [${[...nextChars].join(', ')}].`,
+      suggestion: `Add a transition showing why characters [${[...currentChars].join(', ')}] left and how [${[...nextChars].join(', ')}] arrived, or mark beat ${nextBeat.beat_number} as a parallel/cutaway scene.`
+    };
+  }
+
+  if (unexplainedArrivals.length > 1) {
+    return {
+      severity: 'suggestion',
+      description: `Multiple characters suddenly appear in beat ${nextBeat.beat_number} without explanation: [${unexplainedArrivals.join(', ')}].`,
+      suggestion: `Add arrival context to beat ${nextBeat.beat_number}'s summary explaining how these characters joined the scene.`
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Check for jarring mood/tone shifts between beats
+ * @private
+ */
+function checkMoodTransition(currentBeat, nextBeat) {
+  const currentMood = (currentBeat.mood || '').toLowerCase().trim();
+  const nextMood = (nextBeat.mood || '').toLowerCase().trim();
+
+  // Skip if moods aren't specified
+  if (!currentMood || !nextMood) {
+    return null;
+  }
+
+  // Define mood categories for contrast detection
+  const moodCategories = {
+    positive: ['joyful', 'happy', 'hopeful', 'triumphant', 'romantic', 'peaceful', 'serene', 'warm', 'lighthearted', 'comedic', 'celebratory'],
+    negative: ['dark', 'grim', 'tragic', 'mournful', 'desperate', 'horrific', 'terrifying', 'bleak', 'devastating'],
+    tense: ['tense', 'suspenseful', 'anxious', 'urgent', 'dramatic', 'ominous', 'foreboding', 'dangerous'],
+    calm: ['calm', 'quiet', 'contemplative', 'reflective', 'melancholic', 'nostalgic', 'bittersweet'],
+    action: ['intense', 'chaotic', 'violent', 'frantic', 'explosive', 'climactic', 'confrontational']
+  };
+
+  // Find category for each mood
+  const findCategory = (mood) => {
+    for (const [category, keywords] of Object.entries(moodCategories)) {
+      if (keywords.some(k => mood.includes(k))) {
+        return category;
+      }
+    }
+    return 'neutral';
+  };
+
+  const currentCategory = findCategory(currentMood);
+  const nextCategory = findCategory(nextMood);
+
+  // Define jarring transitions (categories that clash)
+  const jarringTransitions = {
+    positive: ['negative', 'action'], // joy to tragedy/violence is jarring
+    negative: ['positive'],           // grief to joy without transition is jarring
+    calm: ['action'],                 // peace to chaos needs buildup
+    action: ['calm']                  // battle to quiet needs wind-down
+  };
+
+  const isJarring = jarringTransitions[currentCategory]?.includes(nextCategory);
+
+  if (!isJarring) {
+    return null;
+  }
+
+  // Check if the beat type explains the shift
+  const nextType = (nextBeat.type || '').toLowerCase();
+  const transitionTypes = ['transition', 'resolution', 'climax', 'revelation'];
+  if (transitionTypes.some(t => nextType.includes(t))) {
+    return null; // Beat type accounts for the shift
+  }
+
+  // Check summary for transitional language
+  const nextSummary = (nextBeat.summary || '').toLowerCase();
+  const transitionPhrases = [
+    'suddenly', 'without warning', 'the mood shifts', 'everything changes',
+    'interrupted by', 'shattered by', 'broken by', 'in stark contrast'
+  ];
+
+  if (transitionPhrases.some(p => nextSummary.includes(p))) {
+    return null; // Abrupt shift is intentional and noted
+  }
+
+  return {
+    severity: 'suggestion',
+    description: `Potentially jarring mood shift from "${currentMood}" (beat ${currentBeat.beat_number}) to "${nextMood}" (beat ${nextBeat.beat_number}) without transitional elements.`,
+    suggestion: `Consider adding a transition beat between ${currentBeat.beat_number} and ${nextBeat.beat_number} to smooth the emotional shift, or add transitional language to beat ${nextBeat.beat_number}'s summary.`
+  };
+}
+
+/**
  * Phase 4: Continuity Validator Agent
  * Checks for timeline violations and logic errors
  */
 async function validateContinuity({ beats, chapter, chapterNumber, context, timeline, outline, openai }) {
   logger.info('[BeatPipeline:Validator] Validating continuity...');
+
+  // HIGH-3: Run character introduction validation first
+  const characterIssues = validateCharacterIntroductions(beats, context, chapterNumber);
+  if (characterIssues.length > 0) {
+    logger.warn(`[BeatPipeline:Validator] Character introduction issues: ${characterIssues.length}`);
+  }
+
+  // MEDIUM-12: Run scene transition validation
+  const transitionIssues = validateSceneTransitions(beats, context);
+  if (transitionIssues.length > 0) {
+    logger.warn(`[BeatPipeline:Validator] Scene transition issues: ${transitionIssues.length}`);
+  }
 
   const systemPrompt = `You are a story continuity expert. Find timeline violations and logic errors in these beats.
 
@@ -468,12 +969,45 @@ Find any timeline violations or continuity errors.`;
     });
 
     const result = JSON.parse(response.choices[0]?.message?.content || '{"issues":[],"is_valid":true}');
-    logger.info(`[BeatPipeline:Validator] Found ${result.issues?.length || 0} issues, valid: ${result.is_valid}`);
-    return result;
+
+    // HIGH-3 + MEDIUM-12: Merge character introduction, transition, and LLM validation issues
+    const allIssues = [...characterIssues, ...transitionIssues, ...(result.issues || [])];
+    const hasCharacterWarnings = characterIssues.some(i => i.severity === 'warning' || i.severity === 'critical');
+    const hasTransitionWarnings = transitionIssues.some(i => i.severity === 'warning' || i.severity === 'critical');
+
+    logger.info(`[BeatPipeline:Validator] Found ${result.issues?.length || 0} LLM issues + ${characterIssues.length} character issues + ${transitionIssues.length} transition issues, valid: ${result.is_valid && !hasCharacterWarnings}`);
+
+    return {
+      ...result,
+      issues: allIssues,
+      is_valid: result.is_valid && !hasCharacterWarnings,
+      character_validation: {
+        issues_found: characterIssues.length,
+        issues: characterIssues
+      },
+      transition_validation: {
+        issues_found: transitionIssues.length,
+        issues: transitionIssues
+      }
+    };
 
   } catch (error) {
     logger.error('[BeatPipeline:Validator] Error validating:', error);
-    return { issues: [], is_valid: true, error: error.message };
+    // Still return character and transition issues even if LLM validation fails
+    const fallbackIssues = [...characterIssues, ...transitionIssues];
+    return {
+      issues: fallbackIssues,
+      is_valid: fallbackIssues.length === 0,
+      error: error.message,
+      character_validation: {
+        issues_found: characterIssues.length,
+        issues: characterIssues
+      },
+      transition_validation: {
+        issues_found: transitionIssues.length,
+        issues: transitionIssues
+      }
+    };
   }
 }
 
@@ -605,6 +1139,389 @@ async function linkObjectsToBeats({ beats, context, openai }) {
 }
 
 /**
+ * MEDIUM-11: Cross-Chapter Continuity Validator
+ * Validates continuity between chapters to catch major contradictions
+ *
+ * @param {Object} params - Validation parameters
+ * @param {Object} params.previousChapterState - Final state from previous chapter
+ * @param {Array} params.beats - Current chapter's beats to validate
+ * @param {Object} params.context - Full context including characters, items, locations
+ * @param {number} params.chapterNumber - Current chapter number
+ * @returns {Array} Array of continuity issues found
+ */
+export function validateCrossChapterContinuity({ previousChapterState, beats, context, chapterNumber }) {
+  const issues = [];
+
+  // Skip for first chapter - no previous state to validate against
+  if (chapterNumber <= 1 || !previousChapterState) {
+    logger.info('[BeatPipeline:CrossChapterValidator] Chapter 1 or no previous state - skipping cross-chapter validation');
+    return issues;
+  }
+
+  logger.info(`[BeatPipeline:CrossChapterValidator] Validating continuity from Chapter ${chapterNumber - 1} to Chapter ${chapterNumber}`);
+
+  const {
+    deadCharacters = [],
+    characterLocations = {},
+    lostItems = [],
+    destroyedItems = [],
+    characterInventory = {},
+    finalLocation = null
+  } = previousChapterState;
+
+  // Build text content from all beats for analysis
+  const allBeatsText = beats.map(b =>
+    `${b.summary || ''} ${b.dialogue_hint || ''} ${b.sensory_details || ''}`
+  ).join(' ').toLowerCase();
+
+  // ========================================
+  // CHECK 1: Character Death/Resurrection
+  // ========================================
+  for (const deadChar of deadCharacters) {
+    const charNameLower = deadChar.name?.toLowerCase() || deadChar.toLowerCase();
+
+    // Check if dead character appears in any beat
+    for (const beat of beats) {
+      const beatChars = (beat.characters || []).map(c => c.toLowerCase());
+      const beatText = `${beat.summary || ''} ${beat.dialogue_hint || ''}`.toLowerCase();
+
+      const appearsInBeat = beatChars.includes(charNameLower) ||
+                           beatText.includes(charNameLower);
+
+      if (appearsInBeat) {
+        // Check if the beat explicitly handles resurrection/flashback/memory
+        const isFlashbackOrMemory =
+          (beat.type || '').toLowerCase() === 'flashback' ||
+          beatText.includes('remember') ||
+          beatText.includes('memory') ||
+          beatText.includes('ghost') ||
+          beatText.includes('spirit') ||
+          beatText.includes('vision') ||
+          beatText.includes('dream') ||
+          beatText.includes('resurrect') ||
+          beatText.includes('brought back') ||
+          beatText.includes('revive');
+
+        if (!isFlashbackOrMemory) {
+          issues.push({
+            beat_number: beat.beat_number,
+            severity: 'critical',
+            type: 'character_resurrection_contradiction',
+            description: `Character "${deadChar.name || deadChar}" died in a previous chapter but appears alive in beat ${beat.beat_number} without explanation (flashback, resurrection, etc.)`,
+            fix_suggestion: `Either remove "${deadChar.name || deadChar}" from this beat, mark the beat as a flashback/memory, or add a resurrection/revival explanation earlier in the chapter.`,
+            character: deadChar.name || deadChar,
+            previous_chapter_event: deadChar.deathChapter ? `Died in Chapter ${deadChar.deathChapter}` : 'Died in previous chapter'
+          });
+        }
+      }
+    }
+  }
+
+  // ========================================
+  // CHECK 2: Equipment/Resource Contradictions
+  // ========================================
+  const unavailableItems = [...lostItems, ...destroyedItems];
+
+  for (const item of unavailableItems) {
+    const itemNameLower = item.name?.toLowerCase() || item.toLowerCase();
+
+    for (const beat of beats) {
+      const beatText = `${beat.summary || ''} ${beat.dialogue_hint || ''} ${beat.sensory_details || ''}`.toLowerCase();
+
+      // Check if item is used/referenced as if available
+      const itemUsagePatterns = [
+        `uses ${itemNameLower}`,
+        `using ${itemNameLower}`,
+        `wields ${itemNameLower}`,
+        `wielding ${itemNameLower}`,
+        `draws ${itemNameLower}`,
+        `holds ${itemNameLower}`,
+        `holding ${itemNameLower}`,
+        `with ${itemNameLower}`,
+        `grabs ${itemNameLower}`,
+        `takes ${itemNameLower}`,
+        `${itemNameLower} in hand`,
+        `raises ${itemNameLower}`,
+        `swings ${itemNameLower}`
+      ];
+
+      const isItemUsed = itemUsagePatterns.some(pattern => beatText.includes(pattern));
+
+      // Also check if item appears without context suggesting it's missing
+      const itemMentioned = beatText.includes(itemNameLower);
+      const contextSuggestsMissing =
+        beatText.includes('lost') ||
+        beatText.includes('destroyed') ||
+        beatText.includes('broken') ||
+        beatText.includes('missing') ||
+        beatText.includes('search for') ||
+        beatText.includes('find') ||
+        beatText.includes('recover') ||
+        beatText.includes('replacement');
+
+      if (isItemUsed || (itemMentioned && !contextSuggestsMissing)) {
+        const wasLost = lostItems.some(i => (i.name?.toLowerCase() || i.toLowerCase()) === itemNameLower);
+        const wasDestroyed = destroyedItems.some(i => (i.name?.toLowerCase() || i.toLowerCase()) === itemNameLower);
+
+        issues.push({
+          beat_number: beat.beat_number,
+          severity: 'critical',
+          type: 'item_availability_contradiction',
+          description: `Item "${item.name || item}" was ${wasDestroyed ? 'destroyed' : 'lost'} in a previous chapter but appears to be available/used in beat ${beat.beat_number}`,
+          fix_suggestion: wasDestroyed
+            ? `Remove "${item.name || item}" from this beat or establish how it was replaced/recreated.`
+            : `Add a scene showing recovery of "${item.name || item}" before this beat, or use a different item.`,
+          item: item.name || item,
+          previous_state: wasDestroyed ? 'destroyed' : 'lost',
+          previous_chapter: item.lostChapter || item.destroyedChapter || 'previous chapter'
+        });
+      }
+    }
+  }
+
+  // ========================================
+  // CHECK 3: Location Teleportation
+  // ========================================
+  if (Object.keys(characterLocations).length > 0) {
+    // Get the first beat's location and characters
+    const firstBeat = beats[0];
+    if (firstBeat) {
+      const firstBeatLocation = (firstBeat.location || '').toLowerCase();
+      const firstBeatChars = (firstBeat.characters || []).map(c => c.toLowerCase());
+
+      for (const [charName, lastLocation] of Object.entries(characterLocations)) {
+        const charNameLower = charName.toLowerCase();
+        const lastLocationLower = (lastLocation.name || lastLocation || '').toLowerCase();
+
+        // Only check if character is in the first beat
+        if (firstBeatChars.includes(charNameLower)) {
+          // Check if locations are meaningfully different
+          const locationsDiffer =
+            firstBeatLocation &&
+            lastLocationLower &&
+            !firstBeatLocation.includes(lastLocationLower) &&
+            !lastLocationLower.includes(firstBeatLocation);
+
+          if (locationsDiffer) {
+            // Check if there's any travel mention in early beats
+            const earlyBeats = beats.slice(0, 3);
+            const hasTransitionExplanation = earlyBeats.some(beat => {
+              const text = `${beat.summary || ''} ${beat.type || ''}`.toLowerCase();
+              return text.includes('travel') ||
+                     text.includes('journey') ||
+                     text.includes('arrive') ||
+                     text.includes('reach') ||
+                     text.includes('return') ||
+                     text.includes('transition') ||
+                     text.includes('meanwhile') ||
+                     text.includes('later') ||
+                     text.includes('next day') ||
+                     text.includes('hours later') ||
+                     text.includes('days later') ||
+                     beat.type === 'transition';
+            });
+
+            if (!hasTransitionExplanation) {
+              issues.push({
+                beat_number: 1,
+                severity: 'warning',
+                type: 'location_teleportation',
+                description: `Character "${charName}" was at "${lastLocation.name || lastLocation}" at the end of Chapter ${chapterNumber - 1} but appears at "${firstBeat.location}" at the start of Chapter ${chapterNumber} with no travel/transition explanation`,
+                fix_suggestion: `Add a transition beat showing "${charName}" traveling from "${lastLocation.name || lastLocation}" to "${firstBeat.location}", or add time-skip language like "The next morning..." or "After the long journey..."`,
+                character: charName,
+                previous_location: lastLocation.name || lastLocation,
+                current_location: firstBeat.location
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // ========================================
+  // CHECK 4: Character Inventory Consistency
+  // ========================================
+  for (const [charName, inventory] of Object.entries(characterInventory)) {
+    const charNameLower = charName.toLowerCase();
+
+    for (const item of inventory) {
+      const itemNameLower = item.name?.toLowerCase() || item.toLowerCase();
+
+      // Check if another character uses this item
+      for (const beat of beats) {
+        const beatText = `${beat.summary || ''} ${beat.dialogue_hint || ''}`.toLowerCase();
+        const beatChars = (beat.characters || []).map(c => c.toLowerCase());
+
+        // Check if item is used by a different character
+        const itemUsed = beatText.includes(itemNameLower);
+        const originalOwnerPresent = beatChars.includes(charNameLower);
+
+        if (itemUsed && !originalOwnerPresent) {
+          // Another character might be using the item - check for transfer context
+          const hasTransferContext =
+            beatText.includes('borrow') ||
+            beatText.includes('lend') ||
+            beatText.includes('give') ||
+            beatText.includes('hand over') ||
+            beatText.includes('pass') ||
+            beatText.includes('take from') ||
+            beatText.includes('stole') ||
+            beatText.includes('left behind');
+
+          if (!hasTransferContext) {
+            issues.push({
+              beat_number: beat.beat_number,
+              severity: 'suggestion',
+              type: 'inventory_ownership_unclear',
+              description: `Item "${item.name || item}" belonged to "${charName}" at end of previous chapter, but appears to be used in beat ${beat.beat_number} without "${charName}" present`,
+              fix_suggestion: `Either add "${charName}" to this scene, show the item being transferred/borrowed, or establish how the new character obtained it.`,
+              item: item.name || item,
+              original_owner: charName
+            });
+          }
+        }
+      }
+    }
+  }
+
+  // Log summary
+  const criticalCount = issues.filter(i => i.severity === 'critical').length;
+  const warningCount = issues.filter(i => i.severity === 'warning').length;
+  const suggestionCount = issues.filter(i => i.severity === 'suggestion').length;
+
+  logger.info(`[BeatPipeline:CrossChapterValidator] Found ${issues.length} cross-chapter issues (${criticalCount} critical, ${warningCount} warnings, ${suggestionCount} suggestions)`);
+
+  return issues;
+}
+
+/**
+ * Extract chapter state from beats and context for cross-chapter validation
+ * This should be called after generating beats to capture the final state
+ *
+ * @param {Array} beats - The generated beats for this chapter
+ * @param {Object} context - The full context including characters, items, etc.
+ * @param {number} chapterNumber - Current chapter number
+ * @returns {Object} State object for cross-chapter validation
+ */
+export function extractChapterFinalState(beats, context, chapterNumber) {
+  logger.info(`[BeatPipeline:StateExtractor] Extracting final state for Chapter ${chapterNumber}`);
+
+  const state = {
+    chapterNumber,
+    deadCharacters: [],
+    characterLocations: {},
+    lostItems: [],
+    destroyedItems: [],
+    characterInventory: {},
+    finalLocation: null
+  };
+
+  if (!beats || beats.length === 0) {
+    return state;
+  }
+
+  // Combine all beat text for analysis
+  const allBeatsText = beats.map(b =>
+    `${b.summary || ''} ${b.dialogue_hint || ''} ${b.sensory_details || ''}`
+  ).join(' ').toLowerCase();
+
+  // Extract death events
+  const deathPatterns = [
+    /(\w+)\s+(?:dies|is killed|was killed|perishes|falls dead|is slain)/gi,
+    /(?:death of|kills?|murdered?|slays?)\s+(\w+)/gi,
+    /(\w+)'s?\s+(?:death|demise|final breath|last moment)/gi
+  ];
+
+  for (const pattern of deathPatterns) {
+    let match;
+    while ((match = pattern.exec(allBeatsText)) !== null) {
+      const charName = match[1];
+      // Verify it's a known character
+      const knownChar = context.characters?.find(c =>
+        c.name.toLowerCase() === charName.toLowerCase()
+      );
+      if (knownChar && !state.deadCharacters.some(d => d.name === knownChar.name)) {
+        state.deadCharacters.push({
+          name: knownChar.name,
+          id: knownChar.id,
+          deathChapter: chapterNumber
+        });
+        logger.debug(`[BeatPipeline:StateExtractor] Detected death: ${knownChar.name}`);
+      }
+    }
+  }
+
+  // Extract lost/destroyed items
+  const lostPatterns = [
+    /(\w+(?:\s+\w+)?)\s+(?:is lost|was lost|falls into|dropped into|lost forever)/gi,
+    /(?:loses?|lost)\s+(?:the\s+)?(\w+(?:\s+\w+)?)/gi
+  ];
+
+  const destroyedPatterns = [
+    /(\w+(?:\s+\w+)?)\s+(?:is destroyed|was destroyed|shatters|breaks|crumbles)/gi,
+    /(?:destroys?|destroyed|shattered|broke)\s+(?:the\s+)?(\w+(?:\s+\w+)?)/gi
+  ];
+
+  for (const pattern of lostPatterns) {
+    let match;
+    while ((match = pattern.exec(allBeatsText)) !== null) {
+      const itemName = match[1];
+      const knownItem = context.items?.find(i =>
+        i.name.toLowerCase().includes(itemName.toLowerCase()) ||
+        itemName.toLowerCase().includes(i.name.toLowerCase())
+      );
+      if (knownItem && !state.lostItems.some(i => i.name === knownItem.name)) {
+        state.lostItems.push({
+          name: knownItem.name,
+          id: knownItem.id,
+          lostChapter: chapterNumber
+        });
+        logger.debug(`[BeatPipeline:StateExtractor] Detected lost item: ${knownItem.name}`);
+      }
+    }
+  }
+
+  for (const pattern of destroyedPatterns) {
+    let match;
+    while ((match = pattern.exec(allBeatsText)) !== null) {
+      const itemName = match[1];
+      const knownItem = context.items?.find(i =>
+        i.name.toLowerCase().includes(itemName.toLowerCase()) ||
+        itemName.toLowerCase().includes(i.name.toLowerCase())
+      );
+      if (knownItem && !state.destroyedItems.some(i => i.name === knownItem.name)) {
+        state.destroyedItems.push({
+          name: knownItem.name,
+          id: knownItem.id,
+          destroyedChapter: chapterNumber
+        });
+        logger.debug(`[BeatPipeline:StateExtractor] Detected destroyed item: ${knownItem.name}`);
+      }
+    }
+  }
+
+  // Get final beat for location tracking
+  const finalBeat = beats[beats.length - 1];
+  if (finalBeat) {
+    state.finalLocation = finalBeat.location;
+
+    // Track character locations at end of chapter
+    const finalChars = finalBeat.characters || [];
+    for (const charName of finalChars) {
+      state.characterLocations[charName] = {
+        name: finalBeat.location,
+        beat: finalBeat.beat_number
+      };
+    }
+  }
+
+  logger.info(`[BeatPipeline:StateExtractor] Extracted state: ${state.deadCharacters.length} deaths, ${state.lostItems.length} lost items, ${state.destroyedItems.length} destroyed items, ${Object.keys(state.characterLocations).length} character locations tracked`);
+
+  return state;
+}
+
+/**
  * Phase 3.5: Location Validator
  * Validates beat locations against available library locations and corrects invalid ones
  */
@@ -673,4 +1590,9 @@ function validateAndCorrectLocations(beats, availableLocations) {
   });
 }
 
-export default { generateBeatsWithPipeline };
+export default {
+  generateBeatsWithPipeline,
+  extractChapterFinalState,
+  validateCrossChapterContinuity,  // MEDIUM-11: Export for external use if needed
+  validateSceneTransitions         // MEDIUM-12: Export for external use if needed
+};

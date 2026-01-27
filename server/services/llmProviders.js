@@ -5,17 +5,29 @@
  * ROUTING STRATEGY:
  * - OpenAI: Default for all children/general content, utility agents, coherence agents
  * - Venice.ai: Mature/uncensored creative content (high gore/violence/romance)
- * - OpenRouter: Alternative models, fallback, task-specific routing
+ * - OpenRouter: Available but disabled by default (see MEDIUM-19 note below)
  *
  * INTELLIGENT ROUTING:
  * 1. Pre-generation: Analyze intensity sliders and audience to select provider
  * 2. Mid-generation: Detect moderation errors and reroute to Venice
  * 3. Post-generation: Obfuscate explicit content for coherence agents
+ *
+ * MEDIUM-19 NOTE: OpenRouter Status
+ * OpenRouter code is FULLY IMPLEMENTED but disabled by default because:
+ * 1. Premium fail-loud policy: We don't want cross-provider fallback that could
+ *    produce inconsistent quality - each provider has different model characteristics
+ * 2. Cost/complexity: Adds another billing relationship and API key to manage
+ * 3. To enable: Set OPENROUTER_API_KEY in environment, code will automatically use it
  */
 
 import { logger } from '../utils/logger.js';
 import * as usageTracker from './usageTracker.js';
 import OpenAI from 'openai';
+import {
+  PROVIDER_SELECTION,
+  requiresVeniceProvider,
+  getTriggerReason
+} from '../constants/contentThresholds.js';
 
 // ============================================================================
 // PROVIDER DEFINITIONS
@@ -60,6 +72,65 @@ const PROVIDER_CONFIG = {
     }
   }
 };
+
+// ============================================================================
+// MEDIUM-17: RATE LIMITING
+// ============================================================================
+
+/**
+ * Simple rate limiter for API providers
+ * Prevents overwhelming APIs during parallel scene generation
+ *
+ * Configuration:
+ * - OpenAI: 60 requests/minute (tier 1 limit is higher, but we're conservative)
+ * - Venice: 30 requests/minute (less documented, be conservative)
+ * - OpenRouter: 60 requests/minute (varies by underlying provider)
+ */
+const RATE_LIMITS = {
+  [PROVIDERS.OPENAI]: { requestsPerMinute: 60, windowMs: 60000 },
+  [PROVIDERS.VENICE]: { requestsPerMinute: 30, windowMs: 60000 },
+  [PROVIDERS.OPENROUTER]: { requestsPerMinute: 60, windowMs: 60000 }
+};
+
+// Track request timestamps per provider
+const rateLimitState = {
+  [PROVIDERS.OPENAI]: [],
+  [PROVIDERS.VENICE]: [],
+  [PROVIDERS.OPENROUTER]: []
+};
+
+/**
+ * Check if we can make a request to a provider, wait if needed
+ * @param {string} provider - Provider name from PROVIDERS enum
+ * @returns {Promise<void>} Resolves when request can proceed
+ */
+async function waitForRateLimit(provider) {
+  const config = RATE_LIMITS[provider];
+  if (!config) return; // Unknown provider, skip rate limiting
+
+  const state = rateLimitState[provider] || [];
+  const now = Date.now();
+  const windowStart = now - config.windowMs;
+
+  // Clean up old timestamps
+  rateLimitState[provider] = state.filter(ts => ts > windowStart);
+
+  // Check if we're at the limit
+  if (rateLimitState[provider].length >= config.requestsPerMinute) {
+    const oldestRequest = rateLimitState[provider][0];
+    const waitTime = oldestRequest + config.windowMs - now;
+
+    if (waitTime > 0) {
+      logger.info(`[RateLimiter] ${provider}: Rate limit reached, waiting ${waitTime}ms`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+      // Recurse to recheck after waiting
+      return waitForRateLimit(provider);
+    }
+  }
+
+  // Record this request
+  rateLimitState[provider].push(now);
+}
 
 // ============================================================================
 // INTENSITY THRESHOLDS FOR PROVIDER ROUTING
@@ -188,6 +259,9 @@ const openaiClient = new OpenAI({
  * P2 FIX: Uses optimized parameters for better quality and reduced repetition
  */
 async function callVenice(options) {
+  // MEDIUM-17: Rate limiting
+  await waitForRateLimit(PROVIDERS.VENICE);
+
   const {
     messages,
     model = PROVIDER_CONFIG[PROVIDERS.VENICE].models.creative,
@@ -258,6 +332,9 @@ async function callVenice(options) {
  * Call OpenRouter API
  */
 async function callOpenRouter(options) {
+  // MEDIUM-17: Rate limiting
+  await waitForRateLimit(PROVIDERS.OPENROUTER);
+
   const {
     messages,
     model = PROVIDER_CONFIG[PROVIDERS.OPENROUTER].models.creative,
@@ -322,9 +399,12 @@ async function callOpenRouter(options) {
  * Call OpenAI API (wrapper around existing client)
  */
 async function callOpenAI(options) {
+  // MEDIUM-17: Rate limiting
+  await waitForRateLimit(PROVIDERS.OPENAI);
+
   const {
     messages,
-    model = 'gpt-4o',
+    model = 'gpt-5.2',  // MEDIUM-18 FIX: Updated from gpt-4o
     temperature = 0.7,
     max_tokens = 1000,
     response_format,
@@ -444,23 +524,17 @@ export function analyzeContentRequirements(settings) {
   }
 
   // Check if any intensity exceeds Venice threshold
-  // Thresholds aligned with client-side PROVIDER_THRESHOLDS:
-  // - violence: 61+ (graphic violence)
-  // - gore: 61+ (graphic gore)
-  // - romance: 71+ (explicit romance)
-  // - adultContent: 50+ (explicit adult content)
-  // - sensuality: 71+ (explicit sensuality)
-  // - explicitness: 71+ (explicit content)
-  // - scary: 71+ (intense horror)
-  // - language: 51+ (heavy profanity)
+  // Using centralized thresholds from constants/contentThresholds.js
   // - sexualViolence: 1+ (ANY non-zero triggers Venice - critical content type)
+  // - scary: 71+ (intense horror) - not in centralized config, using local value
+  // - language: 51+ (heavy profanity) - not in centralized config, using local value
   const requiresVenice =
-    gore >= 61 ||
-    violence >= 61 ||
-    romance >= 71 ||
-    adultContent >= 50 ||
-    explicitness >= 71 ||
-    sensuality >= 71 ||
+    gore >= PROVIDER_SELECTION.gore ||
+    violence >= PROVIDER_SELECTION.violence ||
+    romance >= PROVIDER_SELECTION.romance ||
+    adultContent >= PROVIDER_SELECTION.adultContent ||
+    explicitness >= PROVIDER_SELECTION.explicitness ||
+    sensuality >= PROVIDER_SELECTION.sensuality ||
     scary >= 71 ||
     language >= 51 ||
     sexualViolence >= 1; // ANY non-zero value triggers Venice for this sensitive content type
@@ -582,13 +656,20 @@ export function obfuscateContent(text) {
 
 /**
  * Generate a safe summary of explicit content for coherence agents
- * Uses Venice to summarize its own explicit output
+ *
+ * MEDIUM-20 OPTIMIZATION: Uses OpenAI gpt-4o-mini instead of Venice
+ * - Venice costs: ~$0.0008/1K input + $0.0024/1K output for llama-3.3-70b
+ * - OpenAI gpt-4o-mini costs: $0.00015/1K input + $0.0006/1K output
+ * - Savings: ~75% cheaper for this utility task
+ * - Added benefit: No double-Venice call for mature content
+ *
  * @param {string} explicitContent - Explicit content from Venice
  * @param {string} sessionId - Session ID for tracking
  */
 export async function generateSafeSummary(explicitContent, sessionId = null) {
   try {
-    const result = await callVenice({
+    // MEDIUM-20: Use gpt-4o-mini for cost efficiency - this is a simple summarization task
+    const result = await callOpenAI({
       messages: [
         {
           role: 'system',
@@ -606,12 +687,13 @@ Keep the summary to 2-4 sentences.`
           content: explicitContent
         }
       ],
-      model: 'llama-3.3-70b',
+      model: 'gpt-4o-mini',
       temperature: 0.3,
-      max_tokens: 300
+      max_tokens: 300,
+      agent_name: 'SafeSummaryAgent'
     });
 
-    logger.info(`[SafeSummary] Generated safe summary for coherence agents`);
+    logger.info(`[SafeSummary] Generated safe summary for coherence agents (using gpt-4o-mini)`);
     return result.content;
   } catch (error) {
     logger.error(`[SafeSummary] Failed to generate summary: ${error.message}`);
@@ -710,18 +792,19 @@ export function analyzeExplicitness(content, expectedTypes = []) {
 
 /**
  * Determine expected content types from settings
+ * Uses centralized thresholds from constants/contentThresholds.js
  */
 function getExpectedContentTypes(contentSettings) {
   const types = [];
   const intensity = contentSettings?.intensity || {};
 
-  if (intensity.adultContent >= 50 || intensity.romance >= 60) {
+  if (intensity.adultContent >= PROVIDER_SELECTION.adultContent || intensity.romance >= PROVIDER_SELECTION.romance) {
     types.push('sex');
   }
-  if (intensity.gore >= 60) {
+  if (intensity.gore >= PROVIDER_SELECTION.gore) {
     types.push('gore');
   }
-  if (intensity.violence >= 60) {
+  if (intensity.violence >= PROVIDER_SELECTION.violence) {
     types.push('violence');
   }
 
@@ -752,6 +835,35 @@ export async function callLLM(options) {
     sceneType = null,
     forceProvider = null  // Override provider selection
   } = options;
+
+  // HIGH-4 FIX: Pre-flight token validation
+  // Estimate input tokens before making API call
+  const estimatedInputTokens = messages.reduce((total, msg) => {
+    const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+    return total + Math.ceil(content.length / 4) + 4; // +4 for message overhead
+  }, 0);
+
+  // Model context limits (subset - full list in openai.js)
+  const contextLimits = {
+    'gpt-5': 128000, 'gpt-5.1': 128000, 'gpt-5.2': 128000,
+    'gpt-4o': 128000, 'gpt-4o-mini': 128000,
+    'gpt-4': 8192, 'gpt-4-turbo': 128000,
+    'llama-3.3-70b': 128000, // Venice
+    'default': 128000
+  };
+
+  const modelKey = Object.keys(contextLimits).find(k => (model || '').includes(k)) || 'default';
+  const contextLimit = contextLimits[modelKey];
+  const utilizationPercent = Math.round((estimatedInputTokens / contextLimit) * 100);
+
+  if (estimatedInputTokens + max_tokens > contextLimit) {
+    logger.error(`[LLM:TokenCheck] ${agent_name}: TOKEN_LIMIT_EXCEEDED | input: ~${estimatedInputTokens} + output: ${max_tokens} > limit: ${contextLimit}`);
+    // Don't throw - let request proceed and potentially fail gracefully
+  } else if (utilizationPercent >= 80) {
+    logger.warn(`[LLM:TokenCheck] ${agent_name}: HIGH_UTILIZATION | ${utilizationPercent}% of ${contextLimit} context (${estimatedInputTokens} tokens)`);
+  } else if (utilizationPercent >= 50) {
+    logger.info(`[LLM:TokenCheck] ${agent_name}: ${estimatedInputTokens} tokens (${utilizationPercent}% of ${contextLimit})`);
+  }
 
   // Determine provider
   let providerSelection;
@@ -824,51 +936,6 @@ export async function callLLM(options) {
       trackProviderUsage(sessionId, result.provider, result.usage, result.model);
     }
 
-    // PHASE 5.3: Bidirectional fallback - detect self-censoring
-    // If OpenAI was used for mature content, check if it self-censored
-    if (provider === PROVIDERS.OPENAI &&
-        contentSettings?.audience === 'mature' &&
-        agent_category === 'creative') {
-
-      const expectedTypes = getExpectedContentTypes(contentSettings);
-
-      if (expectedTypes.length > 0) {
-        const explicitnessAnalysis = analyzeExplicitness(result.content, expectedTypes);
-
-        if (explicitnessAnalysis.isSelfCensored) {
-          logger.warn(`[LLM] ${agent_name}: OpenAI self-censored mature content (score: ${explicitnessAnalysis.score.toFixed(2)}), retrying with Venice`);
-          logger.debug(`[LLM] Censoring indicators:`, explicitnessAnalysis.censoringPhrases);
-
-          try {
-            const veniceResult = await callVenice({
-              messages,
-              model: 'llama-3.3-70b',
-              temperature: Math.min(temperature + 0.1, 1.0), // Slightly higher temp for creativity
-              max_tokens
-            });
-
-            if (sessionId) {
-              trackProviderUsage(sessionId, PROVIDERS.VENICE, veniceResult.usage, 'llama-3.3-70b');
-            }
-
-            return {
-              ...veniceResult,
-              agent_name,
-              selectedProvider: PROVIDERS.VENICE,
-              selectionReason: 'Bidirectional fallback: OpenAI self-censored',
-              wasSelfCensorFallback: true,
-              originalProvider: PROVIDERS.OPENAI,
-              selfCensorAnalysis: explicitnessAnalysis
-            };
-          } catch (veniceError) {
-            logger.error(`[LLM] ${agent_name}: Venice fallback for self-censor failed: ${veniceError.message}`);
-            // Return original OpenAI result if Venice fails
-            logger.warn(`[LLM] ${agent_name}: Using original OpenAI result despite self-censoring`);
-          }
-        }
-      }
-    }
-
     return {
       ...result,
       agent_name,
@@ -877,66 +944,6 @@ export async function callLLM(options) {
     };
 
   } catch (error) {
-    // Handle OpenAI content policy errors by rerouting to Venice
-    if (error.isContentPolicy && provider === PROVIDERS.OPENAI && contentSettings?.audience === 'mature') {
-      logger.warn(`[LLM] ${agent_name}: OpenAI content policy triggered, rerouting to Venice`);
-
-      try {
-        const veniceResult = await callVenice({
-          messages,
-          model: 'llama-3.3-70b',
-          temperature,
-          max_tokens
-        });
-
-        if (sessionId) {
-          trackProviderUsage(sessionId, PROVIDERS.VENICE, veniceResult.usage, 'llama-3.3-70b');
-        }
-
-        return {
-          ...veniceResult,
-          agent_name,
-          selectedProvider: PROVIDERS.VENICE,
-          selectionReason: 'Rerouted from OpenAI due to content policy',
-          wasRerouted: true,
-          originalError: error.message
-        };
-      } catch (veniceError) {
-        logger.error(`[LLM] ${agent_name}: Venice fallback failed: ${veniceError.message}`);
-
-        // Try OpenRouter as final fallback (Claude 3.5 Sonnet for creative content)
-        if (isProviderAvailable(PROVIDERS.OPENROUTER)) {
-          logger.warn(`[LLM] ${agent_name}: Trying OpenRouter as final fallback`);
-          try {
-            const openRouterResult = await callOpenRouter({
-              messages,
-              model: 'anthropic/claude-3.5-sonnet',
-              temperature,
-              max_tokens
-            });
-
-            if (sessionId) {
-              trackProviderUsage(sessionId, PROVIDERS.OPENROUTER, openRouterResult.usage, 'anthropic/claude-3.5-sonnet');
-            }
-
-            return {
-              ...openRouterResult,
-              agent_name,
-              selectedProvider: PROVIDERS.OPENROUTER,
-              selectionReason: 'Fallback from Venice to OpenRouter',
-              wasRerouted: true,
-              originalError: veniceError.message
-            };
-          } catch (openRouterError) {
-            logger.error(`[LLM] ${agent_name}: All providers failed. OpenRouter error: ${openRouterError.message}`);
-            throw openRouterError;
-          }
-        }
-
-        throw veniceError;
-      }
-    }
-
     throw error;
   }
 }

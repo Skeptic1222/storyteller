@@ -35,7 +35,7 @@
  */
 
 import { pool, withTransaction } from '../database/pool.js';
-import { logger } from '../utils/logger.js';
+import { logger, logAlert } from '../utils/logger.js';
 import { DEFAULT_NARRATOR_VOICE_ID, DM_VOICE_ID } from '../constants/voices.js';
 import { normalizeStyleValue } from '../utils/styleUtils.js';
 import { calculateEffectiveLimits } from '../utils/audienceLimits.js';
@@ -131,13 +131,16 @@ import * as usageTracker from './usageTracker.js';
 import { assignVoicesByLLM, validateExistingAssignments } from './agents/voiceAssignmentAgent.js';
 import { validateAndReconcileSpeakers } from './agents/speakerValidationAgent.js';
 import { convertDialogueMapToSegments } from './agents/dialogueSegmentUtils.js';
-import { filterSpeechTagsWithLLM } from './agents/speechTagFilterAgent.js';
+import { filterSpeechTagsSmart } from './agents/speechTagFilterAgent.js';
 import { extractSpeakers, stripTags, parseTaggedProse } from './agents/tagParser.js';
 import { directVoiceActing } from './agents/voiceDirectorAgent.js';
 
 // Voice profile agents - generate mood and character voice profiles at story creation
 import { generateStoryMoodProfile } from './agents/storyMoodProfileAgent.js';
-import { generateCharacterVoiceProfiles } from './agents/characterVoiceProfileAgent.js';
+import { generateCharacterVoiceProfiles, validateVoiceConsistencyBatch } from './agents/characterVoiceProfileAgent.js';
+
+// Picture book character consistency - pre-generate FalAI character references
+import { preGenerateCharacterReferences } from './pictureBookImageGenerator.js';
 
 // P1 FIX: Minimum word count for chapters to ensure quality content
 // Picture books use a lower threshold (150 words), all others use 1500
@@ -146,6 +149,10 @@ const MIN_CHAPTER_WORDS = {
   short_story: 1000,
   default: 1500
 };
+
+// Voice consistency check configuration
+// Check character voice consistency every VOICE_CONSISTENCY_CHECK_INTERVAL words
+const VOICE_CONSISTENCY_CHECK_INTERVAL = 10000; // 10k words
 
 /**
  * Get minimum word count for story format
@@ -243,14 +250,19 @@ async function validateAndRegenerateIfShort(text, storyFormat, regenerateFunc, c
 }
 
 /**
- * Extract dialogue from hybrid pipeline content for multi-voice audio
- * Attempts to parse [CHAR:Name]dialogue[/CHAR] tags first, falls back to quote parsing
+ * Extract dialogue from scene content, with optional graceful fallback.
+ * Attempts to parse [CHAR:Name]dialogue[/CHAR] tags first.
  *
  * @param {string} content - The prose content
  * @param {Array} characters - Known characters
+ * @param {Object} options - Configuration options
+ * @param {boolean} options.allowEmptyDialogue - If true, return empty dialogue map instead of throwing on missing tags
+ * @param {string} options.sourceType - Source pipeline type for logging ('scaffold', 'hybrid', 'standard')
  * @returns {Object} { dialogueMap, newCharacters, format }
  */
-function extractDialogueFromContent(content, characters) {
+function extractDialogueFromContent(content, characters, options = {}) {
+  const { allowEmptyDialogue = false, sourceType = 'unknown' } = options;
+
   // Try to extract dialogue using tag parser (if Venice used tags)
   const segments = parseTaggedProse(content);
 
@@ -290,27 +302,23 @@ function extractDialogueFromContent(content, characters) {
     };
   }
 
-  // No tags found - fall back to simple quote extraction
-  // This is a best-effort approach when Venice didn't use tags
-  logger.info('[extractDialogueFromContent] No tags found, using fallback quote extraction');
+  // No tags found - check if graceful fallback is allowed
+  if (allowEmptyDialogue) {
+    logger.warn(`[extractDialogueFromContent] No dialogue tags found in ${sourceType} output - returning narrator-only content. ` +
+      `This may result in single-voice audio. Content length: ${content.length} chars`);
 
-  const quotePattern = /"([^"]+)"/g;
-  const dialogueMap = [];
-  let match;
-
-  while ((match = quotePattern.exec(content)) !== null) {
-    dialogueMap.push({
-      speaker: 'Unknown',
-      text: match[1],
-      index: dialogueMap.length
-    });
+    return {
+      dialogueMap: [],
+      newCharacters: [],
+      format: 'narrator_only',
+      narratorSegments: [{ type: 'narrator', text: content }]
+    };
   }
 
-  return {
-    dialogueMap,
-    newCharacters: [],
-    format: 'fallback_quotes'
-  };
+  // Fail loud (premium policy) - no graceful fallback allowed
+  const errMsg = '[extractDialogueFromContent] Dialogue tags missing; refusing regex/quote fallback. Regenerate scene with dialogue_map tags.';
+  logger.error(errMsg);
+  throw new Error(errMsg);
 }
 
 // Service instances
@@ -342,6 +350,13 @@ export class Orchestrator {
     // Heartbeat mechanism for long-running operations
     this._heartbeatInterval = null;
     this._heartbeatCount = 0;
+
+    // Voice consistency tracking
+    // Track cumulative word count across scenes for consistency checks
+    this._cumulativeWordCount = 0;
+    this._lastConsistencyCheckWordCount = 0;
+    this._characterDialogueBuffer = new Map(); // Character name -> array of dialogue strings
+    this._voiceConsistencyResults = new Map(); // Character name -> last consistency result
   }
 
   /**
@@ -508,6 +523,150 @@ export class Orchestrator {
       this._heartbeatInterval = null;
       this._heartbeatCount = 0;
       logger.info(`[Orchestrator] Heartbeat stopped`);
+    }
+  }
+
+  /**
+   * Track dialogue and check voice consistency for long narratives.
+   * Called after each scene is generated to accumulate dialogue and
+   * trigger consistency checks every 10,000 words.
+   *
+   * @param {string} sceneText - The full scene text
+   * @param {Array} dialogueMap - The dialogue map with speaker assignments
+   * @returns {Promise<Object|null>} Consistency check results if run, null otherwise
+   */
+  async _trackAndCheckVoiceConsistency(sceneText, dialogueMap) {
+    // Skip if no voice profiles are available
+    if (!this.characterVoiceProfiles || this.characterVoiceProfiles.size === 0) {
+      return null;
+    }
+
+    // Calculate scene word count
+    const sceneWordCount = sceneText?.split(/\s+/).filter(w => w.length > 0).length || 0;
+    this._cumulativeWordCount += sceneWordCount;
+
+    // Accumulate dialogue by character
+    if (dialogueMap && dialogueMap.length > 0) {
+      for (const entry of dialogueMap) {
+        const speaker = entry.speaker?.toLowerCase();
+        if (speaker && speaker !== 'narrator') {
+          if (!this._characterDialogueBuffer.has(speaker)) {
+            this._characterDialogueBuffer.set(speaker, []);
+          }
+          this._characterDialogueBuffer.get(speaker).push(entry.text || '');
+        }
+      }
+    }
+
+    logger.info(`[VoiceConsistency] Word count tracking | cumulative: ${this._cumulativeWordCount} | lastCheck: ${this._lastConsistencyCheckWordCount} | threshold: ${VOICE_CONSISTENCY_CHECK_INTERVAL}`);
+
+    // Check if we've crossed the consistency check threshold
+    const wordsSinceLastCheck = this._cumulativeWordCount - this._lastConsistencyCheckWordCount;
+    if (wordsSinceLastCheck < VOICE_CONSISTENCY_CHECK_INTERVAL) {
+      return null;
+    }
+
+    // Time for a consistency check
+    logger.info(`[VoiceConsistency] Triggering mid-story voice consistency check at ${this._cumulativeWordCount} words`);
+
+    // Build character dialogue map for validation (use recent ~2000 words per character)
+    const characterDialogueForCheck = new Map();
+    for (const [charName, dialogueArray] of this._characterDialogueBuffer.entries()) {
+      // Join dialogue and take last ~2000 words
+      const fullDialogue = dialogueArray.join(' ');
+      const words = fullDialogue.split(/\s+/);
+      const recentWords = words.slice(-2000);
+      const recentDialogue = recentWords.join(' ');
+
+      if (recentDialogue.length > 100) {
+        characterDialogueForCheck.set(charName, recentDialogue);
+      }
+    }
+
+    // Skip if no substantial dialogue to check
+    if (characterDialogueForCheck.size === 0) {
+      logger.info('[VoiceConsistency] No substantial character dialogue to validate');
+      this._lastConsistencyCheckWordCount = this._cumulativeWordCount;
+      return null;
+    }
+
+    try {
+      // Run the batch consistency check (non-blocking to story generation)
+      const consistencyResults = await validateVoiceConsistencyBatch(
+        characterDialogueForCheck,
+        this.characterVoiceProfiles,
+        this.sessionId
+      );
+
+      // Update tracking
+      this._lastConsistencyCheckWordCount = this._cumulativeWordCount;
+      this._voiceConsistencyResults = consistencyResults;
+
+      // Log summary
+      const driftSummary = [];
+      for (const [charName, result] of consistencyResults.entries()) {
+        if (result.driftScore > 0) {
+          driftSummary.push({
+            character: charName,
+            driftScore: result.driftScore,
+            isConsistent: result.isConsistent,
+            summary: result.summary
+          });
+        }
+      }
+
+      if (driftSummary.length > 0) {
+        logger.info('[VoiceConsistency] Mid-story consistency check complete', {
+          sessionId: this.sessionId,
+          cumulativeWords: this._cumulativeWordCount,
+          charactersChecked: consistencyResults.size,
+          driftSummary
+        });
+      }
+
+      // Store drift metrics in session for potential UI display
+      try {
+        const driftMetrics = {
+          lastCheckWordCount: this._cumulativeWordCount,
+          lastCheckTime: new Date().toISOString(),
+          results: Object.fromEntries(
+            Array.from(consistencyResults.entries()).map(([name, result]) => [
+              name,
+              {
+                driftScore: result.driftScore,
+                isConsistent: result.isConsistent,
+                summary: result.summary
+              }
+            ])
+          )
+        };
+
+        await pool.query(`
+          UPDATE story_sessions
+          SET config_json = jsonb_set(
+            COALESCE(config_json, '{}'::jsonb),
+            '{voice_consistency_metrics}',
+            $2::jsonb
+          )
+          WHERE id = $1
+        `, [this.sessionId, JSON.stringify(driftMetrics)]);
+
+      } catch (dbError) {
+        logger.warn(`[VoiceConsistency] Failed to store drift metrics: ${dbError.message}`);
+        // Non-critical - don't fail for metrics storage
+      }
+
+      return {
+        cumulativeWordCount: this._cumulativeWordCount,
+        charactersChecked: consistencyResults.size,
+        results: Object.fromEntries(consistencyResults)
+      };
+
+    } catch (error) {
+      // Voice consistency check is enhancement only - don't fail generation
+      logger.error(`[VoiceConsistency] Check failed (non-fatal): ${error.message}`);
+      this._lastConsistencyCheckWordCount = this._cumulativeWordCount;
+      return null;
     }
   }
 
@@ -704,6 +863,23 @@ export class Orchestrator {
       this.characterVoiceProfiles = new Map();
     }
 
+    // Pre-generate FalAI character references for picture book mode
+    // This enables consistent character appearance across all scene images
+    if (config.story_format === 'picture_book' && outline.main_characters?.length > 0) {
+      try {
+        const artStyle = config.cover_art_style || 'storybook';
+        logger.info(`[Orchestrator] Pre-generating character references for ${outline.main_characters.length} characters (style: ${artStyle})`);
+        this.emitProgress('generating_character_references');
+
+        await preGenerateCharacterReferences(this.sessionId, outline.main_characters, artStyle);
+
+        logger.info('[Orchestrator] Character reference images generated for picture book mode');
+      } catch (charRefError) {
+        // Don't fail outline generation - character refs are enhancement only
+        logger.warn(`[Orchestrator] Character reference generation failed (continuing without): ${charRefError.message}`);
+      }
+    }
+
     this.emitProgress('outline_complete');
     logger.info(`Outline generated: ${outline.title}`);
 
@@ -726,6 +902,22 @@ export class Orchestrator {
 
     if (!this.outline) {
       throw new Error('No outline found. Generate outline first.');
+    }
+
+    // HIGH-1 FIX: Context window management for long stories
+    // Check if context needs summarization to stay within token limits
+    const contextWindowResult = await manageContextWindow(this.sessionId, {
+      characters: this.characters,
+      outline: this.outline,
+      previousSummary: await loadContextSummary(this.sessionId)
+    });
+
+    if (contextWindowResult.summarized) {
+      logger.info(`[Orchestrator] Context window summarized - story is getting long`);
+      // Store the summary for use in scene generation
+      this.contextSummary = contextWindowResult.summary;
+    } else {
+      logger.debug(`[Orchestrator] Context window OK - ${contextWindowResult.tokens || 'N/A'} tokens estimated`);
     }
 
     // OPTIMIZATION: Parallelize scene count and previous scene queries
@@ -917,18 +1109,25 @@ export class Orchestrator {
         // If multi-voice is enabled, extract dialogue from the scaffolded content
         if (willUseMultiVoice && this.characters.length > 0) {
           logger.info('[Orchestrator] Extracting dialogue from scaffolded content for multi-voice');
-          const dialogueExtracted = extractDialogueFromContent(pipelineResult.content, this.characters);
+          // Allow empty dialogue for scaffold pipeline - graceful degradation to narrator-only
+          const dialogueExtracted = extractDialogueFromContent(pipelineResult.content, this.characters, {
+            allowEmptyDialogue: true,
+            sourceType: 'scaffold'
+          });
           sceneResult.dialogue_map = dialogueExtracted.dialogueMap;
           sceneResult.new_characters = dialogueExtracted.newCharacters;
           sceneResult.prose_format = dialogueExtracted.format;
+          if (dialogueExtracted.narratorSegments) {
+            sceneResult.narratorSegments = dialogueExtracted.narratorSegments;
+          }
         }
 
       } catch (scaffoldError) {
         // STOP HEARTBEAT on error
         this.stopHeartbeat();
-        // Fallback to normal flow if scaffolding fails
-        logger.error(`[Orchestrator] Scaffolding pipeline failed, falling back to normal flow:`, scaffoldError);
-        sceneResult = null; // Will trigger fallback below
+        // FAIL-LOUD: Scaffolding failures should not silently fall back
+        logger.error(`[Orchestrator] Scaffolding pipeline failed:`, scaffoldError);
+        throw new Error(`Scene scaffolding failed: ${scaffoldError.message}`);
       }
     }
 
@@ -943,7 +1142,7 @@ export class Orchestrator {
 
 SETTING: ${this.outline?.setting || 'Not specified'}
 
-${previousScene ? `PREVIOUS SCENE SUMMARY:\n${previousScene.substring(0, 500)}...\n` : 'This is the opening scene.'}
+${previousScene ? `PREVIOUS SCENE SUMMARY:\n${previousScene.substring(0, 1200)}...\n` : 'This is the opening scene.'}
 
 CHARACTERS:
 ${this.characters.map(c => `- ${c.name} (${c.gender}) - ${c.role}: ${c.description || 'No description'}`).join('\n')}
@@ -989,11 +1188,17 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
       // If multi-voice is enabled, extract dialogue from the hybrid content
       if (willUseMultiVoice && this.characters.length > 0) {
         logger.info('[Orchestrator] Extracting dialogue from hybrid content for multi-voice');
-        // Extract [CHAR:Name]dialogue[/CHAR] tags if present, or parse quotes
-        const dialogueExtracted = extractDialogueFromContent(hybridResult.content, this.characters);
+        // Allow empty dialogue for hybrid pipeline - graceful degradation to narrator-only
+        const dialogueExtracted = extractDialogueFromContent(hybridResult.content, this.characters, {
+          allowEmptyDialogue: true,
+          sourceType: 'hybrid'
+        });
         sceneResult.dialogue_map = dialogueExtracted.dialogueMap;
         sceneResult.new_characters = dialogueExtracted.newCharacters;
         sceneResult.prose_format = dialogueExtracted.format;
+        if (dialogueExtracted.narratorSegments) {
+          sceneResult.narratorSegments = dialogueExtracted.narratorSegments;
+        }
       }
 
     }
@@ -1139,7 +1344,15 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
       storyFacts = {}; // Skip fact extraction for now
     } else {
       // Normal flow - run all utility agents
-      // ERROR HANDLING FIX: Use Promise.allSettled so one failing agent doesn't crash story generation
+      // =======================================================================
+      // MEDIUM-10: ERROR HANDLING POLICY (Intentionally Tiered)
+      // =======================================================================
+      // CRITICAL (FAIL-LOUD):   Safety check - cannot proceed without validation
+      // NON-CRITICAL (FALLBACK): Lore → defaults to "inconsistent" (conservative)
+      //                          Polish → falls back to raw text (acceptable)
+      //                          Facts → falls back to empty object (acceptable)
+      // Use Promise.allSettled so one failing agent doesn't crash story generation
+      // =======================================================================
       const agentResults = await Promise.allSettled([
         checkSafety(rawText, { ...effectiveLimits, audience }, this.sessionId),
         checkLoreConsistency(rawText, { characters: this.characters, setting: this.outline.setting, previousEvents: previousScene, storyBible: this.storyBible }, this.sessionId),
@@ -1147,21 +1360,32 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
         extractStoryFacts(rawText, { outline: this.outline, characters: this.characters }, this.sessionId)
       ]);
 
-      // Process results with safe defaults for failures
-      safetyResult = agentResults[0].status === 'fulfilled' ? agentResults[0].value : { safe: true, concerns: [], exceeded_limits: {} };
-      loreCheck = agentResults[1].status === 'fulfilled' ? agentResults[1].value : { consistent: true, issues: [] };
+      // FAIL-LOUD: Safety check failure must not default to safe:true
+      if (agentResults[0].status === 'rejected') {
+        logger.error(`[Orchestrator] Safety check failed: ${agentResults[0].reason?.message || agentResults[0].reason}`);
+        throw new Error(`Safety check failed - cannot proceed without safety validation: ${agentResults[0].reason?.message}`);
+      }
+      safetyResult = agentResults[0].value;
+
+      // Lore check failure defaults to inconsistent (conservative)
+      loreCheck = agentResults[1].status === 'fulfilled' ? agentResults[1].value : { consistent: false, issues: ['Lore check failed - review manually'] };
+
+      // Polish failure uses raw text (acceptable fallback)
       polishedText = agentResults[2].status === 'fulfilled' ? agentResults[2].value : rawText;
+
+      // Story facts failure uses empty object (acceptable fallback)
       storyFacts = agentResults[3].status === 'fulfilled' ? agentResults[3].value : {};
 
-      // Log any agent failures
-      const agentNames = ['checkSafety', 'checkLoreConsistency', 'polishForNarration', 'extractStoryFacts'];
-      agentResults.forEach((r, i) => {
-        if (r.status === 'rejected') {
-          logger.warn(`[Orchestrator] ${agentNames[i]} failed:`, r.reason?.message || r.reason);
-        } else {
-          logger.info(`[Orchestrator] ${agentNames[i]} completed successfully`);
-        }
-      });
+      // Log any non-critical agent failures
+      if (agentResults[1].status === 'rejected') {
+        logger.warn(`[Orchestrator] checkLoreConsistency failed:`, agentResults[1].reason?.message || agentResults[1].reason);
+      }
+      if (agentResults[2].status === 'rejected') {
+        logger.warn(`[Orchestrator] polishForNarration failed:`, agentResults[2].reason?.message || agentResults[2].reason);
+      }
+      if (agentResults[3].status === 'rejected') {
+        logger.warn(`[Orchestrator] extractStoryFacts failed:`, agentResults[3].reason?.message || agentResults[3].reason);
+      }
     }
 
     this.logTiming('validationAgents (parallel)', validationStartTime);
@@ -1183,9 +1407,9 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
     // Determine final text
     let finalText = willUseMultiVoice ? rawText : polishedText;
 
-    // Generate choices if CYOA
+    // Generate choices if CYOA (allow choices from Scene 1 - sceneIndex 0)
     let choices = [];
-    if (this.session.cyoa_enabled && !isFinal && sceneIndex > 0) {
+    if (this.session.cyoa_enabled && !isFinal) {
       this.emitProgress('choices', 'Generating story choices');
       const choicesStartTime = Date.now();
       const cyoaSettings = this.session.config_json?.cyoa_settings || {};
@@ -1211,7 +1435,8 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
       sceneIndex,
       rawText,
       displayText,
-      mood
+      mood,
+      multiVoice: willUseMultiVoice
     });
     this.logTiming('saveScene', saveStartTime);
 
@@ -1253,6 +1478,13 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
       }
     } else {
       await markDialogueTaggingSkipped(scene.id);
+    }
+
+    // Voice consistency check for long narratives (every 10k words)
+    // This is non-blocking - errors won't fail scene generation
+    const voiceConsistencyResult = await this._trackAndCheckVoiceConsistency(finalText, dialogueMap);
+    if (voiceConsistencyResult) {
+      logger.info(`[Orchestrator] Voice consistency check completed at ${voiceConsistencyResult.cumulativeWordCount} words`);
     }
 
     // OPTIMIZATION: Batch DB writes in parallel (saveChoices + updateSessionAfterScene)
@@ -1340,6 +1572,31 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
     logger.info(`[Orchestrator] ========== GENERATION COMPLETE ==========`);
     logger.info(`[Orchestrator] OUTPUT | sceneId: ${scene.id} | sceneIndex: ${sceneIndex} | multiVoice: ${willUseMultiVoice} | sfxCount: ${sceneSfx.length} | totalElapsed: ${totalElapsed}ms`);
 
+    // Update generation_state for session handoff (Phase 7)
+    try {
+      const generationState = {
+        lastCompletedScene: sceneIndex,
+        lastSceneId: scene.id,
+        currentPhase: 'scene_complete',
+        voiceAssignments: this.characterVoiceAssignments ? Object.fromEntries(this.characterVoiceAssignments) : {},
+        totalScenes: targetScenes,
+        isMultiVoice: willUseMultiVoice,
+        hasSfx: sceneSfx.length > 0,
+        hasRecording: !!this.activeRecording,
+        isFinal,
+        nextAction: isFinal ? 'story_complete' : `generate_scene_${sceneIndex + 2}`,
+        lastUpdated: new Date().toISOString()
+      };
+      await pool.query(
+        `UPDATE story_sessions SET generation_state = $1, generation_updated_at = NOW() WHERE id = $2`,
+        [JSON.stringify(generationState), this.sessionId]
+      );
+      logger.info(`[Orchestrator] Session handoff state updated: scene ${sceneIndex + 1}/${targetScenes}`);
+    } catch (stateErr) {
+      logger.warn(`[Orchestrator] Failed to update generation_state: ${stateErr.message}`);
+      // Non-critical - don't fail the scene for handoff state update
+    }
+
     return {
       id: scene.id,
       sequence_index: sceneIndex,
@@ -1374,10 +1631,14 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
       throw new Error('MULTI-VOICE FAILED: No dialogue data');
     }
 
-    // Filter speech tags if enabled
+    // Filter speech tags if enabled - use smart filter that auto-selects light-touch vs full LLM
     if (shouldHideSpeechTags(this.session.config_json)) {
       try {
-        segments = await filterSpeechTagsWithLLM(segments, { title: this.session.title, genre: this.session.config_json?.genre });
+        segments = await filterSpeechTagsSmart(segments, {
+          title: this.session.title,
+          genre: this.session.config_json?.genre,
+          hideSpeechTagsPreGen: true  // Story was generated with hide_speech_tags enabled
+        });
         logger.info(`[Orchestrator] Speech tags filtered successfully (${segments.length} segments)`);
       } catch (error) {
         logger.warn(`[Orchestrator] Speech tag filtering failed: ${error.message}. Continuing with unfiltered segments.`);
@@ -1421,8 +1682,9 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
         }
       }
     } catch (error) {
-      // Don't fail the whole audio generation - just log and continue with defaults
-      logger.warn(`[Orchestrator] Voice direction failed, using defaults: ${error.message}`);
+      // FAIL-LOUD: Voice direction is critical for expressiveness - don't silently use flat defaults
+      logger.error(`[Orchestrator] Voice direction failed: ${error.message}`);
+      throw new Error(`Voice direction failed: ${error.message}`);
     }
 
     // Get voice assignments
@@ -1585,38 +1847,59 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
       stability: this.session.config_json?.narratorStyleSettings?.stability || 0.5,
       style: normalizedStyle,
       sessionId: this.sessionId,
-      speaker: 'narrator'
+      speaker: 'narrator',
+      quality_tier: 'premium'  // CRITICAL: Use eleven_v3 model for Audio Tags support
     };
 
-    // v3 Prosody: LLM-directed narrator delivery (Audio Tags) for AAA performance.
-    // Avoid brittle keyword heuristics; infer delivery from full scene context.
+    // v3 Prosody: Use full voiceDirectorAgent for narrator (50+ emotions vs 14)
+    // This gives narrator access to v3AudioTags, per-segment speed modulation, and refinement
     try {
-      const storyContext = buildEmotionContext({
-        config: this.session.config_json,
-        sceneText: text,
-        characters: this.characters
-      });
+      const config = this.session.config_json || {};
+      const context = {
+        genre: config.genre || 'general',
+        mood: config.mood || 'neutral',
+        audience: config.audience || 'general',
+        characterProfiles: this.characterVoiceProfiles || new Map()
+      };
 
-      const narratorDirectives = await getNarratorDeliveryDirectives({
-        sessionId: this.sessionId,
-        sceneText: text,
-        context: storyContext
-      });
+      // Create narrator segment for voice direction
+      const narratorSegment = [{
+        speaker: 'narrator',
+        text: text,
+        index: 0,
+        type: 'narrator'
+      }];
 
-      if (narratorDirectives?.emotion) {
-        options.detectedEmotion = narratorDirectives.emotion;
-      }
-      if (narratorDirectives?.delivery) {
-        options.delivery = narratorDirectives.delivery;
-      }
-      if (narratorDirectives?.voiceSettingsOverride?.stability != null) {
-        options.stability = narratorDirectives.voiceSettingsOverride.stability;
-      }
-      if (narratorDirectives?.voiceSettingsOverride?.style != null) {
-        options.style = narratorDirectives.voiceSettingsOverride.style;
+      // Use voiceDirectorAgent for rich emotion/v3 tags (same as multi-voice)
+      const directedSegments = await directVoiceActing(narratorSegment, context, this.sessionId);
+      const directives = directedSegments?.[0];
+
+      if (directives) {
+        // Extract v3AudioTags for ElevenLabs TTS
+        if (directives.v3AudioTags) {
+          options.v3AudioTags = directives.v3AudioTags;
+        }
+        // Extract delivery for logging/debugging
+        if (directives.delivery) {
+          options.delivery = directives.delivery;
+          options.detectedEmotion = directives.delivery; // For backward compat
+        }
+        // Apply stability/style from voiceDirector
+        if (typeof directives.voiceStability === 'number') {
+          options.stability = directives.voiceStability;
+        }
+        if (typeof directives.voiceStyle === 'number') {
+          options.style = directives.voiceStyle;
+        }
+        // Apply speed modifier if present
+        if (typeof directives.voiceSpeedModifier === 'number' && directives.voiceSpeedModifier !== 1.0) {
+          options.speedModifier = directives.voiceSpeedModifier;
+        }
+
+        logger.info(`[Orchestrator] Narrator voice direction: ${directives.v3AudioTags || directives.delivery || 'neutral'}`);
       }
     } catch (err) {
-      logger.warn(`[Orchestrator] Narrator delivery directives failed: ${err.message}`);
+      logger.warn(`[Orchestrator] Voice direction for narrator failed, using defaults: ${err.message}`);
     }
 
     if (withTimestamps) {
@@ -1866,6 +2149,20 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
         audioUrl = cacheResult?.audioUrl || null;
       } catch (err) {
         logger.warn(`[Orchestrator] Failed to cache single-voice audio: ${err.message}`);
+      }
+    }
+
+    if (!wordTimings?.words || wordTimings.words.length === 0) {
+      throw new Error(`KARAOKE FAILED: No word timings generated for scene ${scene.id}`);
+    }
+
+    if (wordTimings.total_duration_ms && wordTimings.words?.length) {
+      const finalEnd = wordTimings.words[wordTimings.words.length - 1].end_ms || 0;
+      const drift = Math.abs(wordTimings.total_duration_ms - finalEnd);
+      if (drift > 250) {
+        const msg = `[generateSceneAudio] Word timing drift detected: total=${wordTimings.total_duration_ms}ms lastEnd=${finalEnd}ms (scene ${scene.id})`;
+        logAlert('error', msg, { sceneId });
+        throw new Error(msg);
       }
     }
 
