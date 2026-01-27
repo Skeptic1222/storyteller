@@ -10,6 +10,11 @@
 import { logger } from '../../utils/logger.js';
 import { callLLM } from '../llmProviders.js';
 import { parseCharacterTraits } from '../../utils/agentHelpers.js';
+import {
+  filterEmotionForAudience,
+  getEmotionIntensityModifier,
+  getIntenseEmotionVariant
+} from '../../utils/audienceLimits.js';
 
 // Available emotion presets that map to voice settings
 const EMOTION_PRESETS = [
@@ -66,8 +71,9 @@ function mergeDeliveryTags(existing, incoming, maxTags = 4) {
 /**
  * Build the system prompt for emotion detection
  * @param {boolean} includeNarrator - Whether to include narrator segment analysis
+ * @param {Object} intensityModifier - Content intensity modifier from getEmotionIntensityModifier
  */
-function buildSystemPrompt(includeNarrator = false) {
+function buildSystemPrompt(includeNarrator = false, intensityModifier = null) {
   const narratorSection = includeNarrator ? `
 
 NARRATOR SEGMENTS:
@@ -78,6 +84,24 @@ NARRATOR SEGMENTS:
 - Use tags like [ominously], [with building tension], [gently], [urgently], [with wonder]
 - Narrator lines SHOULD vary in emotion throughout a scene - don't make them all the same` : '';
 
+  // Build content intensity section if high intensity is detected
+  let contentIntensitySection = '';
+  if (intensityModifier?.hasHighIntensity) {
+    contentIntensitySection = `
+
+## CONTENT INTENSITY GUIDANCE (CRITICAL)
+${intensityModifier.deliveryGuidance}
+
+PREFERRED EMOTIONS for this content: ${intensityModifier.preferredEmotions.join(', ')}
+INTENSITY MULTIPLIER: ${intensityModifier.intensityMultiplier.toFixed(2)}x - push emotional delivery harder than normal.
+
+When content intensity is HIGH:
+- Do NOT hold back on emotional extremes
+- Fear should become terror, anger should become fury
+- Romantic scenes should be charged and intimate
+- Violence should sound genuinely dangerous and impactful`;
+  }
+
   return `You are an expert voice director for audiobook narration. Your job is to analyze ${includeNarrator ? 'all segments (dialogue AND narrator)' : 'dialogue segments'} and determine the most appropriate emotional delivery for each line.
 
 You must consider:
@@ -86,6 +110,7 @@ You must consider:
 3. **Character Personality**: Is this character naturally sarcastic? Nervous? Confident? Brooding?
 4. **Dialogue Content**: What is being said and any explicit attribution (e.g., "she whispered fearfully")
 5. **Subtext**: What emotions might be hidden beneath the surface?
+6. **Content Intensity**: How intense the violence/horror/romance settings are for this story
 
 Available emotional presets (choose ONE per line):
 - warm: Friendly greetings, welcoming, gentle comfort
@@ -113,7 +138,7 @@ AUDIENCE-SPECIFIC CONSTRAINTS:
 - **Kids/Children**: Use warm, playful, excited, tender emotions primarily. Avoid horror/threatening/angry extremes.
 - **General/Family**: Full emotional range but keep intensity appropriate for family viewing.
 - **Mature/Adult**: Full emotional range including intense horror, threatening, and dramatic extremes.
-  Can use darker, more visceral delivery. Scene mood should push boundaries when appropriate.${narratorSection}
+  Can use darker, more visceral delivery. Scene mood should push boundaries when appropriate.${contentIntensitySection}${narratorSection}
 
 ElevenLabs v3 Audio Tags:
 - Also output a short "delivery" field per line as 0-4 bracket tags, e.g. "[breathlessly][long pause]" or "".
@@ -124,9 +149,10 @@ ElevenLabs v3 Audio Tags:
 /**
  * Build the user prompt for batch emotion detection
  * @param {boolean} includeNarrator - Whether to include narrator segment analysis
+ * @param {Object} intensityModifier - Content intensity modifier from getEmotionIntensityModifier
  */
-function buildUserPrompt(segments, context, includeNarrator = false) {
-  const { genre, mood, audience, sceneDescription, characters } = context;
+function buildUserPrompt(segments, context, includeNarrator = false, intensityModifier = null) {
+  const { genre, mood, audience, sceneDescription, characters, contentIntensity } = context;
 
   // Build character reference
   let characterInfo = '';
@@ -166,11 +192,30 @@ function buildUserPrompt(segments, context, includeNarrator = false) {
     ? 'Include BOTH dialogue AND narrator segments. For narrator, focus on pacing and tone variety.'
     : 'Only include dialogue segments (skip narrator segments).';
 
+  // Build content intensity context string
+  let intensityContext = '';
+  if (intensityModifier?.hasHighIntensity) {
+    intensityContext = `\n- Content Intensity: HIGH (${intensityModifier.highIntensityCategories.join(', ')})`;
+    if (intensityModifier.preferredEmotions.length > 0) {
+      intensityContext += `\n- Preferred Emotions: ${intensityModifier.preferredEmotions.join(', ')}`;
+    }
+  } else if (contentIntensity) {
+    // Show individual category levels for transparency
+    const intensityParts = [];
+    if (contentIntensity.violence > 0) intensityParts.push(`violence: ${contentIntensity.violence}`);
+    if (contentIntensity.gore > 0) intensityParts.push(`gore: ${contentIntensity.gore}`);
+    if (contentIntensity.scary > 0) intensityParts.push(`scary: ${contentIntensity.scary}`);
+    if (contentIntensity.romance > 0) intensityParts.push(`romance: ${contentIntensity.romance}`);
+    if (intensityParts.length > 0) {
+      intensityContext = `\n- Content Intensity Levels: ${intensityParts.join(', ')}`;
+    }
+  }
+
   return `STORY CONTEXT:
 - Genre: ${genre || 'general fiction'}
 - Overall Mood: ${mood || 'neutral'}
 - Audience: ${audience || 'general'}
-- Scene Description: ${sceneDescription || 'No specific scene context provided'}
+- Scene Description: ${sceneDescription || 'No specific scene context provided'}${intensityContext}
 ${characterInfo}
 ${segmentList}
 
@@ -218,9 +263,18 @@ export async function detectEmotionsForSegments(segments, context, sessionId = n
   const segmentType = includeNarrator ? 'all' : 'dialogue';
   logger.info(`[EmotionValidator] Analyzing ${targetSegments.length} ${segmentType} segments for session ${sessionId}`);
 
+  // Calculate content intensity modifier for voice delivery
+  const contentIntensity = context.contentIntensity || {};
+  const intensityModifier = getEmotionIntensityModifier(contentIntensity);
+
+  if (intensityModifier.hasHighIntensity) {
+    logger.info(`[EmotionValidator] HIGH INTENSITY content detected: ${intensityModifier.highIntensityCategories.join(', ')}`);
+    logger.info(`[EmotionValidator] Intensity multiplier: ${intensityModifier.intensityMultiplier.toFixed(2)}x, preferred emotions: ${intensityModifier.preferredEmotions.join(', ')}`);
+  }
+
   try {
-    const systemPrompt = buildSystemPrompt(includeNarrator);
-    const userPrompt = buildUserPrompt(segments, context, includeNarrator);
+    const systemPrompt = buildSystemPrompt(includeNarrator, intensityModifier);
+    const userPrompt = buildUserPrompt(segments, context, includeNarrator, intensityModifier);
 
     logger.info(`[EmotionValidator] Calling LLM for emotion detection (utility model)`);
 
@@ -247,22 +301,61 @@ export async function detectEmotionsForSegments(segments, context, sessionId = n
     const result = JSON.parse(content);
     const emotions = result.emotions || [];
 
-    // Create a map of index -> emotion
+    // Create a map of index -> emotion with audience filtering
     const emotionMap = new Map();
+    const audience = context.audience || 'general';
+    let filteredCount = 0;
+
+    let intensityScaledCount = 0;
+
     emotions.forEach(e => {
       if (EMOTION_PRESETS.includes(e.emotion)) {
+        // Apply audience-specific emotion filtering (defense-in-depth)
+        const filtered = filterEmotionForAudience(e.emotion, audience);
+        if (filtered.wasFiltered) {
+          filteredCount++;
+          logger.info(`[EmotionValidator] Audience filter: ${filtered.original} → ${filtered.emotion} (audience: ${audience})`);
+        }
+
+        // Apply intensity scaling for high-intensity content
+        let finalEmotion = filtered.emotion;
+        let reasoningAddition = '';
+        let wasIntensityScaled = false;
+        if (intensityModifier.hasHighIntensity) {
+          const scaledEmotion = getIntenseEmotionVariant(filtered.emotion, intensityModifier);
+          if (scaledEmotion !== filtered.emotion) {
+            intensityScaledCount++;
+            wasIntensityScaled = true;
+            reasoningAddition = ` [Intensity scaled: ${filtered.emotion} → ${scaledEmotion}]`;
+            finalEmotion = scaledEmotion;
+            logger.debug(`[EmotionValidator] Intensity scaling: ${filtered.emotion} → ${scaledEmotion} for segment ${e.index}`);
+          }
+        }
+
         emotionMap.set(e.index, {
-          emotion: e.emotion,
+          emotion: finalEmotion,
           delivery: normalizeDeliveryToTags(e.delivery),
-          reasoning: e.reasoning,
-          llmValidated: true
+          reasoning: filtered.wasFiltered
+            ? `${e.reasoning} [Filtered for ${audience} audience: ${filtered.original} → ${filtered.emotion}]${reasoningAddition}`
+            : `${e.reasoning}${reasoningAddition}`,
+          llmValidated: true,
+          wasFiltered: filtered.wasFiltered,
+          intensityScaled: wasIntensityScaled
         });
-        logger.debug(`[EmotionValidator] Segment[${e.index}] ${e.speaker}: ${e.emotion} - ${e.reasoning}`);
+        logger.debug(`[EmotionValidator] Segment[${e.index}] ${e.speaker}: ${finalEmotion} - ${e.reasoning}`);
       } else {
         logger.warn(`[EmotionValidator] Invalid emotion "${e.emotion}" for segment ${e.index}, using neutral`);
         emotionMap.set(e.index, { emotion: 'neutral', reasoning: 'fallback', llmValidated: true });
       }
     });
+
+    if (intensityScaledCount > 0) {
+      logger.info(`[EmotionValidator] Intensity scaled ${intensityScaledCount} emotions for high-intensity content`);
+    }
+
+    if (filteredCount > 0) {
+      logger.info(`[EmotionValidator] Filtered ${filteredCount} emotions for ${audience} audience`);
+    }
 
     // Apply emotions to segments
     // IMPORTANT: Preserve specific delivery emotions (whispered, shouted, etc.) from DialogueTaggingAgent

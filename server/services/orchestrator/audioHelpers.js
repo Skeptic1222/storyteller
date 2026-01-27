@@ -57,9 +57,11 @@ export function buildEmotionContext({ config, sceneText, characters }) {
   const adultContent = intensitySettings.adultContent ?? intensitySettings.adult_content ?? 0;
   const violence = intensitySettings.violence ?? 0;
   const gore = intensitySettings.gore ?? 0;
+  const scary = intensitySettings.scary ?? 0;
   const romance = intensitySettings.romance ?? 0;
   const sensuality = intensitySettings.sensuality ?? 0;
   const explicitness = intensitySettings.explicitness ?? 0;
+  const language = intensitySettings.language ?? 0;
 
   const context = {
     genre: genreString,
@@ -67,24 +69,31 @@ export function buildEmotionContext({ config, sceneText, characters }) {
     audience: config?.audience || 'general',
     sceneDescription: sceneText?.substring(0, 500) || '', // Increased from 300 for better context
     characters: characters || [],
-    // Content intensity for voice direction
+    // Content intensity for voice direction (used by EmotionValidator and VoiceDirector)
     contentIntensity: {
       adultContent,
       violence,
       gore,
+      scary,
       romance,
       sensuality,
       explicitness,
+      language,
+      // Quick flags for common checks
       isMature: config?.audience === 'mature' || adultContent >= 50 || violence >= 60 || gore >= 60,
       isViolent: violence >= 60 || gore >= 60,
+      isScary: scary >= 70,
       isErotic: adultContent >= 50 || romance >= 70 || sensuality >= 60 || explicitness >= 50
     }
   };
 
   logger.info(`[AudioHelpers] Emotion context: genre=${context.genre}, mood=${context.mood}, audience=${context.audience}`);
-  logger.info(`[AudioHelpers] Content intensity: adult=${adultContent}, violence=${violence}, gore=${gore}, romance=${romance}, sensuality=${sensuality}, explicitness=${explicitness}`);
+  logger.info(`[AudioHelpers] Content intensity: adult=${adultContent}, violence=${violence}, gore=${gore}, scary=${scary}, romance=${romance}, sensuality=${sensuality}, explicitness=${explicitness}`);
   if (context.contentIntensity.isMature) {
     logger.info(`[AudioHelpers] MATURE content detected - voice direction will use intense delivery`);
+  }
+  if (context.contentIntensity.isScary) {
+    logger.info(`[AudioHelpers] HIGH SCARY content (${scary}/100) - voice direction will use horror/terror delivery`);
   }
 
   return context;
@@ -135,10 +144,14 @@ export async function logCharacterVoiceMap(characterVoices, narratorVoiceId, log
  * @returns {object} Options for elevenlabs.generateMultiVoiceAudio
  */
 export function buildAudioGenerationOptions({ config, sessionId, normalizedStyle }) {
+  // CRITICAL: Use premium tier to get eleven_v3 model with Audio Tags support
+  // Without this, the system defaults to 'standard' tier (eleven_turbo_v2_5) which
+  // strips all v3AudioTags, making voice direction ineffective
   return {
     stability: config?.narratorStyleSettings?.stability || 0.5,
     style: normalizedStyle,
-    sessionId
+    sessionId,
+    quality_tier: 'premium'  // eleven_v3 model with Audio Tags (2025-12-09)
   };
 }
 

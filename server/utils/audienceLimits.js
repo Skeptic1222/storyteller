@@ -41,6 +41,69 @@ export const CHILDREN_MAX_LIMITS = {
 };
 
 /**
+ * Emotion constraints by audience type
+ * Defines which emotions are blocked for each audience
+ * @type {Object}
+ */
+export const AUDIENCE_EMOTION_CONSTRAINTS = {
+  children: {
+    // Blocked emotions - too intense for children
+    blocked: ['horror', 'threatening', 'angry'],
+    // Fallback emotions when blocked emotion is detected
+    fallback: {
+      horror: 'fearful',      // Tone down terror to mild fear
+      threatening: 'mysterious', // Tone down menace to mystery
+      angry: 'dramatic'       // Tone down fury to intensity
+    },
+    // Preferred emotions for children's content
+    preferred: ['warm', 'playful', 'excited', 'tender']
+  },
+  general: {
+    // No blocked emotions for general audience, but moderate intensity
+    blocked: [],
+    fallback: {},
+    preferred: ['warm', 'playful', 'dramatic', 'excited', 'mysterious']
+  },
+  mature: {
+    // Full emotional range for mature audience
+    blocked: [],
+    fallback: {},
+    preferred: [] // No preference - allow full range
+  }
+};
+
+/**
+ * Get emotion fallback for audience
+ * Returns the appropriate emotion if the original is blocked for the audience
+ *
+ * @param {string} emotion - Original emotion to check
+ * @param {string} audience - Target audience ('children', 'general', 'mature')
+ * @returns {{ emotion: string, wasFiltered: boolean }} Result with emotion and filter flag
+ */
+export function filterEmotionForAudience(emotion, audience = 'general') {
+  const constraints = AUDIENCE_EMOTION_CONSTRAINTS[audience] || AUDIENCE_EMOTION_CONSTRAINTS.general;
+
+  if (constraints.blocked.includes(emotion)) {
+    const fallback = constraints.fallback[emotion] || 'neutral';
+    return { emotion: fallback, wasFiltered: true, original: emotion };
+  }
+
+  return { emotion, wasFiltered: false };
+}
+
+/**
+ * Check if an emotion is appropriate for the audience
+ *
+ * @param {string} emotion - Emotion to check
+ * @param {string} audience - Target audience
+ * @returns {boolean} True if emotion is allowed
+ */
+export function isEmotionAllowedForAudience(emotion, audience = 'general') {
+  const constraints = AUDIENCE_EMOTION_CONSTRAINTS[audience] || AUDIENCE_EMOTION_CONSTRAINTS.general;
+  return !constraints.blocked.includes(emotion);
+}
+
+/**
  * Get multiplier based on audience type.
  * - Children: 0 (forces minimums)
  * - General: 1 (no change)
@@ -153,11 +216,225 @@ export function getAudienceContext(audience) {
   }
 }
 
+/**
+ * Content intensity to emotion intensity mapping
+ * Maps high content intensity settings to appropriate voice delivery intensity
+ *
+ * @param {Object} contentLimits - Content intensity limits from session config
+ * @param {number} contentLimits.violence - Violence level (0-100)
+ * @param {number} contentLimits.gore - Gore level (0-100)
+ * @param {number} contentLimits.scary - Scary level (0-100)
+ * @param {number} contentLimits.romance - Romance level (0-100)
+ * @param {number} contentLimits.adultContent - Adult content level (0-100)
+ * @param {number} contentLimits.sensuality - Sensuality level (0-100)
+ * @param {number} contentLimits.explicitness - Explicitness level (0-100)
+ * @returns {Object} Intensity modifier with multiplier and preferred emotions
+ *
+ * @example
+ * // High violence content
+ * getEmotionIntensityModifier({ violence: 80, gore: 60 })
+ * // => { intensityMultiplier: 1.4, preferredEmotions: ['angry', 'threatening', 'dramatic', 'terrified'], intensityCategories: { violence: 'high', gore: 'medium' }, deliveryGuidance: '...' }
+ */
+export function getEmotionIntensityModifier(contentLimits = {}) {
+  const violence = contentLimits.violence ?? 0;
+  const gore = contentLimits.gore ?? 0;
+  const scary = contentLimits.scary ?? 0;
+  const romance = contentLimits.romance ?? 0;
+  const adultContent = contentLimits.adultContent ?? 0;
+  const sensuality = contentLimits.sensuality ?? 0;
+  const explicitness = contentLimits.explicitness ?? 0;
+
+  // Categorize intensity levels
+  const getIntensityLevel = (value) => {
+    if (value >= 70) return 'high';
+    if (value >= 40) return 'medium';
+    return 'low';
+  };
+
+  const intensityCategories = {
+    violence: getIntensityLevel(violence),
+    gore: getIntensityLevel(gore),
+    scary: getIntensityLevel(scary),
+    romance: getIntensityLevel(romance),
+    adultContent: getIntensityLevel(adultContent),
+    sensuality: getIntensityLevel(sensuality),
+    explicitness: getIntensityLevel(explicitness)
+  };
+
+  // Track which categories are at high intensity
+  const highIntensityCategories = [];
+  const preferredEmotions = new Set();
+  const deliveryGuidances = [];
+
+  // Violence/Gore: intense anger, brutality, visceral delivery
+  if (violence >= 70 || gore >= 70) {
+    highIntensityCategories.push('violence/gore');
+    preferredEmotions.add('angry');
+    preferredEmotions.add('furious');
+    preferredEmotions.add('threatening');
+    preferredEmotions.add('dramatic');
+    preferredEmotions.add('menacing');
+    deliveryGuidances.push(
+      `VIOLENCE INTENSITY HIGH (${violence}/100, gore: ${gore}/100): ` +
+      'Use visceral, brutal delivery. Characters should sound genuinely dangerous, ' +
+      'terrified, or in pain. Allow shouting, snarling, desperate screaming. ' +
+      'Narrator should build dread and convey impact of violence.'
+    );
+  } else if (violence >= 40 || gore >= 40) {
+    preferredEmotions.add('dramatic');
+    preferredEmotions.add('tense');
+    deliveryGuidances.push(
+      `MODERATE VIOLENCE (${violence}/100): Use tense, dramatic delivery for action scenes.`
+    );
+  }
+
+  // Scary: horror, terror, dread
+  if (scary >= 70) {
+    highIntensityCategories.push('horror');
+    preferredEmotions.add('horror');
+    preferredEmotions.add('terrified');
+    preferredEmotions.add('fearful');
+    preferredEmotions.add('mysterious');
+    preferredEmotions.add('threatening');
+    deliveryGuidances.push(
+      `SCARY INTENSITY HIGH (${scary}/100): ` +
+      'Create genuine terror and dread. Allow trembling, whimpering, panicked delivery. ' +
+      'Narrator should be ominous, creeping, building to horror peaks. ' +
+      'Characters can scream in genuine terror.'
+    );
+  } else if (scary >= 40) {
+    preferredEmotions.add('mysterious');
+    preferredEmotions.add('fearful');
+    deliveryGuidances.push(
+      `MODERATE SCARY (${scary}/100): Use suspenseful, slightly fearful delivery.`
+    );
+  }
+
+  // Romance/Sensuality: tender, intimate, passionate
+  if (romance >= 70 || sensuality >= 60 || adultContent >= 50) {
+    highIntensityCategories.push('romance');
+    preferredEmotions.add('tender');
+    preferredEmotions.add('loving');
+    preferredEmotions.add('seductive');
+    deliveryGuidances.push(
+      `ROMANCE INTENSITY HIGH (romance: ${romance}/100, sensuality: ${sensuality}/100, adult: ${adultContent}/100): ` +
+      'Use deeply intimate, charged delivery. Allow breathless, husky, passionate tones. ' +
+      'Build emotional and physical tension through voice. ' +
+      'Characters can express desire openly.'
+    );
+  } else if (romance >= 40) {
+    preferredEmotions.add('tender');
+    preferredEmotions.add('warm');
+    deliveryGuidances.push(
+      `MODERATE ROMANCE (${romance}/100): Use warm, affectionate delivery for romantic scenes.`
+    );
+  }
+
+  // Explicit content: raw, intense, uninhibited
+  if (explicitness >= 50 || adultContent >= 70) {
+    highIntensityCategories.push('explicit');
+    preferredEmotions.add('passionate');
+    preferredEmotions.add('desperate');
+    preferredEmotions.add('heated');
+    deliveryGuidances.push(
+      `EXPLICIT CONTENT (explicitness: ${explicitness}/100, adult: ${adultContent}/100): ` +
+      'Deliver with raw, uninhibited emotional intensity. ' +
+      'Allow moaning, gasping, breathless urgency where appropriate. ' +
+      'Do not hold back on emotional/physical vocal expression.'
+    );
+  }
+
+  // Calculate overall intensity multiplier (1.0 to 1.5)
+  // Higher multiplier = more extreme/intense emotional delivery
+  let intensityMultiplier = 1.0;
+  if (highIntensityCategories.length > 0) {
+    // Base boost for having any high intensity category
+    intensityMultiplier = 1.2;
+
+    // Additional boost for multiple high intensity categories
+    intensityMultiplier += (highIntensityCategories.length - 1) * 0.1;
+
+    // Cap at 1.5
+    intensityMultiplier = Math.min(1.5, intensityMultiplier);
+  } else {
+    // Medium intensity categories get a smaller boost
+    const mediumCount = Object.values(intensityCategories).filter(v => v === 'medium').length;
+    if (mediumCount > 0) {
+      intensityMultiplier = 1.0 + (mediumCount * 0.05);
+      intensityMultiplier = Math.min(1.2, intensityMultiplier);
+    }
+  }
+
+  // Build combined delivery guidance string
+  const deliveryGuidance = deliveryGuidances.length > 0
+    ? deliveryGuidances.join('\n\n')
+    : 'Standard emotional delivery - match emotions to dialogue content naturally.';
+
+  return {
+    intensityMultiplier,
+    preferredEmotions: Array.from(preferredEmotions),
+    highIntensityCategories,
+    intensityCategories,
+    deliveryGuidance,
+    // Quick flags for common checks
+    hasHighIntensity: highIntensityCategories.length > 0,
+    isViolent: violence >= 70 || gore >= 70,
+    isScary: scary >= 70,
+    isRomantic: romance >= 70 || sensuality >= 60,
+    isExplicit: explicitness >= 50 || adultContent >= 70
+  };
+}
+
+/**
+ * Get emotion alternatives for intensity scaling
+ * Maps base emotions to more intense variants when content intensity is high
+ *
+ * @param {string} baseEmotion - The base emotion detected
+ * @param {Object} intensityModifier - Result from getEmotionIntensityModifier
+ * @returns {string} The emotion to use (may be more intense variant)
+ */
+export function getIntenseEmotionVariant(baseEmotion, intensityModifier) {
+  if (!intensityModifier?.hasHighIntensity) {
+    return baseEmotion;
+  }
+
+  // Map base emotions to more intense variants
+  const intensityScaling = {
+    // Anger spectrum
+    'angry': intensityModifier.isViolent ? 'furious' : 'angry',
+    'dramatic': intensityModifier.isViolent ? 'threatening' : 'dramatic',
+
+    // Fear spectrum
+    'fearful': intensityModifier.isScary ? 'terrified' : 'fearful',
+    'nervous': intensityModifier.isScary ? 'fearful' : 'nervous',
+    'mysterious': intensityModifier.isScary ? 'threatening' : 'mysterious',
+
+    // Romance spectrum
+    'tender': intensityModifier.isRomantic ? 'loving' : 'tender',
+    'warm': intensityModifier.isRomantic ? 'tender' : 'warm',
+
+    // Keep these as-is (already intense)
+    'furious': 'furious',
+    'terrified': 'terrified',
+    'horror': 'horror',
+    'threatening': 'threatening',
+    'loving': 'loving',
+    'seductive': 'seductive'
+  };
+
+  return intensityScaling[baseEmotion] || baseEmotion;
+}
+
 export default {
   AUDIENCE_TYPES,
   DEFAULT_LIMITS,
   CHILDREN_MAX_LIMITS,
+  AUDIENCE_EMOTION_CONSTRAINTS,
   getAudienceMultiplier,
   calculateEffectiveLimits,
-  getAudienceContext
+  getAudienceContext,
+  filterEmotionForAudience,
+  isEmotionAllowedForAudience,
+  getEmotionIntensityModifier,
+  getIntenseEmotionVariant
 };

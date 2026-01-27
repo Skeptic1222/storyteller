@@ -391,9 +391,282 @@ export function getLineLevelAdjustments(profile, lineContext) {
   return { adjustments, tags };
 }
 
+/**
+ * Voice Consistency Validation Prompt
+ * Analyzes recent dialogue against the original character voice profile
+ * to detect voice drift in long narratives.
+ */
+const VOICE_CONSISTENCY_PROMPT = `You are a voice consistency analyst for audiobook production.
+
+Compare this character's RECENT DIALOGUE against their ORIGINAL VOICE PROFILE to detect "voice drift" -
+when a character's speech patterns, vocabulary, or emotional expression diverges from their established voice.
+
+CHARACTER: {characterName}
+
+ORIGINAL VOICE PROFILE:
+- Archetype: {voiceArchetype}
+- Signature Delivery: {signatureDelivery}
+- Default Emotion: {defaultEmotion}
+- Speech Patterns:
+  - Uses dramatic pauses: {usesDramaticPauses}
+  - Speaks quickly when nervous: {speaksQuicklyWhenNervous}
+  - Whispers secrets: {whispersSecrets}
+  - Shouts in anger: {shoutsInAnger}
+  - Trails off when uncertain: {trailsOffWhenUncertain}
+  - Emphasizes key words: {emphasizesKeyWords}
+- Voice Description: {voiceDescription}
+
+RECENT DIALOGUE (last ~2000 words):
+{recentDialogue}
+
+ANALYZE for these drift indicators:
+1. VOCABULARY SHIFT: Is the character using words/phrases inconsistent with their archetype?
+2. EMOTIONAL RANGE DRIFT: Are emotions expressed differently than profile suggests?
+3. SPEECH PATTERN CHANGES: Are their characteristic patterns (pauses, speed, emphasis) missing?
+4. DELIVERY STYLE MISMATCH: Does delivery contradict signature style?
+5. PERSONALITY INCONSISTENCY: Does dialogue reflect wrong archetype traits?
+
+Return ONLY valid JSON:
+{
+  "is_consistent": true|false,
+  "drift_score": 0-100,
+  "drift_indicators": [
+    {
+      "type": "vocabulary|emotion|speech_pattern|delivery|personality",
+      "severity": "low|medium|high",
+      "description": "Specific issue found",
+      "example": "Quote from dialogue showing issue"
+    }
+  ],
+  "recommendations": [
+    "Specific actionable recommendation to restore voice consistency"
+  ],
+  "summary": "One sentence summary of voice consistency status"
+}
+
+SCORING GUIDE:
+- 0-20: Excellent consistency, character voice is spot-on
+- 21-40: Minor drift, mostly consistent with occasional deviations
+- 41-60: Moderate drift, noticeable inconsistencies that may affect immersion
+- 61-80: Significant drift, character sounds different from established voice
+- 81-100: Severe drift, character voice has fundamentally changed`;
+
+/**
+ * @typedef {Object} VoiceConsistencyResult
+ * @property {boolean} isConsistent - Whether the voice is consistent with profile
+ * @property {number} driftScore - 0-100 score where 0 is perfect consistency
+ * @property {Array<{type: string, severity: string, description: string, example: string}>} driftIndicators - Specific drift issues found
+ * @property {string[]} recommendations - Actionable recommendations to restore consistency
+ * @property {string} summary - One-sentence summary
+ */
+
+/**
+ * Validate voice consistency for a character against their original profile
+ * Used for mid-story validation every ~10k words to detect voice drift.
+ *
+ * @param {string} characterName - Name of the character
+ * @param {string} recentDialogue - Recent dialogue text (last ~2000 words)
+ * @param {Object} originalProfile - Original voice profile from story creation
+ * @param {string} sessionId - Session ID for tracking
+ * @returns {Promise<VoiceConsistencyResult>} Consistency analysis result
+ */
+export async function validateVoiceConsistency(characterName, recentDialogue, originalProfile, sessionId) {
+  const startTime = Date.now();
+
+  // Validate inputs
+  if (!characterName || !recentDialogue || !originalProfile) {
+    logger.warn('[VoiceConsistency] Missing required inputs, returning default consistent result');
+    return {
+      isConsistent: true,
+      driftScore: 0,
+      driftIndicators: [],
+      recommendations: [],
+      summary: 'Validation skipped due to missing inputs'
+    };
+  }
+
+  // Skip if dialogue is too short for meaningful analysis
+  const wordCount = recentDialogue.split(/\s+/).length;
+  if (wordCount < 100) {
+    logger.info(`[VoiceConsistency] Insufficient dialogue for ${characterName} (${wordCount} words), skipping`);
+    return {
+      isConsistent: true,
+      driftScore: 0,
+      driftIndicators: [],
+      recommendations: [],
+      summary: 'Insufficient dialogue for analysis'
+    };
+  }
+
+  // Build prompt with profile details
+  const speechPatterns = originalProfile.speech_patterns || {};
+  const prompt = VOICE_CONSISTENCY_PROMPT
+    .replace('{characterName}', characterName)
+    .replace('{voiceArchetype}', originalProfile.voice_archetype || 'everyman')
+    .replace('{signatureDelivery}', originalProfile.signature_delivery || 'measured')
+    .replace('{defaultEmotion}', originalProfile.emotional_range?.default || 'calm')
+    .replace('{usesDramaticPauses}', speechPatterns.uses_dramatic_pauses ? 'yes' : 'no')
+    .replace('{speaksQuicklyWhenNervous}', speechPatterns.speaks_quickly_when_nervous ? 'yes' : 'no')
+    .replace('{whispersSecrets}', speechPatterns.whispers_secrets ? 'yes' : 'no')
+    .replace('{shoutsInAnger}', speechPatterns.shouts_in_anger ? 'yes' : 'no')
+    .replace('{trailsOffWhenUncertain}', speechPatterns.trails_off_when_uncertain ? 'yes' : 'no')
+    .replace('{emphasizesKeyWords}', speechPatterns.emphasizes_key_words ? 'yes' : 'no')
+    .replace('{voiceDescription}', originalProfile.voice_description || 'No description available')
+    .replace('{recentDialogue}', recentDialogue.substring(0, 4000)); // Limit to ~4000 chars
+
+  try {
+    logger.info(`[VoiceConsistency] Analyzing voice consistency for ${characterName}`, {
+      sessionId,
+      dialogueWords: wordCount,
+      archetype: originalProfile.voice_archetype
+    });
+
+    const response = await callLLM({
+      model: 'gpt-4o-mini', // Use lighter model for cost efficiency
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.3, // Low temperature for consistent analysis
+      max_tokens: 800,
+      response_format: { type: 'json_object' },
+      forceProvider: 'openai',
+      agent_name: 'VoiceConsistencyValidator',
+      agent_category: 'voice_direction'
+    });
+
+    // Parse response
+    const responseText = response?.content || response;
+    let analysis;
+    try {
+      let jsonStr = responseText;
+      const jsonMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)```/);
+      if (jsonMatch) {
+        jsonStr = jsonMatch[1].trim();
+      }
+      analysis = JSON.parse(jsonStr);
+    } catch (parseError) {
+      logger.warn(`[VoiceConsistency] Failed to parse response for ${characterName}:`, parseError.message);
+      return {
+        isConsistent: true,
+        driftScore: 0,
+        driftIndicators: [],
+        recommendations: [],
+        summary: 'Analysis failed to parse'
+      };
+    }
+
+    // Validate and normalize result
+    const result = {
+      isConsistent: analysis.is_consistent !== false && (analysis.drift_score || 0) <= 40,
+      driftScore: Math.max(0, Math.min(100, analysis.drift_score || 0)),
+      driftIndicators: Array.isArray(analysis.drift_indicators) ? analysis.drift_indicators : [],
+      recommendations: Array.isArray(analysis.recommendations) ? analysis.recommendations : [],
+      summary: analysis.summary || 'Analysis complete'
+    };
+
+    const elapsed = Date.now() - startTime;
+    logger.info(`[VoiceConsistency] Analysis complete for ${characterName}`, {
+      sessionId,
+      isConsistent: result.isConsistent,
+      driftScore: result.driftScore,
+      indicatorCount: result.driftIndicators.length,
+      elapsed: `${elapsed}ms`
+    });
+
+    // Log warning if significant drift detected
+    if (result.driftScore > 40) {
+      logger.warn(`[VoiceConsistency] DRIFT DETECTED for ${characterName}`, {
+        sessionId,
+        driftScore: result.driftScore,
+        summary: result.summary,
+        recommendations: result.recommendations.slice(0, 2)
+      });
+    }
+
+    return result;
+
+  } catch (error) {
+    logger.error(`[VoiceConsistency] Analysis failed for ${characterName}:`, {
+      sessionId,
+      error: error.message
+    });
+
+    // Return safe default on error - don't fail generation
+    return {
+      isConsistent: true,
+      driftScore: 0,
+      driftIndicators: [],
+      recommendations: [],
+      summary: `Analysis error: ${error.message}`
+    };
+  }
+}
+
+/**
+ * Batch validate voice consistency for multiple characters
+ * Processes in parallel for efficiency.
+ *
+ * @param {Map<string, string>} characterDialogueMap - Map of character name to their recent dialogue
+ * @param {Map<string, Object>} voiceProfiles - Map of character name to voice profile
+ * @param {string} sessionId - Session ID for tracking
+ * @returns {Promise<Map<string, VoiceConsistencyResult>>} Map of character name to consistency result
+ */
+export async function validateVoiceConsistencyBatch(characterDialogueMap, voiceProfiles, sessionId) {
+  const results = new Map();
+
+  if (!characterDialogueMap || characterDialogueMap.size === 0) {
+    logger.info('[VoiceConsistency] No character dialogue to validate');
+    return results;
+  }
+
+  logger.info(`[VoiceConsistency] Batch validating ${characterDialogueMap.size} characters`, { sessionId });
+
+  // Process in parallel (max 3 concurrent for rate limiting)
+  const entries = Array.from(characterDialogueMap.entries());
+  const batchSize = 3;
+
+  for (let i = 0; i < entries.length; i += batchSize) {
+    const batch = entries.slice(i, i + batchSize);
+    const batchResults = await Promise.all(
+      batch.map(async ([charName, dialogue]) => {
+        const profile = voiceProfiles.get(charName);
+        if (!profile) {
+          logger.warn(`[VoiceConsistency] No profile found for ${charName}, skipping`);
+          return [charName, {
+            isConsistent: true,
+            driftScore: 0,
+            driftIndicators: [],
+            recommendations: [],
+            summary: 'No voice profile available'
+          }];
+        }
+        const result = await validateVoiceConsistency(charName, dialogue, profile, sessionId);
+        return [charName, result];
+      })
+    );
+
+    for (const [name, result] of batchResults) {
+      results.set(name, result);
+    }
+  }
+
+  // Log summary
+  const driftingChars = Array.from(results.entries())
+    .filter(([_, r]) => r.driftScore > 40)
+    .map(([name, r]) => `${name}(${r.driftScore})`);
+
+  if (driftingChars.length > 0) {
+    logger.warn(`[VoiceConsistency] Characters with drift detected: ${driftingChars.join(', ')}`, { sessionId });
+  } else {
+    logger.info(`[VoiceConsistency] All ${results.size} characters consistent`, { sessionId });
+  }
+
+  return results;
+}
+
 export default {
   generateCharacterVoiceProfile,
   generateCharacterVoiceProfiles,
   getCharacterEmotion,
-  getLineLevelAdjustments
+  getLineLevelAdjustments,
+  validateVoiceConsistency,
+  validateVoiceConsistencyBatch
 };
