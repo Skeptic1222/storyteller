@@ -34,6 +34,8 @@
  * ============================================================================
  */
 
+import { readFile } from 'fs/promises';
+import { join } from 'path';
 import { pool, withTransaction } from '../database/pool.js';
 import { logger, logAlert } from '../utils/logger.js';
 import { DEFAULT_NARRATOR_VOICE_ID, DM_VOICE_ID } from '../constants/voices.js';
@@ -672,10 +674,12 @@ export class Orchestrator {
 
   /**
    * Process configuration input
+   * @param {string} input - The configuration input (text or JSON string)
+   * @param {string} inputType - 'text', 'voice', or 'config' (JSON from Configure page)
    */
-  async processConfiguration(input) {
+  async processConfiguration(input, inputType = 'text') {
     await this.loadSession();
-    return processConfigInput(this.sessionId, this.session, input);
+    return processConfigInput(this.sessionId, this.session, input, inputType);
   }
 
   /**
@@ -692,7 +696,7 @@ export class Orchestrator {
 
     // Handle config processing
     if (result.type === 'config' && result.processConfig) {
-      return await this.processConfiguration(transcript);
+      return await this.processConfiguration(transcript, 'voice');
     }
 
     return result;
@@ -759,13 +763,27 @@ export class Orchestrator {
         [outline.title, outline.synopsis || '', this.sessionId]
       );
 
-      // Create characters
+      // Create characters (includes gender, age_group, and voice_description from outline)
       if (outline.main_characters?.length > 0) {
         for (const char of outline.main_characters) {
           await client.query(`
-            INSERT INTO characters (story_session_id, name, role, description, traits_json)
-            VALUES ($1, $2, $3, $4, $5)
-          `, [this.sessionId, char.name || 'Unknown', char.role || 'supporting', char.description || '', JSON.stringify(char.traits || [])]);
+            INSERT INTO characters (
+              story_session_id, name, role, description, traits_json,
+              gender, gender_source, age_group, age_reasoning, voice_description
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          `, [
+            this.sessionId,
+            char.name || 'Unknown',
+            char.role || 'supporting',
+            char.brief_description || char.description || '',
+            JSON.stringify(char.personality || char.traits || []),
+            char.gender || null,
+            char.gender ? 'outline' : null,
+            char.age_group || 'adult',
+            char.age_reasoning || null,
+            char.voice_description || null
+          ]);
         }
       }
 
@@ -1399,9 +1417,13 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
       logger.warn(`Lore inconsistency: ${loreCheck.issues?.join(', ')}`);
     }
 
-    // Update story bible (non-blocking)
+    // Update story bible (non-blocking, with user notification on failure)
     if (storyFacts && Object.keys(storyFacts).some(k => Array.isArray(storyFacts[k]) ? storyFacts[k].length > 0 : Object.keys(storyFacts[k] || {}).length > 0)) {
-      this.updateStoryBible(storyFacts).catch(e => logger.error('Failed to update story bible:', e));
+      this.updateStoryBible(storyFacts).catch(e => {
+        logger.error('Failed to update story bible:', e);
+        // Notify user of story bible sync issue (non-critical but good to know)
+        this.emitProgress('story_bible_warning', 'Story bible update failed - continuity tracking may be incomplete');
+      });
     }
 
     // Determine final text
@@ -2091,13 +2113,36 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
     if (scene.audio_url && !forceRegenerate) {
       // Log cached wordTimings
       logger.info(`[generateSceneAudio] Using CACHED audio: wordTimings type=${typeof scene.word_timings}, hasWords=${!!scene.word_timings?.words}, count=${scene.word_timings?.words?.length || 0}`);
-      return {
-        audioUrl: scene.audio_url,
-        cached: true,
-        wordTimings: scene.word_timings || null,
-        durationSeconds: scene.audio_duration_seconds || null,
-        voiceId: scene.voice_id || null
-      };
+
+      // CRITICAL FIX: Always read and return audioBuffer for cached audio
+      // The launch sequence manager needs the buffer to bundle with launch-sequence-ready
+      // Without this, hasScene would be false and scene audio wouldn't play
+      let audioBuffer = null;
+      try {
+        // Extract filename from audio URL (e.g., /audio/abc123.mp3 -> abc123.mp3)
+        const filename = scene.audio_url.split('/').pop();
+        const AUDIO_CACHE_DIR = process.env.AUDIO_CACHE_DIR || join(__dirname, '..', '..', 'public', 'audio');
+        const filePath = join(AUDIO_CACHE_DIR, filename);
+        audioBuffer = await readFile(filePath);
+        logger.info(`[generateSceneAudio] Read cached audio buffer: ${audioBuffer.length} bytes from ${filename}`);
+      } catch (err) {
+        logger.warn(`[generateSceneAudio] Failed to read cached audio file: ${err.message}`);
+        // Fall through to regenerate if file read fails
+      }
+
+      // If we successfully read the buffer, return it
+      if (audioBuffer) {
+        return {
+          audioUrl: scene.audio_url,
+          cached: true,
+          audioBuffer, // CRITICAL: Include buffer for launch sequence bundling
+          wordTimings: scene.word_timings || null,
+          durationSeconds: scene.audio_duration_seconds || null,
+          voiceId: scene.voice_id || null
+        };
+      }
+      // If buffer read failed, fall through to regenerate audio
+      logger.info(`[generateSceneAudio] Cached file not readable, regenerating audio for scene ${sceneId}`);
     }
 
     const effectiveVoiceId = getEffectiveVoiceId({ voiceId, config: this.session.config_json });
@@ -2212,14 +2257,28 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
   async submitChoice(choiceIdOrKey) {
     await this.loadSession();
 
-    // Find choice by ID or key
-    const choiceResult = await pool.query(
-      `SELECT * FROM story_choices
-       WHERE (id = $1 OR choice_key = $2)
-       AND story_session_id = $3
-       ORDER BY created_at DESC LIMIT 1`,
-      [choiceIdOrKey, choiceIdOrKey, this.sessionId]
-    );
+    // UUID regex pattern for PostgreSQL compatibility
+    const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const isUUID = UUID_PATTERN.test(choiceIdOrKey);
+
+    // Find choice by ID (if UUID) or key (if letter like A, B, C, D)
+    // PostgreSQL throws "invalid input syntax for type uuid" if we pass a non-UUID to id column
+    let choiceResult;
+    if (isUUID) {
+      choiceResult = await pool.query(
+        `SELECT * FROM story_choices
+         WHERE id = $1 AND story_session_id = $2
+         ORDER BY created_at DESC LIMIT 1`,
+        [choiceIdOrKey, this.sessionId]
+      );
+    } else {
+      choiceResult = await pool.query(
+        `SELECT * FROM story_choices
+         WHERE choice_key = $1 AND story_session_id = $2
+         ORDER BY created_at DESC LIMIT 1`,
+        [choiceIdOrKey, this.sessionId]
+      );
+    }
 
     if (choiceResult.rows.length === 0) {
       throw new Error('Choice not found');

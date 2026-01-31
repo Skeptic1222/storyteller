@@ -204,9 +204,10 @@ async function checkAgents(result) {
 }
 
 /**
- * Test database connection with timeout
+ * Test database connection with timeout and retry
+ * Increased timeout and added retry logic to handle transient failures
  */
-async function checkDatabase(result, timeoutMs = 3000) {
+async function checkDatabase(result, timeoutMs = 10000, maxRetries = 2) {
   console.log('[StartupCheck] Testing database connection...');
 
   if (!process.env.DATABASE_URL) {
@@ -214,27 +215,44 @@ async function checkDatabase(result, timeoutMs = 3000) {
     return;
   }
 
-  try {
-    // Import pool dynamically to catch any import errors
-    const { testConnection } = await import('../database/pool.js');
+  let lastError = null;
 
-    // Create a timeout promise
-    const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error(`Connection timeout after ${timeoutMs}ms`)), timeoutMs);
-    });
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      // Import pool dynamically to catch any import errors
+      const { testConnection } = await import('../database/pool.js');
 
-    // Race the connection test against the timeout
-    await Promise.race([
-      testConnection(),
-      timeoutPromise
-    ]);
+      // Create a timeout promise
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error(`Connection timeout after ${timeoutMs}ms`)), timeoutMs);
+      });
 
-    result.details.database.connected = true;
-    console.log('  [OK] Database connection successful');
-  } catch (error) {
-    result.addError('DATABASE', `Database connection failed: ${error.message}`);
-    console.log(`  [FAIL] Database: ${error.message}`);
+      // Race the connection test against the timeout
+      await Promise.race([
+        testConnection(),
+        timeoutPromise
+      ]);
+
+      result.details.database.connected = true;
+      if (attempt > 1) {
+        console.log(`  [OK] Database connection successful (attempt ${attempt})`);
+      } else {
+        console.log('  [OK] Database connection successful');
+      }
+      return; // Success - exit the retry loop
+
+    } catch (error) {
+      lastError = error;
+      if (attempt < maxRetries) {
+        console.log(`  [RETRY] Database attempt ${attempt} failed: ${error.message}. Retrying in 2s...`);
+        await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2s before retry
+      }
+    }
   }
+
+  // All retries exhausted
+  result.addError('DATABASE', `Database connection failed after ${maxRetries} attempts: ${lastError?.message}`);
+  console.log(`  [FAIL] Database: ${lastError?.message} (after ${maxRetries} attempts)`);
 }
 
 /**

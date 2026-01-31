@@ -42,6 +42,12 @@ import { buildTrailerIntro } from '../utils/trailerIntro.js';
 // Import recording service for MP3 persistence
 import { recordingService } from './recording.js';
 
+// P1 FIX: Import choice narration for CYOA adventure mode
+import { generateChoiceNarration, streamChoiceAudio } from '../socket/audioHandlers.js';
+
+// Picture book mode: Import character reference generator
+import { preGenerateCharacterReferences } from './pictureBookImageGenerator.js';
+
 const elevenlabs = new ElevenLabsService();
 const sfxCoordinator = new SFXCoordinatorAgent();
 const validationAgent = new ValidationAgent();
@@ -105,6 +111,11 @@ export class LaunchSequenceManager {
    */
   cancel() {
     this.cancelled = true;
+    // Clear watchdog timer to prevent memory leak
+    if (this.watchdogTimer) {
+      clearTimeout(this.watchdogTimer);
+      this.watchdogTimer = null;
+    }
     logger.info(`[LaunchSequence] Cancelled for session ${this.sessionId}`);
   }
 
@@ -400,6 +411,13 @@ export class LaunchSequenceManager {
         await this.saveGenerationState(); // P2 FIX: Save after each stage
       }
 
+      // P1 FIX: Generate choice narration for CYOA adventure mode
+      // This ensures choices are spoken aloud, not just displayed as text
+      if (this.cancelled) return null;
+      if (this.scene?.choices && this.scene.choices.length > 0) {
+        await this.runChoiceNarration();
+      }
+
       // === FINAL VALIDATION GATE ===
       // Ensure ALL required components are ready before playback
       // This is the critical checkpoint - no content until everything passes
@@ -420,6 +438,11 @@ export class LaunchSequenceManager {
 
     } catch (error) {
       logger.error(`[LaunchSequence] Error in launch sequence:`, error);
+      // Clear watchdog timer to prevent memory leak on error
+      if (this.watchdogTimer) {
+        clearTimeout(this.watchdogTimer);
+        this.watchdogTimer = null;
+      }
       this.io.to(this.sessionId).emit('launch-sequence-error', {
         error: error.message,
         failedStage: this.getCurrentStage(),
@@ -537,9 +560,15 @@ export class LaunchSequenceManager {
         `, [this.sessionId]);
 
         if (outlineResult.rows.length > 0 && outlineResult.rows[0].outline_json) {
-          const outline = typeof outlineResult.rows[0].outline_json === 'string'
-            ? JSON.parse(outlineResult.rows[0].outline_json)
-            : outlineResult.rows[0].outline_json;
+          let outline;
+          try {
+            outline = typeof outlineResult.rows[0].outline_json === 'string'
+              ? JSON.parse(outlineResult.rows[0].outline_json)
+              : outlineResult.rows[0].outline_json;
+          } catch (parseError) {
+            logger.warn(`[LaunchSequence] Failed to parse outline_json: ${parseError.message}`);
+            outline = {};
+          }
 
           logger.info(`[LaunchSequence] Outline found - title: "${outline.title}", main_characters: ${outline.main_characters?.length || 0}`);
 
@@ -559,13 +588,10 @@ export class LaunchSequenceManager {
 
             for (const char of outline.main_characters) {
               try {
-                // Extract gender from outline - use 'neutral' fallback if not provided
-                // This prevents crashes when LLM doesn't include gender in outline
-                const characterGender = char.gender?.toLowerCase()?.trim() || 'neutral';
-
-                // Log warning if gender was missing but continue with neutral fallback
-                if (!char.gender) {
-                  logger.warn(`[LaunchSequence] Character "${char.name}" missing gender from outline - using 'neutral' fallback`);
+                // Premium fail-loud: gender must be provided
+                const characterGender = char.gender?.toLowerCase()?.trim();
+                if (!characterGender) {
+                  throw new Error(`[LaunchSequence] Character "${char.name}" missing gender from outline`);
                 }
 
                 // Validate gender is one of the allowed values
@@ -771,6 +797,8 @@ export class LaunchSequenceManager {
           filters: ['is_available = true', 'prioritizing voices with gender data']
         });
 
+        // FIXED: Removed LIMIT 50 that was causing voice pool exhaustion for large casts
+        // Order by gender availability first (voices with gender metadata more useful for casting)
         const voicesResult = await pool.query(`
           SELECT voice_id, name, gender, age_group, accent, style
           FROM elevenlabs_voices
@@ -778,7 +806,6 @@ export class LaunchSequenceManager {
           ORDER BY
             CASE WHEN gender IS NOT NULL THEN 0 ELSE 1 END,
             name ASC
-          LIMIT 50
         `);
         availableVoices = voicesResult.rows;
         logger.info(`[LaunchSequence] Found ${availableVoices.length} available voices for multi-voice assignment`);
@@ -870,17 +897,12 @@ export class LaunchSequenceManager {
           const characterGender = character.gender;
 
           if (!characterGender) {
-            // FAIL LOUD: This should never happen - gender is validated at outline generation
-            const errorMsg = `CRITICAL: Character "${character.name}" has no stored gender in database. ` +
-              `This indicates a bug in outline generation or character insertion. ` +
-              `Gender MUST be provided by LLM.`;
+            const errorMsg = `CRITICAL: Character "${character.name}" has no stored gender in database. Gender is required (fail-loud).`;
             logger.error(`[LaunchSequence] ${errorMsg}`);
-            // Use 'neutral' as emergency fallback to avoid breaking voice assignment
-            // but log the error loudly so it can be investigated
-            logger.warn(`[LaunchSequence] Using 'neutral' as emergency fallback for "${character.name}" - this should be fixed`);
-          } else {
-            logger.info(`[LaunchSequence] Character "${character.name}" using stored gender: ${characterGender} (confidence: ${character.gender_confidence || 'explicit'})`);
+            throw new Error(errorMsg);
           }
+
+          logger.info(`[LaunchSequence] Character "${character.name}" using stored gender: ${characterGender} (confidence: ${character.gender_confidence || 'explicit'})`);
 
           // Filter voices: exclude narrator, match gender, prefer unused voices
           let genderMatchedVoices = availableVoices.filter(v =>
@@ -895,19 +917,6 @@ export class LaunchSequenceManager {
               v.voice_id !== narratorVoice &&
               this.voiceGenderMatches(v.gender, characterGender)
             );
-          }
-
-          // Fallback: if still no matches, use any available voice
-          if (genderMatchedVoices.length === 0) {
-            genderMatchedVoices = availableVoices.filter(v =>
-              v.voice_id !== narratorVoice &&
-              !usedVoiceIds.has(v.voice_id)
-            );
-          }
-
-          // Final fallback: any voice except narrator
-          if (genderMatchedVoices.length === 0) {
-            genderMatchedVoices = availableVoices.filter(v => v.voice_id !== narratorVoice);
           }
 
           if (genderMatchedVoices.length > 0) {
@@ -935,18 +944,13 @@ export class LaunchSequenceManager {
               uniqueVoice: !sharesNarratorVoice
             });
           } else {
-            logger.warn(`[LaunchSequence] No voice available for character "${character.name}" (gender: ${characterGender} [database]), using narrator voice`);
-
-            this.emitDetailedProgress('voice', `Casting [${assignmentIndex}/${characters.length}]: "${character.name}" → Narrator (fallback)`, {
-              action: 'character_cast_fallback',
-              character: character.name,
-              characterGender: characterGender,
-              reason: 'No gender-matched voice available',
-              usingNarratorVoice: true
-            });
+            const err = `[LaunchSequence] No voice available for character "${character.name}" (gender: ${characterGender}). Failing per premium policy.`;
+            logger.error(err);
+            throw new Error(err);
           }
         } else {
-          logger.warn(`[LaunchSequence] Multi-voice disabled or no voices available for character "${character.name}" - using narrator voice (effectiveMultiVoice=${effectiveMultiVoice}, availableVoices=${availableVoices.length})`);
+          // Multi-voice disabled or no voices available - use narrator voice (already set as default)
+          logger.info(`[LaunchSequence] Using narrator voice for "${character.name}" (multi-voice disabled: effectiveMultiVoice=${effectiveMultiVoice}, voices=${availableVoices.length})`);
         }
 
         uniqueVoiceIds.add(characterVoiceId);
@@ -1222,9 +1226,14 @@ export class LaunchSequenceManager {
               config = {};
             }
           }
-          const outline = typeof row.outline_json === 'string'
-            ? JSON.parse(row.outline_json || '{}')
-            : (row.outline_json || {});
+          let outline = {};
+          try {
+            outline = typeof row.outline_json === 'string'
+              ? JSON.parse(row.outline_json || '{}')
+              : (row.outline_json || {});
+          } catch (parseError) {
+            logger.warn(`[LaunchSequence] Failed to parse outline_json: ${parseError.message}`);
+          }
 
           // Get sfxLevel from config - check both snake_case and camelCase conventions
           // Log actual value for debugging
@@ -1475,7 +1484,16 @@ export class LaunchSequenceManager {
       let coverUrl = session?.cover_image_url;
       const title = session?.title || 'Untitled Story';
       const synopsis = session?.synopsis || '';
-      const outline = session?.outline_json ? (typeof session.outline_json === 'string' ? JSON.parse(session.outline_json) : session.outline_json) : {};
+      let outline = {};
+      if (session?.outline_json) {
+        try {
+          outline = typeof session.outline_json === 'string'
+            ? JSON.parse(session.outline_json)
+            : session.outline_json;
+        } catch (parseError) {
+          logger.warn(`[LaunchSequence] Failed to parse session outline_json: ${parseError.message}`);
+        }
+      }
       const config = session?.config_json || {};
 
       let coverValid = !!coverUrl;
@@ -1519,9 +1537,9 @@ export class LaunchSequenceManager {
             mood: config.mood || 'adventurous'
           };
 
-          // Generate cover with default style and quality
+          // Generate cover with user-selected style and quality
           const coverResult = await generateStoryCover(sessionData, {
-            style: 'fantasy',
+            style: config.cover_art_style || 'fantasy',
             quality: 'standard'
           });
 
@@ -1705,6 +1723,12 @@ export class LaunchSequenceManager {
 
       logger.info(`[LaunchSequence] Cover art ${coverGenerated ? 'generation' : 'validation'} complete`);
 
+      // === PICTURE BOOK MODE: Generate Character Reference Images ===
+      // Required for picture book scene images to maintain character consistency
+      if (config.story_format === 'picture_book') {
+        await this.generatePictureBookCharacterReferences(config);
+      }
+
     } catch (error) {
       agentTracker.errorAgent(this.sessionId, 'cover', error.message);
       this.emitStageStatus(stage, STATUS.ERROR, { message: error.message });
@@ -1784,6 +1808,77 @@ Minor spelling variations or stylization are acceptable.`
       logger.error(`[LaunchSequence] OCR validation error:`, error.message);
       // Return valid on error to not block the flow
       return { isValid: true, detectedText: '', reason: `OCR check failed: ${error.message}` };
+    }
+  }
+
+  /**
+   * Generate character reference images for Picture Book mode
+   * Creates AI portraits for each character that will be used for consistent
+   * character appearance across all scene images
+   */
+  async generatePictureBookCharacterReferences(config) {
+    try {
+      logger.info(`[LaunchSequence] Starting picture book character reference generation`);
+      this.emitDetailedProgress('cover', 'Generating character portraits for picture book mode...', {
+        action: 'picture_book_character_refs',
+        format: 'picture_book'
+      });
+
+      // Get all characters for this session
+      const charResult = await pool.query(
+        'SELECT id, name, role, description, appearance, reference_image_url FROM characters WHERE story_session_id = $1',
+        [this.sessionId]
+      );
+      const characters = charResult.rows;
+
+      if (characters.length === 0) {
+        logger.warn(`[LaunchSequence] No characters found for picture book mode`);
+        return;
+      }
+
+      // Filter to characters without reference images
+      const charsNeedingRefs = characters.filter(c => !c.reference_image_url);
+      if (charsNeedingRefs.length === 0) {
+        logger.info(`[LaunchSequence] All ${characters.length} characters already have reference images`);
+        return;
+      }
+
+      logger.info(`[LaunchSequence] Generating references for ${charsNeedingRefs.length}/${characters.length} characters`);
+
+      this.io.to(this.sessionId).emit('picture-book-refs-generating', {
+        message: `Creating character portraits (${charsNeedingRefs.length} characters)...`,
+        total: charsNeedingRefs.length
+      });
+
+      // Generate references using the picture book generator
+      const style = config.picture_book_style || 'storybook';
+      const results = await preGenerateCharacterReferences(this.sessionId, charsNeedingRefs, style);
+
+      const successful = results.filter(r => r.success).length;
+      const failed = results.filter(r => !r.success).length;
+
+      logger.info(`[LaunchSequence] Picture book character refs complete: ${successful} success, ${failed} failed`);
+
+      this.io.to(this.sessionId).emit('picture-book-refs-complete', {
+        message: `Character portraits ready (${successful}/${charsNeedingRefs.length})`,
+        successful,
+        failed,
+        results
+      });
+
+      this.emitDetailedProgress('cover', `Character portraits generated: ${successful}/${charsNeedingRefs.length} successful`, {
+        action: 'picture_book_refs_complete',
+        successful,
+        failed
+      });
+
+    } catch (error) {
+      logger.error(`[LaunchSequence] Picture book character reference generation failed: ${error.message}`);
+      // Non-blocking - scene images will just not use character references
+      this.io.to(this.sessionId).emit('picture-book-refs-error', {
+        message: 'Failed to generate character portraits',
+        error: error.message
+      });
     }
   }
 
@@ -2220,8 +2315,9 @@ Minor spelling variations or stylization are acceptable.`
       agentTracker.updateAgentProgress(this.sessionId, 'narrator', 15, 'Starting synthesis...');
 
       // Generate intro audio (if first scene)
+      // CRITICAL: Use premium tier for eleven_v3 model with Audio Tags support
       const introPromise = introText
-        ? elevenlabs.textToSpeech(introText, effectiveVoiceId).catch(err => {
+        ? elevenlabs.textToSpeech(introText, effectiveVoiceId, { quality_tier: 'premium' }).catch(err => {
             logger.error(`[AudioSynthesis] Intro audio failed: ${err.message}`);
             return null;
           })
@@ -2275,11 +2371,13 @@ Minor spelling variations or stylization are acceptable.`
         } catch (err) {
           logger.error(`[AudioSynthesis] Scene audio failed: ${err.message}`);
           // Fall back to simple TTS if orchestrator fails
+          // CRITICAL: Use premium tier for eleven_v3 model with Audio Tags support
           if (this.scene?.polished_text) {
             try {
               const fallbackBuffer = await elevenlabs.textToSpeech(
                 stripTags(this.scene.polished_text),
-                effectiveVoiceId
+                effectiveVoiceId,
+                { quality_tier: 'premium' }
               );
               return { type: 'fallback', audioBuffer: fallbackBuffer };
             } catch (fallbackErr) {
@@ -2421,6 +2519,70 @@ Minor spelling variations or stylization are acceptable.`
       // Mark as completed with null results so playback can fall back to deferred TTS
       this.stageResults.audio = { intro: null, scene: null, error: error.message };
       logger.warn(`[AudioSynthesis] Continuing despite audio failure - playback will use deferred TTS`);
+    }
+  }
+
+  /**
+   * P1 FIX: Generate choice narration for CYOA adventure mode
+   * PRE-GENERATION FIX: Store choice audio instead of streaming it separately
+   * Choice audio is now bundled with the launch-sequence-ready event for unified playback
+   */
+  async runChoiceNarration() {
+    try {
+      if (!this.scene?.choices || this.scene.choices.length === 0) {
+        logger.info('[ChoiceNarration] No choices to narrate, skipping');
+        this.stageResults.choiceAudio = null;
+        return;
+      }
+
+      logger.info(`[ChoiceNarration] Generating narration for ${this.scene.choices.length} choices`);
+      this.emitDetailedProgress('audio', `Narrating ${this.scene.choices.length} adventure choices...`, {
+        action: 'choice_narration_start',
+        choiceCount: this.scene.choices.length
+      });
+
+      // Generate the choice narration text
+      const narrationText = generateChoiceNarration(this.scene.choices);
+      if (!narrationText) {
+        logger.warn('[ChoiceNarration] Failed to generate narration text - showing choices without audio');
+        this.stageResults.choiceAudio = null;
+        return;
+      }
+
+      logger.info(`[ChoiceNarration] Narration text: "${narrationText.substring(0, 100)}..."`);
+
+      // Get the narrator voice ID for consistent voice
+      const voiceId = this.voiceId || this.stageResults.voices?.narrators?.[0]?.id;
+
+      // PRE-GENERATION FIX: Generate audio and STORE it instead of streaming
+      // This allows bundling with launch-sequence-ready for unified playback
+      const audioBuffer = await elevenlabs.textToSpeech(narrationText, voiceId);
+      const audioBase64 = audioBuffer.toString('base64');
+
+      // Store choice audio in stageResults for inclusion in launch-sequence-ready
+      this.stageResults.choiceAudio = {
+        base64: audioBase64,
+        format: 'audio/mpeg',
+        text: narrationText,
+        choiceCount: this.scene.choices.length,
+        size: audioBuffer.length
+      };
+
+      logger.info(`[ChoiceNarration] Successfully pre-generated choice narration for session ${this.sessionId} | size: ${audioBuffer.length} bytes`);
+      this.emitDetailedProgress('audio', 'Adventure choices narrated successfully', {
+        action: 'choice_narration_complete',
+        choiceCount: this.scene.choices.length
+      });
+
+    } catch (error) {
+      // Don't fail the launch sequence if choice narration fails - it's enhancement, not critical
+      logger.error(`[ChoiceNarration] Error generating choice narration: ${error.message}`);
+      this.emitDetailedProgress('audio', 'Choice narration skipped (will display text only)', {
+        action: 'choice_narration_error',
+        error: error.message
+      });
+      // Mark as null so client knows to show choices without audio
+      this.stageResults.choiceAudio = null;
     }
   }
 
@@ -2737,11 +2899,14 @@ Minor spelling variations or stylization are acceptable.`
       totalVoices: voiceResult.uniqueVoiceCount || 1
     };
 
-    // Build audio details - intro + scene audio ready to play immediately
+    // Build audio details - intro + scene + choice audio ready to play immediately
     // Note: audioResult.intro and audioResult.scene are the correct property names from runAudioSynthesis()
+    // PRE-GENERATION FIX: Include choice audio so ALL audio is bundled together
     const audioResult = this.stageResults.audio || {};
+    const choiceAudioResult = this.stageResults.choiceAudio || null;
     const hasIntroAudio = !!(audioResult.intro?.base64);
     const hasSceneAudio = !!(audioResult.scene?.base64);
+    const hasChoiceAudio = !!(choiceAudioResult?.base64);
     const audioDetails = {
       hasAudio: hasIntroAudio || hasSceneAudio,
       intro: hasIntroAudio ? {
@@ -2753,10 +2918,19 @@ Minor spelling variations or stylization are acceptable.`
         base64: audioResult.scene.base64,
         wordTimings: audioResult.scene.wordTimings || []
       } : null,
+      // PRE-GENERATION FIX: Include pre-generated choice narration audio
+      // Client should queue this to play AFTER scene audio finishes
+      choice: hasChoiceAudio ? {
+        base64: choiceAudioResult.base64,
+        format: choiceAudioResult.format || 'audio/mpeg',
+        choiceCount: choiceAudioResult.choiceCount || 0
+      } : null,
+      hasChoiceAudio,
       // Stats for client display
       introSize: audioResult.intro?.size || 0,
       sceneSize: audioResult.scene?.size || 0,
-      totalSize: (audioResult.intro?.size || 0) + (audioResult.scene?.size || 0),
+      choiceSize: choiceAudioResult?.size || 0,
+      totalSize: (audioResult.intro?.size || 0) + (audioResult.scene?.size || 0) + (choiceAudioResult?.size || 0),
       cached: audioResult.scene?.cached || false,
       type: audioResult.scene?.type || 'none'
     };

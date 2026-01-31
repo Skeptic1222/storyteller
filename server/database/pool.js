@@ -6,6 +6,7 @@ import pg from 'pg';
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { logger } from '../utils/logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -41,7 +42,7 @@ let poolStats = {
 pool.on('connect', (client) => {
   poolStats.acquireCount++;
   if (process.env.LOG_POOL === 'true') {
-    console.log(`[DB Pool] Connection acquired | total: ${pool.totalCount} | idle: ${pool.idleCount} | waiting: ${pool.waitingCount}`);
+    logger.debug(`[DB Pool] Connection acquired | total: ${pool.totalCount} | idle: ${pool.idleCount} | waiting: ${pool.waitingCount}`);
   }
 });
 
@@ -49,7 +50,7 @@ pool.on('connect', (client) => {
 pool.on('remove', (client) => {
   poolStats.releaseCount++;
   if (process.env.LOG_POOL === 'true') {
-    console.log(`[DB Pool] Connection removed | total: ${pool.totalCount} | idle: ${pool.idleCount}`);
+    logger.debug(`[DB Pool] Connection removed | total: ${pool.totalCount} | idle: ${pool.idleCount}`);
   }
 });
 
@@ -58,7 +59,7 @@ pool.on('error', (err, client) => {
   poolStats.errorCount++;
   poolStats.lastError = err.message;
   poolStats.lastErrorTime = new Date().toISOString();
-  console.error('[DB Pool] ERROR - Idle client error:', err.message);
+  logger.error('[DB Pool] ERROR - Idle client error:', err.message);
 });
 
 // Periodic pool stats logging (every 5 minutes in production)
@@ -67,9 +68,9 @@ setInterval(() => {
   const stats = getPoolStats();
   if (stats.waiting > 0 || stats.utilization > 80) {
     // FAIL LOUDLY: Warn if pool is under pressure
-    console.warn('[DB Pool] WARNING - High utilization:', stats);
+    logger.warn('[DB Pool] WARNING - High utilization:', stats);
   } else if (process.env.LOG_POOL === 'true') {
-    console.log('[DB Pool] Stats:', stats);
+    logger.debug('[DB Pool] Stats:', stats);
   }
 }, STATS_INTERVAL);
 
@@ -111,12 +112,12 @@ export async function query(text, params) {
     const duration = Date.now() - start;
 
     if (process.env.LOG_QUERIES === 'true') {
-      console.log('Executed query', { text: text.substring(0, 100), duration, rows: result.rowCount });
+      logger.debug('Executed query', { text: text.substring(0, 100), duration, rows: result.rowCount });
     }
 
     return result;
   } catch (error) {
-    console.error('Query error:', { text: text.substring(0, 100), error: error.message });
+    logger.error('Query error:', { text: text.substring(0, 100), error: error.message });
     throw error;
   }
 }
@@ -134,7 +135,7 @@ export async function withTransaction(callback) {
     try {
       await client.query('ROLLBACK');
     } catch (rollbackError) {
-      console.error('CRITICAL: Rollback failed after transaction error:', {
+      logger.error('CRITICAL: Rollback failed after transaction error:', {
         originalError: error.message,
         rollbackError: rollbackError.message
       });
