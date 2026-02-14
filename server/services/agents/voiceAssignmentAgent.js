@@ -212,6 +212,10 @@ function buildVoiceLibrary() {
         style: voice.style,
         description: voice.description,
         category: category,
+        // VOICE AGE METADATA (2026-01-31)
+        age_group: voice.age_group || 'adult',
+        can_be_child: voice.can_be_child || false,
+        suitable_ages: voice.suitable_ages || ['adult'],
         // Add suitability hints for LLM
         suitable_for: getSuitabilityHints(voice, category)
       });
@@ -223,9 +227,17 @@ function buildVoiceLibrary() {
 
 /**
  * Get suitability hints for a voice based on its characteristics
+ * VOICE AGE METADATA (2026-01-31): Added age-based hints for LLM
  */
 function getSuitabilityHints(voice, category) {
   const hints = [];
+
+  // AGE-BASED HINTS (CRITICAL for proper voice assignment)
+  if (voice.can_be_child) hints.push('children', 'kids', 'young protagonists', 'child characters');
+  if (voice.age_group === 'young' || voice.age_group === 'teen') hints.push('teenagers', 'teens', 'young adults', 'youthful characters');
+  if (voice.age_group === 'adult') hints.push('adult characters', 'grown-ups');
+  if (voice.age_group === 'middle_aged') hints.push('middle-aged characters', 'parents', 'experienced adults');
+  if (voice.age_group === 'elderly' || voice.suitable_ages?.includes('elderly')) hints.push('elderly characters', 'grandparents', 'wise elders', 'senior characters');
 
   // Based on category
   if (category === 'male_narrators') hints.push('narration', 'storytelling', 'authoritative roles');
@@ -277,8 +289,17 @@ VOICE SELECTION CRITERIA:
 - Genre affects voice tone: horror = darker voices, romance = warmer voices, comedy = more expressive voices
 - Character role matters: protagonists need engaging voices, villains need distinct/menacing voices
 - Personality traits should match voice style: anxious character → anxious voice style
-- Age considerations: young characters → younger-sounding voices when available
+- Age considerations: Match character age to appropriate voice (see AGE MATCHING RULES below)
 - Accent diversity: spread different accents across characters for variety
+
+AGE MATCHING RULES (CRITICAL - MUST FOLLOW):
+- CHILD characters (ages 0-12): MUST use voices marked "can_be_child: true" (Matilda, Gigi, Ethan, Harry, Laura)
+- TEEN characters (ages 13-17): Prefer young-sounding voices (Gigi, Ethan, Harry, Charlie, Elli)
+- YOUNG ADULT characters (ages 18-30): Can use young or adult voices
+- ADULT characters (ages 31-55): Use standard adult voices
+- ELDERLY characters (ages 55+): Use mature voices (George, Daniel, Adam, Dorothy, Grace, Sam)
+- NEVER assign deep/gravelly adult male voices (Callum, Josh, Adam) to child characters
+- NEVER assign seductive/sultry voices (Charlotte) to child characters
 
 GENRE-SPECIFIC VOICE PRIORITIES:
 - Heroic Fantasy / Sword & Sorcery: Use "gravelly", "deep", "authoritative" voices for warriors and heroes.
@@ -347,6 +368,15 @@ function buildUserPrompt(characters, storyContext, narratorVoiceId, voiceLibrary
   const maleVoices = voiceLibrary.filter(v => v.gender === 'male' && !excludedSet.has(v.voice_id));
   const femaleVoices = voiceLibrary.filter(v => v.gender === 'female' && !excludedSet.has(v.voice_id));
 
+  // Build age-grouped voice lists for explicit guidance
+  const childSuitableVoices = voiceLibrary.filter(v => v.can_be_child && !excludedSet.has(v.voice_id));
+  const elderlyVoices = voiceLibrary.filter(v => v.suitable_ages?.includes('elderly') && !excludedSet.has(v.voice_id));
+
+  // Count child/elderly characters for capacity check
+  const childCharacters = characterDescriptions.filter(c =>
+    c.age === 'child' || (typeof c.age === 'number' && c.age < 13)
+  );
+
   return `STORY CONTEXT:
 - Genre: ${genre || 'general fiction'}
 - Mood/Tone: ${mood || 'neutral'}
@@ -365,14 +395,33 @@ NARRATOR VOICE (DO NOT ASSIGN TO ANY CHARACTER):
 CHARACTERS TO CAST (${characters.length} total):
 ${JSON.stringify(characterDescriptions, null, 2)}
 
+=== VOICE LIBRARY BY AGE SUITABILITY ===
+
+CHILD-SUITABLE VOICES (REQUIRED for child characters ages 0-12):
+${childSuitableVoices.length > 0
+  ? childSuitableVoices.map(v => `- ${v.name} (${v.voice_id}): ${v.gender}, ${v.style} - ${v.description}`).join('\n')
+  : '(No child-suitable voices available - cannot cast child characters)'}
+
+ELDERLY-SUITABLE VOICES (for characters 55+):
+${elderlyVoices.length > 0
+  ? elderlyVoices.map(v => `- ${v.name} (${v.voice_id}): ${v.gender}, ${v.style} - ${v.description}`).join('\n')
+  : '(Use adult voices for elderly characters)'}
+
+${childCharacters.length > 0 ? `
+WARNING: Story has ${childCharacters.length} child character(s). Only ${childSuitableVoices.length} child-suitable voices available.
+REQUIRED: Use ONLY child-suitable voices for: ${childCharacters.map(c => c.name).join(', ')}
+` : ''}
+
+=== FULL VOICE LIBRARY ===
+
 AVAILABLE MALE VOICES (${maleVoices.length}):
-${maleVoices.map(v => `- ${v.name} (${v.voice_id}): ${v.style} - ${v.description}. Good for: ${v.suitable_for.join(', ')}`).join('\n')}
+${maleVoices.map(v => `- ${v.name} (${v.voice_id}): ${v.style} - ${v.description}. ${v.can_be_child ? '[CHILD-OK]' : ''} Good for: ${v.suitable_for.join(', ')}`).join('\n')}
 
 AVAILABLE FEMALE VOICES (${femaleVoices.length}):
-${femaleVoices.map(v => `- ${v.name} (${v.voice_id}): ${v.style} - ${v.description}. Good for: ${v.suitable_for.join(', ')}`).join('\n')}
+${femaleVoices.map(v => `- ${v.name} (${v.voice_id}): ${v.style} - ${v.description}. ${v.can_be_child ? '[CHILD-OK]' : ''} Good for: ${v.suitable_for.join(', ')}`).join('\n')}
 
-Please assign a unique voice to each character, considering their personality, role, and the story's genre/mood.
-Remember: Each character MUST have a different voice, and NO character can have the narrator's voice.`;
+Please assign a unique voice to each character, considering their personality, role, AGE, and the story's genre/mood.
+Remember: Each character MUST have a different voice, NO character can have the narrator's voice, and CHILD CHARACTERS MUST use [CHILD-OK] voices.`;
 }
 
 /**
@@ -633,6 +682,70 @@ function repairNarratorConflict(assignments, narratorVoiceId, voiceLibrary) {
 }
 
 /**
+ * Auto-repair gender mismatches by swapping to an unused voice of the correct gender
+ *
+ * TRIGGER: A character's assigned voice gender doesn't match the character's gender
+ * (skips characters with flexible genders: unknown, neutral, non-binary, etc.)
+ *
+ * REPAIR STRATEGY:
+ * 1. Identify all gender-mismatched assignments
+ * 2. For each, find an unused voice of the CORRECT gender
+ * 3. Swap the assignment
+ * 4. The freed voice becomes available for other mismatched characters
+ *
+ * @param {Array} assignments - Voice assignments (mutated in place)
+ * @param {Array} characters - Original character list for gender lookup
+ * @param {string} narratorVoiceId - Narrator voice to exclude
+ * @param {Array} voiceLibrary - Full voice library
+ * @returns {Array} Same assignments array with gender mismatches repaired
+ */
+function repairGenderMismatches(assignments, characters, narratorVoiceId, voiceLibrary) {
+  const flexibleGenders = ['unknown', 'non-binary', 'nonbinary', 'nb', 'other', 'neutral', 'agender', 'genderless'];
+  const usedVoiceIds = new Set(assignments.map(a => a.voice_id));
+  const mismatches = [];
+
+  for (let i = 0; i < assignments.length; i++) {
+    const assignment = assignments[i];
+    const character = characters.find(c => c.name.toLowerCase() === assignment.character_name.toLowerCase());
+    const voice = voiceLibrary.find(v => v.voice_id === assignment.voice_id);
+
+    if (!character || !voice || !character.gender || !voice.gender) continue;
+    if (flexibleGenders.includes(character.gender.toLowerCase())) continue;
+    if (character.gender.toLowerCase() === voice.gender.toLowerCase()) continue;
+
+    mismatches.push({ index: i, character, voice, neededGender: character.gender.toLowerCase() });
+  }
+
+  if (mismatches.length === 0) return assignments;
+
+  logger.warn(`[VoiceAssignment] Found ${mismatches.length} gender mismatch(es) - auto-repairing`);
+
+  for (const mismatch of mismatches) {
+    const { index, character, voice, neededGender } = mismatch;
+    const available = voiceLibrary.filter(v =>
+      v.gender === neededGender &&
+      v.voice_id !== narratorVoiceId &&
+      !usedVoiceIds.has(v.voice_id)
+    );
+
+    if (available.length > 0) {
+      const newVoice = available[0];
+      // Free the old voice and claim the new one
+      usedVoiceIds.delete(voice.voice_id);
+      usedVoiceIds.add(newVoice.voice_id);
+      logger.info(`[VoiceAssignment] Gender repair: ${character.name} (${neededGender}) swapped ${voice.name} (${voice.gender}) → ${newVoice.name} (${newVoice.gender})`);
+      assignments[index].voice_id = newVoice.voice_id;
+      assignments[index].voice_name = newVoice.name;
+      assignments[index].reasoning = `(auto-reassigned - gender mismatch repair) ${assignments[index].reasoning || ''}`;
+    } else {
+      logger.error(`[VoiceAssignment] Cannot repair gender mismatch for ${character.name} - no ${neededGender} voices available`);
+    }
+  }
+
+  return assignments;
+}
+
+/**
  * Validate the LLM's voice assignments after all repair attempts
  *
  * This is the FINAL GATE before voice assignments are accepted. It runs after
@@ -716,13 +829,40 @@ function validateAssignments(assignments, characters, narratorVoiceId, voiceLibr
   }
 
   // Check gender matching
+  // Non-binary and unknown gender characters can have any voice
+  const flexibleGenders = ['unknown', 'non-binary', 'nonbinary', 'nb', 'other', 'neutral', 'agender', 'genderless'];
   for (const assignment of assignments) {
     const character = characters.find(c => c.name.toLowerCase() === assignment.character_name.toLowerCase());
     const voice = voiceLibrary.find(v => v.voice_id === assignment.voice_id);
 
     if (character && voice && character.gender && voice.gender) {
-      if (character.gender !== voice.gender && character.gender !== 'unknown') {
+      const charGenderLower = character.gender.toLowerCase();
+      // Skip gender validation for flexible gender identities
+      if (!flexibleGenders.includes(charGenderLower) && character.gender !== voice.gender) {
         errors.push(`Gender mismatch: ${character.name} (${character.gender}) assigned ${voice.name} (${voice.gender})`);
+      }
+    }
+  }
+
+  // VOICE AGE VALIDATION (2026-01-31)
+  // Check age appropriateness - child characters MUST have child-suitable voices
+  for (const assignment of assignments) {
+    const character = characters.find(c => c.name.toLowerCase() === assignment.character_name.toLowerCase());
+    const voice = voiceLibrary.find(v => v.voice_id === assignment.voice_id);
+
+    if (character && voice) {
+      // Determine if character is a child
+      const charAge = character.age_group || character.age || 'adult';
+      const isChildCharacter = charAge === 'child' ||
+        (typeof charAge === 'number' && charAge < 13) ||
+        (typeof charAge === 'string' && parseInt(charAge) < 13 && !isNaN(parseInt(charAge)));
+
+      if (isChildCharacter && voice.can_be_child === false) {
+        // This is a WARNING, not a hard error - log it but don't fail
+        // LLM may have made a creative choice we should respect
+        console.warn(`[VoiceAssignment] AGE_MISMATCH_WARNING: Child character "${character.name}" (${charAge}) assigned "${voice.name}" which is not child-suitable`);
+        // Uncomment below to make this a hard error:
+        // errors.push(`Age mismatch: ${character.name} (child) assigned ${voice.name} which is not child-suitable. Use Matilda, Gigi, Ethan, Harry, or Laura for children.`);
       }
     }
   }
@@ -872,6 +1012,33 @@ export async function assignVoicesByLLM(characters, storyContext, narratorVoiceI
     let assignments = result.assignments || [];
 
     // =========================================================================
+    // STAGE 2.5: Character Name Normalization
+    // LLMs frequently shorten character names (e.g., "A.R.G.U.S." instead of
+    // "A.R.G.U.S. (Automated Ration Governance Utility System)"). Normalize
+    // back to exact character names so voiceMap keys match downstream lookups.
+    // =========================================================================
+    for (const assignment of assignments) {
+      const llmName = assignment.character_name.toLowerCase();
+      // Exact match - no normalization needed
+      if (characters.find(c => c.name.toLowerCase() === llmName)) continue;
+      // Try partial/fuzzy match
+      const match = characters.find(c => {
+        const charLower = c.name.toLowerCase();
+        // LLM shortened: "a.r.g.u.s." matches "a.r.g.u.s. (automated ration...)"
+        return charLower.startsWith(llmName + ' ') || charLower.startsWith(llmName + '(') ||
+          // LLM used parenthetical part differently
+          charLower.split('(')[0].trim() === llmName ||
+          charLower.split(' (')[0].trim() === llmName ||
+          // First name match
+          charLower.split(' ')[0] === llmName;
+      });
+      if (match) {
+        logger.warn(`[VoiceAssignment] Normalized character name "${assignment.character_name}" → "${match.name}"`);
+        assignment.character_name = match.name;
+      }
+    }
+
+    // =========================================================================
     // STAGE 3: Auto-Repair Pipeline
     // These repairs run in sequence to fix common LLM response issues.
     // Each repair is "best effort" - it may not succeed if resources are
@@ -893,6 +1060,10 @@ export async function assignVoicesByLLM(characters, storyContext, narratorVoiceI
     // See REPAIR_THRESHOLDS.NARRATOR_CONFLICT_REPAIR for threshold documentation
     // Reassigns when narrator voice is used for a character
     assignments = repairNarratorConflict(assignments, narratorVoiceId, voiceLibrary);
+
+    // Repair 3.4: Gender Mismatch Repair
+    // Fixes when LLM assigns a voice with wrong gender to a character
+    assignments = repairGenderMismatches(assignments, characters, narratorVoiceId, voiceLibrary);
 
     // =========================================================================
     // STAGE 4: Final Validation

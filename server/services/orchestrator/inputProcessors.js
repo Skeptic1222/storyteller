@@ -11,13 +11,59 @@ import { callAgent, parseJsonResponse } from '../openai.js';
 import { sanitizeForPrompt } from '../../utils/promptSecurity.js';
 
 /**
- * Process configuration input (voice or text)
+ * Process configuration input (voice, text, or structured config)
  * @param {string} sessionId
  * @param {object} session - Session object with config_json
- * @param {string} input - User's voice/text input
+ * @param {string} input - User's voice/text input or JSON config string
+ * @param {string} inputType - 'text', 'voice', or 'config' (JSON from Configure page)
  * @returns {object} Processing result
  */
-export async function processConfiguration(sessionId, session, input) {
+export async function processConfiguration(sessionId, session, input, inputType = 'text') {
+  // CRITICAL FIX: Handle structured config from Configure page directly
+  // When inputType='config', input is a JSON string that should be saved directly
+  // instead of being parsed by an LLM as natural language
+  if (inputType === 'config') {
+    try {
+      const configData = typeof input === 'string' ? JSON.parse(input) : input;
+
+      logger.info(`[InputProcessors] Processing structured config (inputType=config)`);
+      logger.info(`[InputProcessors] Config keys: ${Object.keys(configData).join(', ')}`);
+
+      // Merge with existing config (structured config takes precedence)
+      const currentConfig = session.config_json || {};
+      const newConfig = { ...currentConfig, ...configData };
+
+      // Save the merged config to the database
+      await pool.query(
+        'UPDATE story_sessions SET config_json = $1 WHERE id = $2',
+        [JSON.stringify(newConfig), sessionId]
+      );
+
+      logger.info(`[InputProcessors] Saved structured config for session ${sessionId}`);
+      logger.info(`[InputProcessors] Genres: ${JSON.stringify(newConfig.genres || {})}`);
+      logger.info(`[InputProcessors] Audience: ${newConfig.audience || 'general'}`);
+      logger.info(`[InputProcessors] Story Request: "${(newConfig.story_request || newConfig.custom_prompt || 'None').substring(0, 100)}..."`);
+
+      return {
+        understood: true,
+        message: 'Configuration saved successfully',
+        preferences: newConfig,
+        ready_to_generate: true
+      };
+
+    } catch (parseError) {
+      logger.error(`[InputProcessors] Failed to parse config JSON: ${parseError.message}`);
+      logger.error(`[InputProcessors] Input was: ${typeof input === 'string' ? input.substring(0, 200) : JSON.stringify(input).substring(0, 200)}...`);
+      return {
+        understood: false,
+        message: 'Failed to parse configuration. Please try again.',
+        preferences: null,
+        ready_to_generate: false
+      };
+    }
+  }
+
+  // For text/voice input, use LLM to extract preferences
   // Sanitize user input to prevent prompt injection attacks
   const safeInput = sanitizeForPrompt(input, { maxLength: 1000 });
 
@@ -72,6 +118,7 @@ export async function processConfiguration(sessionId, session, input) {
     return {
       understood: false,
       message: "I'd love to create a story with you. What kind of world do you want to dive into?",
+      preferences: null,
       ready_to_generate: false
     };
   }

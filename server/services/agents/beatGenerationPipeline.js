@@ -14,10 +14,13 @@
  */
 
 import { logger } from '../../utils/logger.js';
+import { getCreativeModel, getUtilityModel } from '../modelSelection.js';
 
-// Use GPT-4o for complex reasoning (GPT-5.2 not available yet)
-const REASONING_MODEL = 'gpt-4o';
-const FAST_MODEL = 'gpt-4o-mini';
+// QUALITY FIX (2026-01-31): Use tier-based model selection instead of hardcoded models.
+// Previously hardcoded to GPT-4o which is 2 generations behind GPT-5.2.
+// Beat generation is a CREATIVE task that directly impacts story quality.
+const getReasoningModel = () => getCreativeModel();  // GPT-5.2 for premium tier
+const getFastModel = () => getUtilityModel();         // GPT-5-mini for utility tasks
 
 /**
  * Main pipeline entry point
@@ -266,7 +269,7 @@ Which events should happen BEFORE, DURING, or AFTER this chapter?`;
 
   try {
     const response = await openai.chat.completions.create({
-      model: REASONING_MODEL,
+      model: getReasoningModel(),
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt }
@@ -408,7 +411,7 @@ Generate 15-25 beats that tell this chapter's story while respecting the timelin
 
   try {
     const response = await openai.chat.completions.create({
-      model: REASONING_MODEL,
+      model: getReasoningModel(),
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt }
@@ -958,7 +961,7 @@ Find any timeline violations or continuity errors.`;
 
   try {
     const response = await openai.chat.completions.create({
-      model: REASONING_MODEL,
+      model: getReasoningModel(),
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt }
@@ -1052,7 +1055,7 @@ Return corrected beats.`;
 
   try {
     const response = await openai.chat.completions.create({
-      model: REASONING_MODEL,
+      model: getReasoningModel(),
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt }

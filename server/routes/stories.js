@@ -195,13 +195,34 @@ router.get('/:id', requireAuth, validateSessionId, requireSessionOwner, async (r
       [id]
     );
 
-    // Get scenes (include polished_text for reconnection recovery + word_timings for karaoke)
-    const scenes = await pool.query(`
-      SELECT id, sequence_index, branch_key, summary, polished_text, audio_url, audio_duration_seconds, mood, word_timings
-      FROM story_scenes
+    // Get latest recording for this session (needed to join with recording_segments)
+    const recording = await pool.query(`
+      SELECT id FROM story_recordings
       WHERE story_session_id = $1
-      ORDER BY sequence_index
+      ORDER BY created_at DESC
+      LIMIT 1
     `, [id]);
+    const recordingId = recording.rows.length > 0 ? recording.rows[0].id : null;
+
+    // Get scenes (include polished_text for reconnection recovery + word_timings for karaoke)
+    // FIX: Use COALESCE to prefer recording_segments audio_url over story_scenes audio_url
+    // This ensures replay mode uses the correct audio path from recordings
+    const scenes = await pool.query(`
+      SELECT
+        sc.id,
+        sc.sequence_index,
+        sc.branch_key,
+        sc.summary,
+        sc.polished_text,
+        COALESCE(rs.audio_url, sc.audio_url) as audio_url,
+        COALESCE(rs.duration_seconds, sc.audio_duration_seconds) as audio_duration_seconds,
+        COALESCE(rs.word_timings, sc.word_timings) as word_timings,
+        sc.mood
+      FROM story_scenes sc
+      LEFT JOIN recording_segments rs ON rs.scene_id = sc.id AND rs.recording_id = $2
+      WHERE sc.story_session_id = $1
+      ORDER BY sc.sequence_index
+    `, [id, recordingId]);
 
     // Get pending choices for the latest scene (for reconnection recovery)
     let pendingChoices = [];
@@ -271,9 +292,10 @@ router.post('/:id/configure', requireAuth, validateSessionId, requireSessionOwne
     `, [id, input_type, input]);
 
     // Use orchestrator to process configuration
+    // CRITICAL: Pass input_type so JSON configs are handled correctly
+    // NOTE: No progress reporting needed for config - just saving to DB
     const orchestrator = new Orchestrator(id);
-    orchestrator.onProgress = (phase) => emitOutlineProgress(phase);
-    const response = await orchestrator.processConfiguration(input);
+    const response = await orchestrator.processConfiguration(input, input_type);
 
     // Log orchestrator response
     await pool.query(`
@@ -390,7 +412,7 @@ Exchange count: ${exchangeCount + 1}`
       };
     }
 
-    // Use SmartConfig to detect additional settings the AI might miss (sfx_level, multi_narrator, etc.)
+    // Use SmartConfig to detect additional settings the AI might miss (sfx_level, voice_acted, etc.)
     try {
       const smartAnalysis = smartConfig.analyzeKeywords(input.toLowerCase());
 
@@ -405,10 +427,12 @@ Exchange count: ${exchangeCount + 1}`
         result.config_updates = result.config_updates || {};
         result.config_updates.sfx_enabled = true;
       }
-      if (smartAnalysis.multi_narrator) {
+      // Voice acting (support both new and legacy field names)
+      if (smartAnalysis.voice_acted || smartAnalysis.multi_narrator) {
         result.config_updates = result.config_updates || {};
-        result.config_updates.multi_narrator = true;
-        logger.info('[Converse] SmartConfig detected multi_narrator request');
+        result.config_updates.voice_acted = true;
+        result.config_updates.multi_narrator = true; // Backward compatibility
+        logger.info('[Converse] SmartConfig detected voice acting request');
       }
       if (smartAnalysis.story_length && !result.config_updates?.story_length) {
         result.config_updates = result.config_updates || {};

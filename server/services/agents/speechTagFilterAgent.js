@@ -21,9 +21,242 @@
 
 import { callLLM } from '../llmProviders.js';
 import { logger } from '../../utils/logger.js';
+import { analyzeSegmentEmotion } from './llmEmotionAnalyzer.js';
 
 // Feature flag for 3-pass mode (can disable for performance testing)
 const THREE_PASS_MODE = process.env.SPEECH_FILTER_THREE_PASS !== 'false';
+
+// Feature flag for LLM-based emotion extraction (enhancement over regex)
+const USE_LLM_EMOTION_EXTRACTION = process.env.SPEECH_FILTER_LLM_EMOTIONS !== 'false';
+
+// =============================================================================
+// EMOTIONAL CUE EXTRACTION (P0 - Critical Voice Acting Fix)
+// =============================================================================
+// When narrator attribution like "he whispered fearfully" is stripped,
+// the emotional delivery information (whisper, fearful) must be PRESERVED
+// and applied to the adjacent dialogue segment.
+// =============================================================================
+
+/**
+ * Patterns to extract emotional delivery cues from narrator attribution
+ * These map to ElevenLabs V3 audio tags and voice settings
+ */
+const EMOTIONAL_CUE_PATTERNS = {
+  // Delivery modes (outermost tags)
+  whisper: /\b(whisper(?:ed|ing|s)?|murmur(?:ed|ing|s)?|breath(?:ed|ing|s)?|hiss(?:ed|ing)?)\b/i,
+  shouting: /\b(shout(?:ed|ing|s)?|yell(?:ed|ing|s)?|scream(?:ed|ing|s)?|bellow(?:ed|ing|s)?|roar(?:ed|ing|s)?|boom(?:ed|ing|s)?)\b/i,
+
+  // Emotional states (V3 compatible)
+  fearful: /\b(fearful(?:ly)?|afraid|terrifi(?:ed|edly)|trembl(?:ed|ing|y)|frighten(?:ed|edly)|scared?)\b/i,
+  sad: /\b(sad(?:ly)?|sorrow(?:ful(?:ly)?)?|grief|mourn(?:ed|ing|fully)?|tearful(?:ly)?|brok(?:en|enly))\b/i,
+  angry: /\b(angr(?:y|ily)|furious(?:ly)?|rag(?:ed|ing)|bitter(?:ly)?|harsh(?:ly)?|cold(?:ly)?)\b/i,
+  excited: /\b(excit(?:ed|edly)|enthusiastic(?:ally)?|eager(?:ly)?|brighten(?:ed|ing)?)\b/i,
+  surprised: /\b(surpris(?:ed|edly)|shock(?:ed)?|astonish(?:ed)?|stun(?:ned)?|gasp(?:ed|ing)?)\b/i,
+  calm: /\b(calm(?:ly)?|serene(?:ly)?|peaceful(?:ly)?|sooth(?:ed|ing|ingly)?)\b/i,
+
+  // Additional emotional nuances
+  nervous: /\b(nervous(?:ly)?|anxious(?:ly)?|worri(?:ed|edly)|hesitant(?:ly)?|uncertain(?:ly)?)\b/i,
+  tender: /\b(tender(?:ly)?|gent(?:le|ly)|soft(?:ly)?|loving(?:ly)?|warm(?:ly)?)\b/i,
+  menacing: /\b(menacing(?:ly)?|threat(?:en(?:ed|ing|ingly))?|danger(?:ous(?:ly)?)?|sinister(?:ly)?|ominous(?:ly)?)\b/i,
+  desperate: /\b(desperate(?:ly)?|plead(?:ed|ing|ingly)?|beg(?:ged|ging)?|implor(?:ed|ing|ingly)?)\b/i,
+  sarcastic: /\b(sarcastic(?:ally)?|dry(?:ly)?|iron(?:ic(?:ally)?)?|mock(?:ed|ing|ingly)?)\b/i,
+  exhausted: /\b(exhaust(?:ed|edly)|tir(?:ed|edly)|wear(?:y|ily)|drain(?:ed)?)\b/i,
+
+  // Physical state cues (for voice adjustments)
+  breathless: /\b(breathless(?:ly)?|pant(?:ed|ing)|gasp(?:ed|ing)|out of breath)\b/i,
+  strained: /\b(strain(?:ed)?|forc(?:ed|ing)|gritt(?:ed|ing)|through (?:his|her|their) teeth)\b/i,
+  choked: /\b(chok(?:ed|ing)|voice (?:crack(?:ed|ing)|break(?:ing)?)|sob(?:bed|bing)?)\b/i
+};
+
+/**
+ * Extract emotional delivery cues from narrator attribution text
+ *
+ * @param {string} attributionText - The narrator attribution (e.g., "he whispered fearfully")
+ * @returns {Object} Extracted cues with delivery mode and emotions
+ *
+ * @example
+ * extractEmotionalCues("he whispered fearfully")
+ * // Returns: { delivery: 'whisper', emotions: ['fearful'], rawCues: ['whispered', 'fearfully'] }
+ *
+ * @example
+ * extractEmotionalCues("she said angrily, her voice rising")
+ * // Returns: { delivery: null, emotions: ['angry'], rawCues: ['angrily'] }
+ */
+export function extractEmotionalCues(attributionText) {
+  if (!attributionText || typeof attributionText !== 'string') {
+    return { delivery: null, emotions: [], rawCues: [], intensity: 'normal' };
+  }
+
+  const text = attributionText.toLowerCase();
+  const rawCues = [];
+  const emotions = [];
+  let delivery = null;
+  let intensity = 'normal';
+
+  // Check delivery modes first (these wrap the emotion tags)
+  if (EMOTIONAL_CUE_PATTERNS.whisper.test(text)) {
+    delivery = 'whisper';
+    rawCues.push(text.match(EMOTIONAL_CUE_PATTERNS.whisper)[0]);
+  } else if (EMOTIONAL_CUE_PATTERNS.shouting.test(text)) {
+    delivery = 'shouting';
+    rawCues.push(text.match(EMOTIONAL_CUE_PATTERNS.shouting)[0]);
+    intensity = 'high';
+  }
+
+  // Check emotional states (V3 compatible emotions)
+  const v3Emotions = ['fearful', 'sad', 'angry', 'excited', 'surprised', 'calm'];
+  for (const emotion of v3Emotions) {
+    if (EMOTIONAL_CUE_PATTERNS[emotion]?.test(text)) {
+      emotions.push(emotion);
+      const match = text.match(EMOTIONAL_CUE_PATTERNS[emotion]);
+      if (match) rawCues.push(match[0]);
+    }
+  }
+
+  // Check additional emotional nuances
+  const nuanceEmotions = ['nervous', 'tender', 'menacing', 'desperate', 'sarcastic', 'exhausted'];
+  for (const emotion of nuanceEmotions) {
+    if (EMOTIONAL_CUE_PATTERNS[emotion]?.test(text)) {
+      emotions.push(emotion);
+      const match = text.match(EMOTIONAL_CUE_PATTERNS[emotion]);
+      if (match) rawCues.push(match[0]);
+    }
+  }
+
+  // Check physical state cues
+  const physicalStates = ['breathless', 'strained', 'choked'];
+  for (const state of physicalStates) {
+    if (EMOTIONAL_CUE_PATTERNS[state]?.test(text)) {
+      emotions.push(state);
+      const match = text.match(EMOTIONAL_CUE_PATTERNS[state]);
+      if (match) rawCues.push(match[0]);
+    }
+  }
+
+  // Determine intensity based on cue combinations
+  if (emotions.includes('fearful') || emotions.includes('angry') || emotions.includes('desperate')) {
+    intensity = 'high';
+  } else if (emotions.includes('tender') || emotions.includes('calm') || delivery === 'whisper') {
+    intensity = 'low';
+  }
+
+  const result = {
+    delivery,
+    emotions: [...new Set(emotions)], // Dedupe
+    rawCues: [...new Set(rawCues)],
+    intensity,
+    hasEmotionalContent: delivery !== null || emotions.length > 0
+  };
+
+  if (result.hasEmotionalContent) {
+    logger.debug(`[SpeechTagAgent] EMOTION_EXTRACTED | text: "${attributionText.substring(0, 50)}..." | delivery: ${delivery} | emotions: [${emotions.join(', ')}] | intensity: ${intensity}`);
+  }
+
+  return result;
+}
+
+/**
+ * LLM-enhanced emotional cue extraction
+ * Uses LLM analysis when regex patterns don't find strong matches
+ *
+ * @param {string} attributionText - The narrator attribution text
+ * @param {Object} context - Story context for better analysis
+ * @returns {Promise<Object>} Enhanced cues with LLM-detected emotions
+ */
+export async function extractEmotionalCuesWithLLM(attributionText, context = {}) {
+  // First try regex extraction
+  const regexCues = extractEmotionalCues(attributionText);
+
+  // If regex found strong matches or LLM is disabled, use regex results
+  if (!USE_LLM_EMOTION_EXTRACTION ||
+      regexCues.hasEmotionalContent && regexCues.emotions.length >= 1) {
+    return regexCues;
+  }
+
+  // Use LLM for enhanced extraction when regex doesn't find emotions
+  try {
+    const llmAnalysis = await analyzeSegmentEmotion(
+      { text: attributionText, speaker: 'narrator', type: 'narrator' },
+      context
+    );
+
+    // Merge LLM results with regex results
+    const mergedCues = {
+      delivery: regexCues.delivery || (llmAnalysis.v3_emotion === 'whisper' ? 'whisper' :
+                                        llmAnalysis.v3_emotion === 'shouting' ? 'shouting' : null),
+      emotions: [...new Set([...regexCues.emotions, llmAnalysis.v3_emotion].filter(Boolean))],
+      rawCues: regexCues.rawCues,
+      intensity: llmAnalysis.intensity > 70 ? 'high' : llmAnalysis.intensity < 30 ? 'low' : 'normal',
+      hasEmotionalContent: true,
+      llmEnhanced: true,
+      v3AudioTags: llmAnalysis.v3AudioTags
+    };
+
+    logger.debug(`[SpeechTagAgent] LLM_ENHANCED | text: "${attributionText.substring(0, 50)}..." | v3Tags: ${llmAnalysis.v3AudioTags}`);
+    return mergedCues;
+  } catch (error) {
+    logger.debug(`[SpeechTagAgent] LLM extraction failed, using regex only: ${error.message}`);
+    return regexCues;
+  }
+}
+
+/**
+ * Convert extracted emotional cues to V3-compatible audio tags
+ *
+ * @param {Object} cues - Extracted cues from extractEmotionalCues()
+ * @returns {string} V3 audio tags string (e.g., "[whisper][fearful]")
+ */
+export function cuesToV3Tags(cues) {
+  if (!cues || !cues.hasEmotionalContent) {
+    return '';
+  }
+
+  const tags = [];
+
+  // Delivery mode (outermost tag)
+  if (cues.delivery) {
+    tags.push(`[${cues.delivery}]`);
+  }
+
+  // Primary emotion (innermost tag - use first V3-compatible emotion)
+  const v3Compatible = ['fearful', 'sad', 'angry', 'excited', 'surprised', 'calm'];
+  const primaryEmotion = cues.emotions.find(e => v3Compatible.includes(e));
+  if (primaryEmotion) {
+    tags.push(`[${primaryEmotion}]`);
+  }
+
+  return tags.join('');
+}
+
+/**
+ * Find the index of an adjacent dialogue segment (non-narrator)
+ *
+ * @param {Array} segments - Full segments array
+ * @param {number} startIdx - Index to search from
+ * @param {string} direction - 'before' or 'after'
+ * @returns {number} Index of adjacent dialogue segment, or -1 if not found
+ */
+function findAdjacentDialogueIndex(segments, startIdx, direction = 'before') {
+  if (direction === 'before') {
+    // Search backwards for previous dialogue
+    for (let i = startIdx - 1; i >= 0; i--) {
+      if (segments[i] && segments[i].speaker !== 'narrator') {
+        return i;
+      }
+    }
+  } else {
+    // Search forwards for next dialogue
+    for (let i = startIdx + 1; i < segments.length; i++) {
+      if (segments[i] && segments[i].speaker !== 'narrator') {
+        return i;
+      }
+    }
+  }
+  return -1;
+}
+
+// Light-touch mode: When pre-gen baking is used, only do minimal cleanup
+const LIGHT_TOUCH_MODE = process.env.SPEECH_FILTER_LIGHT_TOUCH === 'true';
 
 /**
  * Filter speech attribution from narrator segments using 3-pass LLM validation
@@ -89,6 +322,7 @@ export async function filterSpeechTagsWithLLM(segments, context = {}) {
     let removedCount = 0;
     let strippedCount = 0;
     let unchangedCount = 0;
+    let emotionalCuesApplied = 0;
 
     for (const result of verifiedResults) {
       const narratorSeg = narratorSegments[result.index];
@@ -101,6 +335,61 @@ export async function filterSpeechTagsWithLLM(segments, context = {}) {
       const originalIdx = narratorSeg.originalIndex;
       const cleanedText = (result.cleaned || '').trim();
       const originalText = narratorSeg.text.trim();
+
+      // =================================================================
+      // P0 CRITICAL: Extract emotional cues BEFORE discarding attribution
+      // "he whispered fearfully" → preserve [whisper, fearful] for dialogue
+      // =================================================================
+      if (result.removed) {
+        const emotionalCues = extractEmotionalCues(result.removed);
+        if (emotionalCues.hasEmotionalContent) {
+          // Find the previous dialogue segment to apply cues to
+          // The narrator attribution typically follows or precedes the dialogue it describes
+          const prevDialogueIdx = findAdjacentDialogueIndex(segments, originalIdx, 'before');
+          const nextDialogueIdx = findAdjacentDialogueIndex(segments, originalIdx, 'after');
+
+          // Prefer previous dialogue (most common: dialogue followed by "he said fearfully")
+          // Fall back to next dialogue if no previous exists
+          const targetDialogueIdx = prevDialogueIdx !== -1 ? prevDialogueIdx : nextDialogueIdx;
+
+          if (targetDialogueIdx !== -1 && filteredSegments[targetDialogueIdx]) {
+            const targetSegment = filteredSegments[targetDialogueIdx];
+            const v3Tags = cuesToV3Tags(emotionalCues);
+
+            // Apply emotional cues to the dialogue segment
+            filteredSegments[targetDialogueIdx] = {
+              ...targetSegment,
+              extractedEmotionalCues: emotionalCues,
+              v3Tags: v3Tags,
+              // Merge with any existing emotion
+              emotion: targetSegment.emotion || emotionalCues.emotions[0] || undefined,
+              deliveryMode: emotionalCues.delivery || targetSegment.deliveryMode,
+              emotionalIntensity: emotionalCues.intensity || targetSegment.emotionalIntensity || 'normal'
+            };
+
+            emotionalCuesApplied++;
+            logger.info(`[SpeechTagAgent] EMOTION_APPLIED | attribution: "${result.removed.substring(0, 40)}..." | v3Tags: ${v3Tags} | targetIdx: ${targetDialogueIdx} | speaker: ${targetSegment.speaker}`);
+          } else {
+            // HIGH-2 FIX: Log warning when emotional cues cannot be applied
+            // This helps identify scenes where narrator-only content loses emotional context
+            const v3Tags = cuesToV3Tags(emotionalCues);
+            logger.warn(`[SpeechTagAgent] EMOTION_ORPHANED | attribution: "${result.removed.substring(0, 40)}..." | v3Tags: ${v3Tags} | reason: no_adjacent_dialogue | ` +
+              `prevDialogueIdx: ${prevDialogueIdx} | nextDialogueIdx: ${nextDialogueIdx} | originalIdx: ${originalIdx}`);
+
+            // Store orphaned cues for potential use by downstream audio processing
+            // If all narrator, these cues could be applied to narrator voice settings
+            if (!filteredSegments._orphanedEmotionalCues) {
+              filteredSegments._orphanedEmotionalCues = [];
+            }
+            filteredSegments._orphanedEmotionalCues.push({
+              cues: emotionalCues,
+              v3Tags: v3Tags,
+              originalIndex: originalIdx,
+              removedText: result.removed
+            });
+          }
+        }
+      }
 
       if (cleanedText.length === 0) {
         // Entire segment was attribution - mark for removal
@@ -125,13 +414,21 @@ export async function filterSpeechTagsWithLLM(segments, context = {}) {
     // Remove null entries (segments that were entirely attribution)
     const finalSegments = filteredSegments.filter(seg => seg !== null);
 
+    // Collect orphaned emotional cues for downstream use (voice director can apply to narrator segments)
+    const orphanedCues = filteredSegments._orphanedEmotionalCues || [];
+
     // Output summary
     const elapsed = Date.now() - startTime;
     logger.info(`[SpeechTagAgent] ========== SPEECH TAG FILTERING COMPLETE ==========`);
     logger.info(`[SpeechTagAgent] OUTPUT | removed: ${removedCount} | stripped: ${strippedCount} | unchanged: ${unchangedCount}`);
+    logger.info(`[SpeechTagAgent] EMOTION_CUES | applied: ${emotionalCuesApplied} emotional cues to dialogue segments | orphaned: ${orphanedCues.length}`);
     logger.info(`[SpeechTagAgent] RESULT | final: ${finalSegments.length} segments (was ${segments.length}) | elapsed: ${elapsed}ms`);
 
-    return finalSegments;
+    // Return object with segments and orphaned cues (backwards compatible - can also just access .segments)
+    const result = finalSegments;
+    result.orphanedCues = orphanedCues;
+    result.stats = { removed: removedCount, stripped: strippedCount, unchanged: unchangedCount, emotionalCuesApplied, orphanedCuesCount: orphanedCues.length };
+    return result;
 
   } catch (error) {
     // FAIL LOUD: Don't silently pass through unfiltered segments
@@ -431,8 +728,124 @@ export async function filterSpeechTagsBatch(segmentsByScene, context = {}) {
   return results;
 }
 
+/**
+ * Light-touch filter for when pre-gen baking is trusted
+ * Uses regex patterns instead of LLM calls - much faster but less accurate
+ * Best used when scene was generated with hideSpeechTags=true
+ *
+ * @param {Array} segments - Array of {speaker, text, voice_role, emotion} objects
+ * @param {Object} options - { trustPreGen: true to skip entirely, strictMode: false for lenient }
+ * @returns {Array} Filtered segments
+ */
+export async function filterSpeechTagsLightTouch(segments, options = {}) {
+  const { trustPreGen = false, strictMode = false } = options;
+  const startTime = Date.now();
+
+  logger.info(`[SpeechTagAgent] LIGHT_TOUCH mode | trustPreGen: ${trustPreGen} | strictMode: ${strictMode}`);
+
+  // If pre-gen baking is fully trusted, skip filtering entirely
+  if (trustPreGen) {
+    logger.info(`[SpeechTagAgent] SKIP | reason: trustPreGen=true`);
+    return segments;
+  }
+
+  // Common speech attribution patterns to remove
+  const ATTRIBUTION_PATTERNS = [
+    // Basic "he/she said" patterns
+    /,?\s*(he|she|they|[A-Z][a-z]+)\s+(said|replied|asked|answered|responded|muttered|whispered|shouted|exclaimed|called|cried|yelled|screamed|demanded|insisted|suggested|added|continued|admitted|confessed|declared|announced)\b[^.!?]*/gi,
+    // Inverted: "said he/she"
+    /,?\s*(said|replied|asked|answered|responded)\s+(he|she|they|[A-Z][a-z]+)\b/gi,
+    // With manner: "he said softly"
+    /,?\s*(he|she|they|[A-Z][a-z]+)\s+(said|replied|asked)\s+(softly|loudly|quietly|firmly|gently|harshly|sharply|coldly|warmly)\b/gi,
+  ];
+
+  // Segments that are ONLY attribution (can be removed entirely)
+  const PURE_ATTRIBUTION_PATTERNS = [
+    /^(he|she|they|[A-Z][a-z]+)\s+(said|replied|asked|answered|muttered|whispered|shouted)[.,]?$/i,
+    /^(said|replied)\s+(he|she|they|[A-Z][a-z]+)[.,]?$/i,
+  ];
+
+  const filteredSegments = [];
+  let removedCount = 0;
+  let strippedCount = 0;
+
+  for (const seg of segments) {
+    // Only process narrator segments
+    if (seg.speaker !== 'narrator' || !seg.text?.trim()) {
+      filteredSegments.push(seg);
+      continue;
+    }
+
+    let text = seg.text.trim();
+    const originalText = text;
+
+    // Check if entire segment is pure attribution
+    const isPureAttribution = PURE_ATTRIBUTION_PATTERNS.some(p => p.test(text));
+    if (isPureAttribution) {
+      logger.debug(`[SpeechTagAgent-LT] REMOVED | pure attribution: "${text}"`);
+      removedCount++;
+      continue; // Skip this segment entirely
+    }
+
+    // Apply attribution removal patterns
+    for (const pattern of ATTRIBUTION_PATTERNS) {
+      text = text.replace(pattern, '');
+    }
+
+    // Clean up any double spaces or leading/trailing punctuation issues
+    text = text.replace(/\s{2,}/g, ' ').trim();
+    text = text.replace(/^[,\s]+/, '').replace(/[,\s]+$/, '').trim();
+
+    if (!text) {
+      logger.debug(`[SpeechTagAgent-LT] REMOVED | became empty after strip: "${originalText}"`);
+      removedCount++;
+      continue;
+    }
+
+    if (text !== originalText) {
+      strippedCount++;
+      logger.debug(`[SpeechTagAgent-LT] STRIPPED | "${originalText}" → "${text}"`);
+    }
+
+    filteredSegments.push({ ...seg, text });
+  }
+
+  const elapsed = Date.now() - startTime;
+  logger.info(`[SpeechTagAgent] LIGHT_TOUCH complete | removed: ${removedCount} | stripped: ${strippedCount} | elapsed: ${elapsed}ms`);
+
+  return filteredSegments;
+}
+
+/**
+ * Smart filter that chooses approach based on context
+ * - If pre-gen baking was used (hideSpeechTags=true in config), use light-touch
+ * - Otherwise, use full 3-pass LLM filter
+ *
+ * @param {Array} segments - Segments to filter
+ * @param {Object} context - { hideSpeechTagsPreGen: boolean, ... }
+ * @returns {Array} Filtered segments
+ */
+export async function filterSpeechTagsSmart(segments, context = {}) {
+  const { hideSpeechTagsPreGen = false } = context;
+
+  // If pre-gen baking was used, trust it more and use light-touch mode
+  if (hideSpeechTagsPreGen || LIGHT_TOUCH_MODE) {
+    logger.info(`[SpeechTagAgent] Using LIGHT_TOUCH mode (pre-gen baking: ${hideSpeechTagsPreGen})`);
+    return filterSpeechTagsLightTouch(segments, { trustPreGen: false, strictMode: false });
+  }
+
+  // Otherwise, use full LLM-based filtering
+  return filterSpeechTagsWithLLM(segments, context);
+}
+
 export default {
   filterSpeechTagsWithLLM,
   filterSpeechTagsSinglePass,
-  filterSpeechTagsBatch
+  filterSpeechTagsBatch,
+  filterSpeechTagsLightTouch,
+  filterSpeechTagsSmart,
+  // P0 Emotional cue extraction utilities
+  extractEmotionalCues,
+  cuesToV3Tags,
+  EMOTIONAL_CUE_PATTERNS
 };

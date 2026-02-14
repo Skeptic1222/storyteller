@@ -28,6 +28,13 @@ import {
   requiresVeniceProvider,
   getTriggerReason
 } from '../constants/contentThresholds.js';
+import {
+  estimateInputTokens,
+  validateTokenUtilization,
+  getContextLimit
+} from '../utils/tokenBudget.js';
+// Import completion from openai.js to avoid duplicating model capability detection
+import { completion as openaiCompletion } from './openai.js';
 
 // ============================================================================
 // PROVIDER DEFINITIONS
@@ -404,78 +411,36 @@ async function callOpenAI(options) {
 
   const {
     messages,
-    model = 'gpt-5.2',  // MEDIUM-18 FIX: Updated from gpt-4o
+    model = 'gpt-5.2',
     temperature = 0.7,
     max_tokens = 1000,
     response_format,
     agent_name = 'unknown'
   } = options;
 
-  const startTime = Date.now();
-
   try {
-    // Newer models require max_completion_tokens
-    const usesNewTokenParam = model.startsWith('o1') || model.startsWith('o3') || model.startsWith('gpt-5');
-
-    // GPT-5 model temperature restrictions (December 2025):
-    // - gpt-5-mini, gpt-5-nano: temperature NOT supported (only default 1)
-    // - gpt-5.2: temperature supported only with reasoning.effort="none" (default)
-    // - gpt-5.2-pro: temperature NOT supported
-    // See: https://platform.openai.com/docs/guides/gpt-5.2
-    const isGpt5MiniOrNano = model === 'gpt-5-mini' || model === 'gpt-5-nano';
-    const isGpt5Pro = model === 'gpt-5.2-pro';
-    const skipTemperature = isGpt5MiniOrNano || isGpt5Pro || model.startsWith('o1') || model.startsWith('o3');
-
-    const requestParams = {
+    // Delegate to openai.js completion() which handles all model capability detection,
+    // GPT-5.2 token budget adjustment, JSON instruction injection, and error handling
+    const result = await openaiCompletion({
+      messages,
       model,
-      messages
-    };
+      temperature,
+      max_tokens,
+      response_format,
+      agent_name
+    });
 
-    // Only add temperature for models that support it
-    if (!skipTemperature) {
-      requestParams.temperature = temperature;
-    } else {
-      logger.debug(`[OpenAI] ${agent_name}: Skipping temperature param for ${model} (not supported)`);
-    }
-
-    if (usesNewTokenParam) {
-      requestParams.max_completion_tokens = max_tokens;
-    } else {
-      requestParams.max_tokens = max_tokens;
-    }
-
-    // Add response_format for compatible models
-    if (response_format && !model.startsWith('gpt-5') && !model.startsWith('o1') && !model.startsWith('o3')) {
-      requestParams.response_format = response_format;
-    }
-
-    const response = await openaiClient.chat.completions.create(requestParams);
-    const message = response.choices[0]?.message;
-
-    // Check for refusal
-    if (message?.refusal) {
-      const error = new Error(`OpenAI content policy violation: ${message.refusal}`);
-      error.isContentPolicy = true;
-      error.refusal = message.refusal;
-      throw error;
-    }
-
-    const content = message?.content ?? '';
-    const usage = response.usage || {};
-
-    const duration = Date.now() - startTime;
-    logger.info(`[OpenAI] ${agent_name}: Completed in ${duration}ms, model: ${model}, tokens: ${usage.total_tokens || 'unknown'}`);
-
+    // Transform response to callLLM expected format
     return {
-      content,
+      content: result.content,
       usage: {
-        inputTokens: usage.prompt_tokens || 0,
-        outputTokens: usage.completion_tokens || 0,
-        cachedTokens: usage.prompt_tokens_details?.cached_tokens || 0,
-        totalTokens: usage.total_tokens || 0
+        inputTokens: result.input_tokens || 0,
+        outputTokens: result.output_tokens || 0,
+        cachedTokens: result.cached_tokens || 0,
+        totalTokens: result.tokens_used || 0
       },
       provider: PROVIDERS.OPENAI,
-      model
+      model: result.model || model
     };
   } catch (error) {
     // Check if this is a content policy error
@@ -483,7 +448,6 @@ async function callOpenAI(options) {
         error.message?.includes('safety') || error.code === 'content_policy_violation') {
       error.isContentPolicy = true;
     }
-    logger.error(`[OpenAI] ${agent_name}: API call failed: ${error.message}`);
     throw error;
   }
 }
@@ -836,34 +800,14 @@ export async function callLLM(options) {
     forceProvider = null  // Override provider selection
   } = options;
 
-  // HIGH-4 FIX: Pre-flight token validation
-  // Estimate input tokens before making API call
-  const estimatedInputTokens = messages.reduce((total, msg) => {
-    const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
-    return total + Math.ceil(content.length / 4) + 4; // +4 for message overhead
-  }, 0);
-
-  // Model context limits (subset - full list in openai.js)
-  const contextLimits = {
-    'gpt-5': 128000, 'gpt-5.1': 128000, 'gpt-5.2': 128000,
-    'gpt-4o': 128000, 'gpt-4o-mini': 128000,
-    'gpt-4': 8192, 'gpt-4-turbo': 128000,
-    'llama-3.3-70b': 128000, // Venice
-    'default': 128000
-  };
-
-  const modelKey = Object.keys(contextLimits).find(k => (model || '').includes(k)) || 'default';
-  const contextLimit = contextLimits[modelKey];
-  const utilizationPercent = Math.round((estimatedInputTokens / contextLimit) * 100);
-
-  if (estimatedInputTokens + max_tokens > contextLimit) {
-    logger.error(`[LLM:TokenCheck] ${agent_name}: TOKEN_LIMIT_EXCEEDED | input: ~${estimatedInputTokens} + output: ${max_tokens} > limit: ${contextLimit}`);
-    // Don't throw - let request proceed and potentially fail gracefully
-  } else if (utilizationPercent >= 80) {
-    logger.warn(`[LLM:TokenCheck] ${agent_name}: HIGH_UTILIZATION | ${utilizationPercent}% of ${contextLimit} context (${estimatedInputTokens} tokens)`);
-  } else if (utilizationPercent >= 50) {
-    logger.info(`[LLM:TokenCheck] ${agent_name}: ${estimatedInputTokens} tokens (${utilizationPercent}% of ${contextLimit})`);
-  }
+  // HIGH-4 FIX: Pre-flight token validation (using shared tokenBudget utilities)
+  const inputTokens = estimateInputTokens(messages);
+  validateTokenUtilization({
+    inputTokens,
+    outputTokens: max_tokens,
+    model,
+    agentName: agent_name
+  });
 
   // Determine provider
   let providerSelection;

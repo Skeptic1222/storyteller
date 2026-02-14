@@ -4,21 +4,28 @@
  * Extracted from Story.jsx for maintainability.
  */
 
-import { Settings, X, Volume2, VolumeX, Image, Maximize2, Type, Columns, Rows, FileText } from 'lucide-react';
+import { Settings, X, Volume2, VolumeX, Image, Maximize2, Type, Columns, Rows, FileText, Zap, Quote } from 'lucide-react';
 import VoiceSelector from '../VoiceSelector';
 import { useTheme } from '../../context/ThemeContext';
 
 const NARRATOR_STYLES = [
-  { id: 'warm', label: 'Warm & Gentle', icon: '🌙' },
-  { id: 'dramatic', label: 'Dramatic', icon: '🎭' },
-  { id: 'playful', label: 'Playful', icon: '✨' },
-  { id: 'mysterious', label: 'Mysterious', icon: '🌑' }
+  { id: 'warm', label: 'Warm & Gentle', icon: '\u{1F319}' },
+  { id: 'dramatic', label: 'Dramatic', icon: '\u{1F3AD}' },
+  { id: 'playful', label: 'Playful', icon: '\u2728' },
+  { id: 'mysterious', label: 'Mysterious', icon: '\u{1F311}' }
 ];
 
 const TEXT_LAYOUTS = [
-  { id: 'vertical', label: 'Vertical Flow', icon: Rows },
-  { id: 'horizontal', label: 'Two Columns', icon: Columns },
-  { id: 'modal', label: 'Modal (One Paragraph)', icon: FileText }
+  { id: 'vertical', label: 'Vertical Flow', icon: Rows, description: 'Traditional scrolling text' },
+  { id: 'horizontal', label: 'Two Columns', icon: Columns, description: 'Side-by-side columns' },
+  { id: 'modal', label: 'Modal (One Paragraph)', icon: FileText, description: 'Focused paragraph view' },
+  { id: 'ticker', label: 'Speed Read', icon: Zap, description: 'Word-by-word display' }
+];
+
+const QUOTE_STYLES = [
+  { id: 'double', label: '\u201CDouble\u201D', preview: '\u201CHello\u201D' },
+  { id: 'single', label: '\u2018Single\u2019', preview: '\u2018Hello\u2019' },
+  { id: 'guillemet', label: '\u00ABGuillemet\u00BB', preview: '\u00ABHello\u00BB' }
 ];
 
 function SettingsPanel({
@@ -44,12 +51,20 @@ function SettingsPanel({
 }) {
   let textLayout = 'vertical';
   let setTextLayout = null;
+  let showDialogueQuotes = true;
+  let setShowDialogueQuotes = null;
+  let dialogueQuoteStyle = 'double';
+  let setDialogueQuoteStyle = null;
 
   try {
     const themeContext = useTheme();
     if (themeContext) {
       textLayout = themeContext.textLayout;
       setTextLayout = themeContext.setTextLayout;
+      showDialogueQuotes = themeContext.showDialogueQuotes;
+      setShowDialogueQuotes = themeContext.setShowDialogueQuotes;
+      dialogueQuoteStyle = themeContext.dialogueQuoteStyle;
+      setDialogueQuoteStyle = themeContext.setDialogueQuoteStyle;
     } else {
       console.warn('[SettingsPanel] ThemeContext not available - text layout toggle disabled');
     }
@@ -60,7 +75,11 @@ function SettingsPanel({
   if (!isOpen) return null;
 
   return (
-    <div className="bg-slate-800/95 border-b border-golden-400/30 p-4 max-h-96 overflow-y-auto">
+    <div
+      role="region"
+      aria-label="Story settings panel"
+      className="bg-slate-800/95 border-b border-golden-400/30 p-4 max-h-96 overflow-y-auto"
+    >
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-golden-400 font-medium flex items-center gap-2">
           <Settings className="w-4 h-4" />
@@ -194,28 +213,70 @@ function SettingsPanel({
               <Columns className="w-4 h-4" />
               Text Layout
             </h4>
-            <div className="grid grid-cols-1 gap-2">
+            <div className="grid grid-cols-2 gap-2">
               {TEXT_LAYOUTS.map(layout => {
                 const IconComponent = layout.icon;
                 return (
                   <button
                     key={layout.id}
                     onClick={() => setTextLayout(layout.id)}
-                    className={`p-2 rounded-lg border text-left text-sm flex items-center gap-2 ${
+                    className={`p-3 rounded-lg border text-left text-sm flex flex-col gap-1 ${
                       textLayout === layout.id
                         ? 'border-golden-400 bg-slate-700 text-white'
                         : 'border-slate-600 hover:border-slate-500 text-slate-300'
                     }`}
                   >
-                    <IconComponent className="w-4 h-4" />
-                    {layout.label}
+                    <div className="flex items-center gap-2">
+                      <IconComponent className={`w-4 h-4 ${textLayout === layout.id ? 'text-golden-400' : ''}`} />
+                      <span className="font-medium">{layout.label}</span>
+                    </div>
+                    <span className="text-xs text-slate-500">{layout.description}</span>
                   </button>
                 );
               })}
             </div>
-            <p className="mt-2 text-xs text-slate-500">
-              Choose how story text is displayed during playback.
+          </div>
+        )}
+
+        {/* Dialogue Quotes */}
+        {setShowDialogueQuotes && (
+          <div>
+            <h4 className="text-slate-200 text-sm font-medium mb-2 flex items-center gap-2">
+              <Quote className="w-4 h-4" />
+              Dialogue Display
+            </h4>
+            <label className="flex items-center justify-between bg-slate-700/40 rounded-lg px-3 py-2 text-sm text-slate-300">
+              <span>Show dialogue quotes</span>
+              <input
+                type="checkbox"
+                checked={showDialogueQuotes}
+                onChange={() => setShowDialogueQuotes(!showDialogueQuotes)}
+                className="accent-golden-400"
+              />
+            </label>
+            <p className="mt-1 text-xs text-slate-500">
+              Wrap character dialogue in quotation marks.
             </p>
+            {showDialogueQuotes && setDialogueQuoteStyle && (
+              <div className="mt-3">
+                <label className="text-xs text-slate-400 mb-1.5 block">Quote Style</label>
+                <div className="flex gap-2">
+                  {QUOTE_STYLES.map(style => (
+                    <button
+                      key={style.id}
+                      onClick={() => setDialogueQuoteStyle(style.id)}
+                      className={`flex-1 py-2 px-3 rounded-lg border text-sm ${
+                        dialogueQuoteStyle === style.id
+                          ? 'border-golden-400 bg-slate-700 text-white'
+                          : 'border-slate-600 hover:border-slate-500 text-slate-300'
+                      }`}
+                    >
+                      {style.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -284,3 +345,4 @@ function SettingsPanel({
 }
 
 export default SettingsPanel;
+

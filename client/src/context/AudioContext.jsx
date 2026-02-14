@@ -18,7 +18,7 @@ export function AudioProvider({ children }) {
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [isUnlocked, setIsUnlocked] = useState(false);
-  const [pendingAudio, setPendingAudio] = useState(null);
+  const [pendingAudio, setPendingAudio] = useState([]);
   const [volume, setVolumeState] = useState(() => {
     // Load saved volume from localStorage, default to max (1.0)
     const saved = localStorage.getItem(VOLUME_STORAGE_KEY);
@@ -39,6 +39,8 @@ export function AudioProvider({ children }) {
   const currentItemRef = useRef(null); // Track current playing item for onEnd callback
   const webAudioCtxRef = useRef(null);
   const blobUrlsRef = useRef(new Set()); // Track all blob URLs for cleanup
+  const isPlayingRef = useRef(false);
+  const isPausedRef = useRef(false);
   const isIOS = useRef(
     typeof navigator !== 'undefined' && (
       /iPad|iPhone|iPod/.test(navigator.userAgent) ||
@@ -123,6 +125,10 @@ export function AudioProvider({ children }) {
     };
   }, []);
 
+  // Sync refs with state to avoid stale closures
+  useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
+  useEffect(() => { isPausedRef.current = isPaused; }, [isPaused]);
+
   // Unlock audio on ANY user interaction (critical for iOS)
   useEffect(() => {
     const unlockAudio = async () => {
@@ -174,12 +180,38 @@ export function AudioProvider({ children }) {
           setIsUnlocked(true);
           console.log('[Audio] Audio unlocked (Web Audio:', webAudioUnlocked, ', HTML5:', html5Unlocked, ')');
 
-          // Play any pending audio
-          if (pendingAudio) {
+          // Play any pending audio (supports both blob data and URLs)
+          if (pendingAudio.length > 0) {
             console.log('[Audio] Playing pending audio after unlock');
-            const { audioData, format, resolve, reject } = pendingAudio;
-            setPendingAudio(null);
-            playAudioInternal(audioData, format).then(resolve).catch(reject);
+            const queued = [...pendingAudio];
+            setPendingAudio([]);
+
+            // Resolve only the most recent pending request; reject older superseded ones.
+            const latest = queued[queued.length - 1];
+            queued.slice(0, -1).forEach(item => {
+              item.reject?.(new Error('Playback request superseded before audio unlock'));
+            });
+
+            const { audioData, format, url, isUrl, resolve, reject } = latest;
+
+            if (isUrl && url) {
+              // URL-based playback
+              if (audioRef.current.src && audioRef.current.src.startsWith('blob:')) {
+                URL.revokeObjectURL(audioRef.current.src);
+                blobUrlsRef.current.delete(audioRef.current.src);
+              }
+              audioRef.current.src = url;
+              audioRef.current.play()
+                .then(() => {
+                  setIsPlaying(true);
+                  setIsPaused(false);
+                  resolve();
+                })
+                .catch(reject);
+            } else {
+              // Blob data playback
+              playAudioInternal(audioData, format).then(resolve).catch(reject);
+            }
           }
         }
 
@@ -279,26 +311,34 @@ export function AudioProvider({ children }) {
     }
   }, []);
 
-  // Public play function - handles iOS unlock
+  // Public play function - handles audio unlock for ALL browsers (not just iOS)
   const playAudio = useCallback((audioData, format = 'mp3') => {
     return new Promise((resolve, reject) => {
       console.log('[Audio] playAudio called, isUnlocked:', isUnlocked, 'isIOS:', isIOS.current);
 
-      if (!isUnlocked && isIOS.current) {
-        // On iOS, if not unlocked, queue the audio and wait for user interaction
-        console.log('[Audio] iOS not unlocked - queuing audio and waiting for tap');
-        setPendingAudio({ audioData, format, resolve, reject });
+      if (!isUnlocked) {
+        // Modern browsers require user interaction before audio playback
+        // Queue the audio and wait for user interaction (applies to all browsers)
+        console.log('[Audio] Audio not unlocked - queuing audio and waiting for user interaction');
+        setPendingAudio(prev => [...prev.slice(-4), { audioData, format, resolve, reject }]);
         return;
       }
 
-      // Audio is unlocked or not iOS - play directly
+      // Audio is unlocked - play directly
       playAudioInternal(audioData, format).then(resolve).catch(reject);
     });
   }, [isUnlocked, playAudioInternal]);
 
   const playUrl = useCallback((url) => {
     return new Promise((resolve, reject) => {
-      console.log('[Audio] playUrl called:', url);
+      console.log('[Audio] playUrl called:', url, 'isUnlocked:', isUnlocked);
+
+      if (!isUnlocked) {
+        // Modern browsers require user interaction - store URL and wait
+        console.log('[Audio] Audio not unlocked - storing URL and waiting for user interaction');
+        setPendingAudio(prev => [...prev.slice(-4), { url, isUrl: true, resolve, reject }]);
+        return;
+      }
 
       if (audioRef.current.src && audioRef.current.src.startsWith('blob:')) {
         URL.revokeObjectURL(audioRef.current.src);
@@ -318,7 +358,7 @@ export function AudioProvider({ children }) {
           reject(err);
         });
     });
-  }, []);
+  }, [isUnlocked]);
 
   const pause = useCallback(() => {
     if (audioRef.current && isPlaying) {
@@ -380,7 +420,7 @@ export function AudioProvider({ children }) {
       setIsPlaying(false);
       setIsPaused(false);
       audioQueue.current = [];
-      setPendingAudio(null);
+      setPendingAudio([]);
     }
   }, []);
 
@@ -402,6 +442,16 @@ export function AudioProvider({ children }) {
       audioRef.current.volume = volume;
     }
   }, [volume]);
+
+  // Seek to a specific time in the current audio
+  const seekTo = useCallback((time) => {
+    if (audioRef.current && duration > 0) {
+      const clampedTime = Math.max(0, Math.min(time, duration));
+      audioRef.current.currentTime = clampedTime;
+      setCurrentTime(clampedTime);
+      audioLog.info(`SEEK | to: ${clampedTime.toFixed(2)}s | duration: ${duration.toFixed(2)}s`);
+    }
+  }, [duration]);
 
   const queueAudio = useCallback((audioData, format = 'mp3', onStart = null, onEnd = null) => {
     // FAIL LOUDLY: Validate callback parameters to catch accidental parameter swapping
@@ -431,13 +481,13 @@ export function AudioProvider({ children }) {
     const queueItem = { audioData, format, onStart, onEnd, queuedAt: Date.now() };
     audioQueue.current.push(queueItem);
     queueLog.info(`ENQUEUE | format: ${format} | hasOnStart: ${!!onStart} | hasOnEnd: ${!!onEnd} | queueLength: ${audioQueue.current.length} | dataLength: ${audioData?.length || 0}`);
-    if (!isPlaying && !isPaused) {
+    if (!isPlayingRef.current && !isPausedRef.current) {
       queueLog.info('IMMEDIATE_PLAY | not playing/paused, starting queue');
       playNext();
     } else {
-      queueLog.info(`QUEUED | isPlaying: ${isPlaying} | isPaused: ${isPaused}`);
+      queueLog.info(`QUEUED | isPlaying: ${isPlayingRef.current} | isPaused: ${isPausedRef.current}`);
     }
-  }, [isPlaying, isPaused]);
+  }, []);
 
   const playNext = useCallback(() => {
     if (audioQueue.current.length > 0) {
@@ -479,27 +529,28 @@ export function AudioProvider({ children }) {
     currentTime,
     duration,
     isUnlocked,
-    hasPendingAudio: !!pendingAudio,
+    hasPendingAudio: pendingAudio.length > 0,
     volume,
     setVolume,
+    seekTo,
     playAudio,
     playUrl,
     pause,
     resume,
     stop,
     queueAudio
-  }), [isPlaying, isPaused, isStartingPlayback, currentTime, duration, isUnlocked, pendingAudio, volume, setVolume, playAudio, playUrl, pause, resume, stop, queueAudio]);
+  }), [isPlaying, isPaused, isStartingPlayback, currentTime, duration, isUnlocked, pendingAudio, volume, setVolume, seekTo, playAudio, playUrl, pause, resume, stop, queueAudio]);
 
   return (
     <AudioContextReact.Provider value={value}>
       {children}
-      {/* Show tap-to-play overlay on iOS when audio is pending */}
-      {pendingAudio && isIOS.current && (
+      {/* Show click/tap-to-play overlay on ALL browsers when audio is pending and not unlocked */}
+      {pendingAudio.length > 0 && !isUnlocked && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/90 backdrop-blur"
           onClick={() => {
             // The unlock handler will pick this up
-            console.log('[Audio] User tapped overlay');
+            console.log('[Audio] User clicked overlay to unlock audio');
           }}
         >
           <div className="text-center p-8">
@@ -508,7 +559,9 @@ export function AudioProvider({ children }) {
                 <path d="M8 5v14l11-7z"/>
               </svg>
             </div>
-            <p className="text-golden-400 text-xl font-medium mb-2">Tap to Play</p>
+            <p className="text-golden-400 text-xl font-medium mb-2">
+              {isIOS.current ? 'Tap to Play' : 'Click to Play'}
+            </p>
             <p className="text-slate-400 text-sm">Your story is ready!</p>
           </div>
         </div>

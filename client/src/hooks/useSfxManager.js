@@ -20,6 +20,10 @@ import { sfxLog } from '../utils/clientLogger';
 /**
  * Convert timing string to numeric seconds
  * Uses reasonable defaults since audio duration may not be available at trigger time
+ *
+ * P0 FIX: Synced with server timing values from orchestrator.js:1700-1768
+ * This ensures SFX triggers at the exact moment intended by the server
+ *
  * @param {string} timing - Timing string like 'beginning', 'middle', 'end'
  * @param {number} audioDuration - Optional actual audio duration in seconds
  * @returns {number} Trigger time in seconds
@@ -30,21 +34,35 @@ function convertTimingToSeconds(timing, audioDuration = 40) {
   const t = timing.toLowerCase().trim();
 
   // Map string timings to numeric seconds
-  // AI generates: beginning, middle, end, continuous, on_action
+  // P0 FIX: SYNCED WITH SERVER VALUES (orchestrator.js timing percentages)
   const timingMap = {
     'beginning': 0,
     'start': 0,
-    'early': Math.max(2, audioDuration * 0.15),
-    'middle': Math.max(15, audioDuration * 0.5),
-    'late': Math.max(25, audioDuration * 0.75),
-    'end': Math.max(30, audioDuration * 0.9),
-    'continuous': -1, // Special value for looping
-    'ambient': Math.max(15, audioDuration * 0.5), // Ambient = middle
-    'on_action': Math.max(5, audioDuration * 0.3) // On action = early-middle (30%)
+    'early': Math.max(2, audioDuration * 0.15),      // 15% - same as server
+    'middle': Math.max(15, audioDuration * 0.50),    // 50% - same as server
+    'late': Math.max(25, audioDuration * 0.70),      // P0 FIX: 70% (was 75%)
+    'end': Math.max(30, audioDuration * 0.85),       // P0 FIX: 85% (was 90%)
+    'continuous': -1,                                 // Special value for looping
+    'ambient': Math.max(10, audioDuration * 0.30),   // P0 FIX: 30% (was 50%) - CRITICAL FIX
+    'on_action': Math.max(5, audioDuration * 0.30),  // 30% - same as server
+    'climax': Math.max(25, audioDuration * 0.90)     // P0 FIX: Added climax timing (90%)
   };
 
   return timingMap[t] !== undefined ? timingMap[t] : 0;
 }
+
+/**
+ * P0 FIX: TTL (Time To Live) constants for SFX playback
+ * These ensure sounds never play forever, even if cleanup fails
+ */
+const SFX_TTL = {
+  oneShot: 60000,       // 1 minute max for one-shot sounds
+  loop: 120000,         // 2 minutes max for looping sounds
+  ambient: 180000,      // 3 minutes max for ambient sounds
+  absolute: 300000      // 5 minutes absolute maximum (emergency cutoff)
+};
+
+const MAX_TTL_TIMERS = 50; // Max concurrent TTL timers
 
 /**
  * @param {object} options
@@ -66,6 +84,7 @@ export function useSfxManager({ initialEnabled = true, isPlaying = null, storyEn
   const scheduledTimersRef = useRef([]); // Track scheduled SFX timers for cleanup
   const fadeIntervalsRef = useRef(new Set()); // MEMORY LEAK FIX: Track fade intervals for cleanup
   const wasPlayingRef = useRef(false); // Track previous isPlaying state
+  const ttlTimersRef = useRef(new Map()); // P0 FIX: TTL timers to auto-stop sounds
   const getAuthHeaders = useCallback(() => {
     const token = getStoredToken();
     return token ? { Authorization: `Bearer ${token}` } : {};
@@ -93,6 +112,15 @@ export function useSfxManager({ initialEnabled = true, isPlaying = null, storyEn
       scheduledTimersRef.current = [];
     }
 
+    // P0 FIX: Clear all TTL timers
+    if (ttlTimersRef.current.size > 0) {
+      sfxLog.info(`CLEAR_TTL | clearing ${ttlTimersRef.current.size} TTL timers`);
+      ttlTimersRef.current.forEach((timer, key) => {
+        try { clearTimeout(timer); } catch (e) { /* ignore */ }
+      });
+      ttlTimersRef.current.clear();
+    }
+
     // Stop and cleanup all playing audio
     sfxAudioRefs.current.forEach((audio, key) => {
       try {
@@ -113,6 +141,49 @@ export function useSfxManager({ initialEnabled = true, isPlaying = null, storyEn
     sfxBlobUrls.current.clear();
     setActiveSfx([]);
     sfxLog.info('STOP_ALL | all SFX stopped and cleaned up');
+  }, []);
+
+  /**
+   * P0 FIX: Fade out and stop a specific SFX by key
+   * Used by TTL enforcement to gracefully stop sounds
+   */
+  const fadeOutAndStop = useCallback((sfxKey) => {
+    const audio = sfxAudioRefs.current.get(sfxKey);
+    if (!audio) return;
+
+    sfxLog.info(`FADE_OUT | key: ${sfxKey} | reason: TTL expired`);
+
+    // Fade out over 1 second
+    const fadeOutDuration = 1000;
+    const fadeSteps = 20;
+    const stepDuration = fadeOutDuration / fadeSteps;
+    const startVolume = audio.volume;
+    const volumeStep = startVolume / fadeSteps;
+    let currentStep = 0;
+
+    const fadeInterval = setInterval(() => {
+      currentStep++;
+      if (currentStep >= fadeSteps) {
+        // Fade complete, stop audio
+        clearInterval(fadeInterval);
+        try {
+          audio.pause();
+          audio.currentTime = 0;
+          audio.src = '';
+        } catch (e) { /* ignore */ }
+
+        // Cleanup refs
+        sfxAudioRefs.current.delete(sfxKey);
+        ttlTimersRef.current.delete(sfxKey);
+
+        // Update active SFX list
+        setActiveSfx(prev => prev.filter(s => s.key !== sfxKey));
+
+        sfxLog.info(`STOPPED | key: ${sfxKey} | reason: TTL_FADE_COMPLETE`);
+      } else {
+        audio.volume = Math.max(0, startVolume - (volumeStep * currentStep));
+      }
+    }, stepDuration);
   }, []);
 
   /**
@@ -233,6 +304,29 @@ export function useSfxManager({ initialEnabled = true, isPlaying = null, storyEn
       // Only track if still valid generation
       if (sfxGenerationId.current === currentGenerationId) {
         sfxAudioRefs.current.set(sfxKey, audio);
+
+        // P0 FIX: Set TTL timer to auto-stop this sound
+        // Determine TTL based on sound type
+        const ttl = isLooping
+          ? Math.min(SFX_TTL.loop, SFX_TTL.absolute)
+          : Math.min(SFX_TTL.oneShot, SFX_TTL.absolute);
+
+        const ttlTimer = setTimeout(() => {
+          sfxLog.info(`TTL_EXPIRED | key: ${sfxKey} | ttl: ${ttl}ms | isLooping: ${isLooping}`);
+          fadeOutAndStop(sfxKey);
+        }, ttl);
+
+        ttlTimersRef.current.set(sfxKey, ttlTimer);
+        sfxLog.info(`TTL_SET | key: ${sfxKey} | ttl: ${ttl}ms | isLooping: ${isLooping}`);
+
+        // Prevent unbounded TTL timer growth
+        if (ttlTimersRef.current.size > MAX_TTL_TIMERS) {
+          const oldest = ttlTimersRef.current.keys().next().value;
+          clearTimeout(ttlTimersRef.current.get(oldest));
+          ttlTimersRef.current.delete(oldest);
+          sfxLog.info(`TTL_EVICT | evicted oldest timer | remaining: ${ttlTimersRef.current.size}`);
+        }
+
         return {
           key: sfxKey,
           name: sfx.definition?.prompt?.substring(0, 30) || sfxKey.split('.')[1]?.replace(/_/g, ' ') || sfxKey,

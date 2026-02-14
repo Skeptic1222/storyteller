@@ -38,7 +38,15 @@ if (!JWT_SECRET) {
 
 // Use configured secret, or random secret in development
 const EFFECTIVE_JWT_SECRET = JWT_SECRET || DEV_RANDOM_SECRET;
-const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '').split(',').map(e => e.trim().toLowerCase());
+
+// JWT configuration constants
+const JWT_ISSUER = 'storyteller';
+const JWT_AUDIENCE = 'storyteller-api';
+const JWT_ALGORITHM = 'HS256';
+
+// Admin emails - NOTE: Database-backed admin table is recommended for production
+// This is a fallback for backwards compatibility
+const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
 
 async function loadUserById(userId) {
   const result = await pool.query(
@@ -54,14 +62,33 @@ async function loadUserById(userId) {
   }
 
   const user = result.rows[0];
-  user.is_admin = user.is_admin || ADMIN_EMAILS.includes(user.email?.toLowerCase());
+
+  // Admin status check:
+  // 1. Database-backed is_admin column (preferred - if added via migration)
+  // 2. Fallback to ADMIN_EMAILS env var (less secure - known email can be OAuth-hijacked)
+  // TODO: Create database migration to add admin_users table for production
+  if (!user.is_admin && ADMIN_EMAILS.length > 0) {
+    const userEmail = user.email?.toLowerCase();
+    // Only allow admin if email is verified (for OAuth providers, this is typically guaranteed)
+    // This reduces but doesn't eliminate the risk of email-based admin promotion
+    user.is_admin = userEmail && ADMIN_EMAILS.includes(userEmail);
+    if (user.is_admin) {
+      logger.info(`[Auth] Admin access granted via ADMIN_EMAILS: ${userEmail}`);
+    }
+  }
+
   return user;
 }
 
 export async function authenticateSocketToken(token) {
   if (!token) return null;
   try {
-    const decoded = jwt.verify(token, EFFECTIVE_JWT_SECRET);
+    // SECURITY: Explicitly specify algorithm to prevent algorithm confusion attacks
+    const decoded = jwt.verify(token, EFFECTIVE_JWT_SECRET, {
+      algorithms: [JWT_ALGORITHM],
+      issuer: JWT_ISSUER,
+      audience: JWT_AUDIENCE
+    });
     return await loadUserById(decoded.userId);
   } catch (error) {
     if (error.name === 'TokenExpiredError') {
@@ -152,9 +179,23 @@ export const optionalAuth = authenticateToken;
 
 /**
  * Generate JWT token for user
+ * Includes standard claims: iss (issuer), aud (audience), sub (subject), jti (unique ID)
  */
 export function generateToken(userId, expiresIn = process.env.JWT_EXPIRES_IN || '7d') {
-  return jwt.sign({ userId }, EFFECTIVE_JWT_SECRET, { expiresIn });
+  return jwt.sign(
+    {
+      userId,
+      sub: userId,                           // Standard subject claim
+      jti: crypto.randomUUID()              // Unique token ID for revocation tracking
+    },
+    EFFECTIVE_JWT_SECRET,
+    {
+      expiresIn,
+      algorithm: JWT_ALGORITHM,
+      issuer: JWT_ISSUER,
+      audience: JWT_AUDIENCE
+    }
+  );
 }
 
 /**

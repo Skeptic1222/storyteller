@@ -31,6 +31,12 @@ This document specifies the correct application order.
 | 20 | 021_picture_book_images.sql | Picture book images | 001 |
 | 21 | 022_additional_performance_indexes.sql | More indexes | 001-020 |
 | 22 | 023_critical_performance_indexes.sql | Critical indexes | 001-021 |
+| 23 | 024_generation_state.sql | Generation state persistence | 001-023 |
+| 24 | 025_phonetic_mappings.sql | Character phonetic mappings | 001-024 |
+| 25 | 026_sharing_and_index_fixes.sql | Sharing columns + index fixes | 001-025 |
+| 26 | 027_composited_images.sql | Picture-book compositing support | 001-026 |
+| 27 | 028_narrator_archetype.sql | Narrator archetype JSON indexes | 001-027 |
+| 28 | 029_character_age.sql | Character age-group metadata | 001-028 |
 
 ## Duplicate Number Handling
 

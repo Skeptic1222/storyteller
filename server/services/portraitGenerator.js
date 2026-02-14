@@ -903,6 +903,146 @@ function isFalAIAvailable() {
   return falAI.isAvailable();
 }
 
+/**
+ * Generate a scene background without characters using DALL-E 3
+ * Used for Picture Book mode compositing - creates empty environments
+ *
+ * @param {Object} params
+ * @param {string} params.sceneDescription - Description of the scene/environment
+ * @param {string} params.style - Art style (default: 'storybook')
+ * @param {string} params.mood - Scene mood for lighting/atmosphere
+ * @param {string} params.size - Image size (default: '1792x1024' landscape)
+ * @param {string} params.quality - Image quality (default: 'standard')
+ * @returns {Promise<Object>} Generated background image
+ */
+async function generateSceneBackground(params) {
+  const {
+    sceneDescription,
+    style = 'storybook',
+    mood = 'neutral',
+    size = '1792x1024',
+    quality = 'standard'
+  } = params;
+
+  await ensurePortraitsDir();
+
+  if (!sceneDescription) {
+    throw new Error('Scene description required for background generation');
+  }
+
+  // Build background-focused prompt with explicit "no people" instructions
+  const styleConfig = PORTRAIT_STYLES[style] || PORTRAIT_STYLES.storybook;
+
+  // Mood lighting guidance
+  const moodLighting = {
+    neutral: 'balanced natural lighting',
+    happy: 'warm golden sunlight, bright and cheerful',
+    sad: 'soft muted lighting, gentle shadows',
+    tense: 'dramatic shadows, high contrast',
+    mysterious: 'atmospheric fog, dramatic lighting',
+    romantic: 'warm soft glow, dreamy lighting',
+    scary: 'dim atmospheric lighting, mysterious shadows'
+  };
+
+  const prompt = sanitizeForDallE(`
+    Environment background illustration: ${sceneDescription}.
+    IMPORTANT: NO PEOPLE, NO CHARACTERS, NO FIGURES, NO SILHOUETTES - this is ONLY the environment/background.
+    Empty scene with ${moodLighting[mood] || moodLighting.neutral}.
+    ${styleConfig.promptSuffix}.
+    Landscape orientation, suitable for character compositing.
+    Professional book illustration quality, safe for all ages.
+  `.trim());
+
+  logger.info(`[PortraitGenerator] Generating scene background`);
+  logger.debug(`[PortraitGenerator] Background prompt: ${prompt.substring(0, 150)}...`);
+
+  try {
+    const response = await openai.images.generate({
+      model: 'dall-e-3',
+      prompt: prompt,
+      n: 1,
+      size: size,
+      quality: quality,
+      response_format: 'url'
+    });
+
+    const imageUrl = response.data[0].url;
+    const revisedPrompt = response.data[0].revised_prompt;
+
+    // Download and save locally
+    const imageResponse = await fetch(imageUrl);
+    const arrayBuffer = await imageResponse.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    const filename = `bg_${Date.now()}_${Math.random().toString(36).substring(7)}.png`;
+    const localPath = path.join(PORTRAITS_DIR, filename);
+
+    await fs.writeFile(localPath, buffer);
+    const publicPath = `/storyteller/portraits/${filename}`;
+
+    logger.info(`[PortraitGenerator] Scene background generated: ${publicPath}`);
+
+    return {
+      success: true,
+      imageUrl: publicPath,
+      originalUrl: imageUrl,
+      revisedPrompt,
+      style,
+      mood,
+      isBackground: true
+    };
+
+  } catch (error) {
+    // Check for content policy and retry with safer prompt
+    const isContentPolicy = error.message?.includes('content_policy') ||
+                            error.code === 'content_policy_violation';
+
+    if (isContentPolicy) {
+      logger.warn('[PortraitGenerator] Content policy hit on background, trying safer prompt');
+
+      const safePrompt = `
+        Beautiful peaceful landscape illustration.
+        ${styleConfig.promptSuffix}.
+        Empty scene, no people, atmospheric, suitable for storybook.
+      `.trim();
+
+      const retryResponse = await openai.images.generate({
+        model: 'dall-e-3',
+        prompt: safePrompt,
+        n: 1,
+        size: size,
+        quality: quality,
+        response_format: 'url'
+      });
+
+      const retryUrl = retryResponse.data[0].url;
+      const retryImageResponse = await fetch(retryUrl);
+      const retryArrayBuffer = await retryImageResponse.arrayBuffer();
+      const retryBuffer = Buffer.from(retryArrayBuffer);
+
+      const retryFilename = `bg_${Date.now()}_${Math.random().toString(36).substring(7)}.png`;
+      const retryLocalPath = path.join(PORTRAITS_DIR, retryFilename);
+
+      await fs.writeFile(retryLocalPath, retryBuffer);
+      const retryPublicPath = `/storyteller/portraits/${retryFilename}`;
+
+      return {
+        success: true,
+        imageUrl: retryPublicPath,
+        originalUrl: retryUrl,
+        revisedPrompt: retryResponse.data[0].revised_prompt,
+        style,
+        mood,
+        isBackground: true,
+        usedFallback: true
+      };
+    }
+
+    logger.error('[PortraitGenerator] Failed to generate scene background:', error);
+    throw error;
+  }
+}
+
 export {
   // Original DALL-E functions
   generatePortrait,
@@ -912,10 +1052,13 @@ export {
   getPortraitStyles,
   PORTRAIT_STYLES,
   buildPortraitPrompt,
+  sanitizeForDallE,
   // New dual-provider functions
   generateAndStoreCharacterReference,
   generateSceneIllustrationSmart,
   preGenerateStorybookPortraits,
   getRecommendedProvider,
-  isFalAIAvailable
+  isFalAIAvailable,
+  // Picture Book background generation
+  generateSceneBackground
 };

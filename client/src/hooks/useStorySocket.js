@@ -36,7 +36,7 @@ export function useStorySocket({
   launchActive
 }) {
   const { playAudio, queueAudio, pause, resume } = audioContext;
-  const { playSfxWithState, sfxEnabledRef, sfxDetailsRef } = sfxContext;
+  const { playSfxWithState, sfxEnabledRef, sfxDetailsRef, stopAllSfx } = sfxContext;
   const {
     setIntroAudioQueued,
     setSceneAudioStarted,
@@ -50,7 +50,8 @@ export function useStorySocket({
     setIsGenerating,
     setGenerationProgress,
     setChoiceHistory,
-    setAudioError
+    setAudioError,
+    setStoryEnded // P0 FIX: Accept setStoryEnded for story completion handling
   } = stateSetters;
   const { sceneAudioStartedRef } = refs;
   const { continueStory, resetLaunch } = callbacks;
@@ -415,6 +416,26 @@ export function useStorySocket({
       // Could show a loading indicator for images here if desired
     };
 
+    // P0 FIX: Handle story completion (server signals story has ended)
+    const handleStoryCompleted = (data) => {
+      console.log('[Socket:Recv] EVENT: story-completed | reason:', data?.reason);
+      socketLog.info(`STORY_COMPLETED | reason: ${data?.reason || 'unknown'}`);
+
+      // Set storyEnded to trigger SFX cleanup
+      if (setStoryEnded) {
+        setStoryEnded(true);
+      }
+
+      // Also explicitly stop all SFX as a safety measure
+      if (stopAllSfx) {
+        stopAllSfx();
+      }
+
+      // Clear generation state
+      setIsGenerating(false);
+      setGenerationProgress({ step: 0, percent: 0, message: '' });
+    };
+
     // Subscribe to events
     socket.on('intro-audio-ready', handleIntroAudioReady);
     socket.on('audio-ready', handleAudioReady);
@@ -430,6 +451,7 @@ export function useStorySocket({
     socket.on('story-resumed', handleStoryResumed);
     socket.on('audio-error', handleAudioError);
     socket.on('error', handleError);
+    socket.on('story-completed', handleStoryCompleted); // P0 FIX: Listen for story completion
 
     // Cleanup
     return () => {
@@ -453,14 +475,15 @@ export function useStorySocket({
       socket.off('story-resumed', handleStoryResumed);
       socket.off('audio-error', handleAudioError);
       socket.off('error', handleError);
+      socket.off('story-completed', handleStoryCompleted); // P0 FIX: Cleanup story completion listener
     };
   }, [
     socket, sessionId, session,
     playAudio, queueAudio, pause, resume,
-    playSfxWithState, sfxEnabledRef, sfxDetailsRef,
+    playSfxWithState, sfxEnabledRef, sfxDetailsRef, stopAllSfx,
     setIntroAudioQueued, setSceneAudioStarted, setWordTimings, setSceneImages, setSceneAudioQueued,
     setIsAudioQueued, setChoiceAudioPlaying, setChoices, setPendingChoices,
-    setIsGenerating, setGenerationProgress, setChoiceHistory, setAudioError,
+    setIsGenerating, setGenerationProgress, setChoiceHistory, setAudioError, setStoryEnded,
     sceneAudioStartedRef, continueStory, resetLaunch, pendingChoices, launchActive
   ]);
 }

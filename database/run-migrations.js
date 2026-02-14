@@ -43,9 +43,14 @@ const MIGRATION_ORDER = [
   { version: '017a', file: '017_event_timeline_fields.sql' },
   { version: '021', file: '021_picture_book_images.sql' },
   { version: '022', file: '022_additional_performance_indexes.sql' },
-  { version: '023', file: '023_critical_performance_indexes.sql' },
+  // 023 uses CREATE INDEX CONCURRENTLY and must run outside a transaction
+  { version: '023', file: '023_critical_performance_indexes.sql', transactional: false },
   { version: '024', file: '024_generation_state.sql' },
   { version: '025', file: '025_phonetic_mappings.sql' },
+  { version: '026', file: '026_sharing_and_index_fixes.sql' },
+  { version: '027', file: '027_composited_images.sql' },
+  { version: '028', file: '028_narrator_archetype.sql' },
+  { version: '029', file: '029_character_age.sql' },
 ];
 
 // Database connection
@@ -103,23 +108,36 @@ async function applyMigration(client, migration) {
   const content = fs.readFileSync(filePath, 'utf-8');
   const checksum = getChecksum(content);
   const name = migration.file.replace('.sql', '').replace(/^\d+_/, '');
+  const transactional = migration.transactional !== false;
 
   console.log(`  📄 Applying: ${migration.version} - ${name}`);
 
   try {
-    await client.query('BEGIN');
-    await client.query(content);
-    await client.query(
-      `INSERT INTO schema_migrations (version, name, checksum)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (version) DO UPDATE SET checksum = $3`,
-      [migration.version, name, checksum]
-    );
-    await client.query('COMMIT');
+    if (transactional) {
+      await client.query('BEGIN');
+      await client.query(content);
+      await client.query(
+        `INSERT INTO schema_migrations (version, name, checksum)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (version) DO UPDATE SET checksum = $3`,
+        [migration.version, name, checksum]
+      );
+      await client.query('COMMIT');
+    } else {
+      await client.query(content);
+      await client.query(
+        `INSERT INTO schema_migrations (version, name, checksum)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (version) DO UPDATE SET checksum = $3`,
+        [migration.version, name, checksum]
+      );
+    }
     console.log(`  ✅ Applied: ${migration.version}`);
     return true;
   } catch (error) {
-    await client.query('ROLLBACK');
+    if (transactional) {
+      await client.query('ROLLBACK');
+    }
     console.error(`  ❌ Failed: ${migration.version} - ${error.message}`);
     return false;
   }

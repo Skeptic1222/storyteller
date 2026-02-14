@@ -52,6 +52,8 @@ createdb storyteller_db
 
 # Run migrations
 npm run db:migrate
+# Optional: apply incremental SQL migrations in database/migrations
+npm run db:migrate:incremental
 
 # Build client
 npm run build
@@ -66,6 +68,59 @@ npm start
 # Start development server with hot reload
 npm run dev
 ```
+
+### Testing
+
+```bash
+# Unit test (socket payload validation/sanitization)
+node --test server/socket/validation.test.js
+
+# Integration test (API surface + auth/rate-limiting checks)
+# Expects API server at TEST_URL (default http://localhost:5100)
+node --test server/tests/api.test.js
+
+# Full backend suite (unit + integration)
+npm test
+
+# Build verification (frontend production bundle)
+npm run build
+```
+
+### End-to-End Testing (Playwright)
+
+```bash
+# Install Playwright browsers (one-time per machine)
+npx playwright install
+
+# Start app for E2E:
+# terminal A: npm run dev        # API on http://localhost:5100
+# terminal B: npm run client:dev # Vite on http://localhost:5101
+
+# PowerShell example
+$env:E2E_BASE_URL="http://localhost:5101/storyteller"
+
+# Windows CMD example
+set E2E_BASE_URL=http://localhost:5101/storyteller
+
+npm run test:e2e
+```
+
+Notes:
+- Playwright discovery is configured in `playwright.config.js` with `testDir: ./test` and `testMatch: **/*.spec.js`.
+- Only files under `test/` ending in `.spec.js` are auto-discovered. `test/test-multipass.js` is a manual script and is not auto-run.
+- `test/mobile-playback.spec.js` and `test/mobile-smoke.spec.js` skip automatically when `E2E_BASE_URL` is not set.
+- For IIS/static server validation, use `E2E_BASE_URL=http://localhost:5100/storyteller`.
+
+## Recent Hardening & Mobile Coverage
+
+- Security hardening includes stricter socket payload validation/sanitization, authenticated library access checks, and API/socket rate limiting.
+- Reliability hardening includes fail-loud voice/TTS validation and timing guards to reduce silent degradation.
+- Multi-voice generation now fails loud when mature scaffold/hybrid outputs cannot produce recoverable dialogue metadata, instead of silently downgrading to narrator-only.
+- Hybrid explicit-content processing now enforces explicit-tag presence/restoration for mature high-intensity requests, preventing silent content loss in merge steps.
+- Chapter generation now enforces minimum word-count thresholds after retries and aborts on persistent under-length output.
+- Configure defaults/AI/template apply paths now use normalized deep merges for `genres`/`intensity`, preventing nested-config clobbering from shallow merges.
+- Audience values are now canonicalized end-to-end (`children|general|mature`), with backend aliases (`adult`, `all_ages`, `family`, `young_adult`) normalized before client apply.
+- Mobile accessibility coverage now includes Playwright smoke tests on a touch viewport (390x844), including actionable `Begin Chapter` and role-based checks for discovery controls.
 
 ## Project Structure
 
@@ -117,6 +172,7 @@ The multi-voice narration uses a bulletproof tag-based system:
 | [docs/CHANGELOG.md](./docs/CHANGELOG.md) | Version history and fixes |
 | [docs/FEATURES.md](./docs/FEATURES.md) | Feature documentation |
 | [docs/API_REFERENCE.md](./docs/API_REFERENCE.md) | REST + Socket.IO API |
+| [docs/MIGRATIONS.md](./docs/MIGRATIONS.md) | Schema bootstrap + incremental migration workflow |
 | [docs/LOGGING_STANDARDS.md](./docs/LOGGING_STANDARDS.md) | Debugging guide |
 | [docs/KNOWN_ISSUES.md](./docs/KNOWN_ISSUES.md) | Known issues tracker |
 
@@ -137,6 +193,8 @@ Key variables:
 - `POST /api/stories` - Create new story session
 - `GET /api/stories/:id` - Get story details
 - `POST /api/stories/:id/generate` - Generate next scene
+- `GET /api/library/:storyId` - Requires auth and story ownership/admin access
+- `GET /api/library/:storyId/export` - Requires auth and story ownership/admin access
 
 ### Socket.IO Events
 - `join-session` - Join story session room

@@ -41,6 +41,10 @@ import { requireSessionOwner } from './socketAuth.js';
 // Re-export for backward compatibility
 export { getBroadcastIO };
 
+// Note: generatePictureBookImagesAsync has been moved to audioHandlers.js
+// to avoid circular dependencies. The function in this file is now unused
+// but kept for reference/backward compatibility.
+
 /**
  * Generate picture book images asynchronously
  */
@@ -156,6 +160,35 @@ export function setupSocketHandlers(io, app = null) {
           manager.confirmReady();
         }
       }
+    });
+
+    socket.on('check-ready', async (data) => {
+      const { session_id } = data;
+      if (!session_id) {
+        socket.emit('error', { message: 'session_id required' });
+        return;
+      }
+
+      const user = await requireSessionOwner(socket, session_id);
+      if (!user) return;
+
+      const manager = activeLaunchSequences.get(session_id);
+      if (!manager) {
+        socket.emit('ready-check', { session_id, ready: false, reason: 'No active launch sequence' });
+        return;
+      }
+
+      const statuses = manager.stageStatuses || {};
+      const allSuccess = Object.keys(statuses).length > 0 && Object.values(statuses).every(s => s === 'success');
+
+      if (allSuccess && typeof manager.emitReadyForPlayback === 'function') {
+        logger.info(`[Socket] CHECK_READY_REEMIT | session_id: ${session_id}`);
+        manager.emitReadyForPlayback();
+        socket.emit('ready-check', { session_id, ready: true, reEmitted: true });
+        return;
+      }
+
+      socket.emit('ready-check', { session_id, ready: false, statuses });
     });
 
     socket.on('retry-stage', async (data) => {

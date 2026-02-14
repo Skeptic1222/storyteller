@@ -16,6 +16,7 @@ const CACHE_TTL = {
   STORY_DETAIL: 300,   // 5 minutes - story details rarely change during read
   STORY_COUNT: 120     // 2 minutes - aggregate counts
 };
+const STORY_ID_ROUTE = '/:storyId([0-9a-fA-F\\-]+)';
 
 const router = Router();
 wrapRoutes(router); // Auto-wrap async handlers for error catching
@@ -64,11 +65,12 @@ router.get('/', authenticateToken, requireAuth, async (req, res) => {
   try {
     // SECURITY FIX: Use authenticated user ID, not from query params (IDOR prevention)
     const userId = req.user.id;
+    const isAdmin = req.user.is_admin === true;
     const filter = req.query.filter || 'all'; // all, in_progress, completed, favorites
     const category = req.query.category || 'all';
 
-    // PERFORMANCE: Check cache first
-    const cacheKey = `library:${userId}:${filter}:${category}`;
+    // PERFORMANCE: Check cache first (include admin status in cache key)
+    const cacheKey = `library:${userId}:${filter}:${category}:${isAdmin ? 'admin' : 'user'}`;
     const cached = await cache.get(cacheKey);
     if (cached) {
       logger.debug(`[Library] Cache HIT for ${cacheKey}`);
@@ -77,7 +79,10 @@ router.get('/', authenticateToken, requireAuth, async (req, res) => {
 
     // FIX: Always exclude abandoned stories (unless specifically showing all)
     // Abandoned stories are partial/cancelled sessions that shouldn't appear in library
-    let whereClause = "WHERE s.user_id = $1 AND s.current_status IS DISTINCT FROM 'abandoned'";
+    // ADMIN: Admins can see all stories, regular users only see their own
+    let whereClause = isAdmin
+      ? "WHERE s.current_status IS DISTINCT FROM 'abandoned'"
+      : "WHERE s.user_id = $1 AND s.current_status IS DISTINCT FROM 'abandoned'";
     if (filter === 'in_progress') {
       whereClause += " AND COALESCE(s.current_status, 'planning') NOT IN ('finished')";
     } else if (filter === 'completed') {
@@ -144,7 +149,7 @@ router.get('/', authenticateToken, requireAuth, async (req, res) => {
       LEFT JOIN actual_scene_counts scene_counts ON scene_counts.story_session_id = s.id
       ${whereClause}
       ORDER BY COALESCE(s.last_activity_at, s.started_at) DESC
-    `, [userId]);
+    `, isAdmin ? [] : [userId]);
 
     const response = {
       stories: result.rows,
@@ -169,12 +174,28 @@ router.get('/', authenticateToken, requireAuth, async (req, res) => {
  * Get full story details for reading
  * Prioritizes recording_segments for audio URLs when available (permanent storage)
  */
-router.get('/:storyId', async (req, res) => {
+router.get(STORY_ID_ROUTE, authenticateToken, requireAuth, async (req, res) => {
   try {
     const { storyId } = req.params;
+    const userId = req.user.id;
+    const isAdmin = req.user.is_admin === true;
 
-    // PERFORMANCE: Check cache first
-    const cacheKey = `story:${storyId}`;
+    // SECURITY: Verify ownership before reading from cache or loading story data
+    const ownerCheck = await pool.query(
+      'SELECT user_id FROM story_sessions WHERE id = $1',
+      [storyId]
+    );
+
+    if (ownerCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Story not found' });
+    }
+
+    if (ownerCheck.rows[0].user_id !== userId && !isAdmin) {
+      return res.status(403).json({ error: 'Not authorized to access this story' });
+    }
+
+    // PERFORMANCE: Check cache first (scope by user/admin to prevent cross-user leakage)
+    const cacheKey = `story:${storyId}:user:${isAdmin ? 'admin' : userId}`;
     const cached = await cache.get(cacheKey);
     if (cached) {
       logger.debug(`[Library] Cache HIT for ${cacheKey}`);
@@ -304,7 +325,7 @@ router.get('/:storyId', async (req, res) => {
  * Update reading progress
  * SECURITY: Requires authentication - uses req.user.id
  */
-router.post('/:storyId/progress', authenticateToken, requireAuth, async (req, res) => {
+router.post(`${STORY_ID_ROUTE}/progress`, authenticateToken, requireAuth, async (req, res) => {
   try {
     const { storyId } = req.params;
     const { scene_id, scene_index, audio_position, reading_time } = req.body;
@@ -376,7 +397,7 @@ router.post('/:storyId/progress', authenticateToken, requireAuth, async (req, re
  * Create a bookmark
  * SECURITY: Requires authentication - uses req.user.id
  */
-router.post('/:storyId/bookmark', authenticateToken, requireAuth, async (req, res) => {
+router.post(`${STORY_ID_ROUTE}/bookmark`, authenticateToken, requireAuth, async (req, res) => {
   try {
     const { storyId } = req.params;
     const { scene_id, name, note, color, text_position, audio_position } = req.body;
@@ -411,7 +432,7 @@ router.post('/:storyId/bookmark', authenticateToken, requireAuth, async (req, re
  * DELETE /api/library/:storyId/bookmark/:bookmarkId
  * Delete a bookmark
  */
-router.delete('/:storyId/bookmark/:bookmarkId', authenticateToken, requireAuth, async (req, res) => {
+router.delete(`${STORY_ID_ROUTE}/bookmark/:bookmarkId`, authenticateToken, requireAuth, async (req, res) => {
   try {
     const { storyId, bookmarkId } = req.params;
     const userId = req.user.id;
@@ -439,7 +460,7 @@ router.delete('/:storyId/bookmark/:bookmarkId', authenticateToken, requireAuth, 
  * POST /api/library/:storyId/favorite
  * Toggle favorite status
  */
-router.post('/:storyId/favorite', authenticateToken, requireAuth, async (req, res) => {
+router.post(`${STORY_ID_ROUTE}/favorite`, authenticateToken, requireAuth, async (req, res) => {
   try {
     const { storyId } = req.params;
     const userId = req.user.id;
@@ -547,10 +568,12 @@ router.put('/preferences', authenticateToken, requireAuth, async (req, res) => {
  * GET /api/library/:storyId/export
  * Export story in various formats
  */
-router.get('/:storyId/export', async (req, res) => {
+router.get(`${STORY_ID_ROUTE}/export`, authenticateToken, requireAuth, async (req, res) => {
   try {
     const { storyId } = req.params;
     const format = req.query.format || 'text'; // text, html, json
+    const userId = req.user.id;
+    const isAdmin = req.user.is_admin === true;
 
     // Get story and scenes
     const session = await pool.query('SELECT * FROM story_sessions WHERE id = $1', [storyId]);
@@ -559,6 +582,9 @@ router.get('/:storyId/export', async (req, res) => {
     }
 
     const story = session.rows[0];
+    if (story.user_id !== userId && !isAdmin) {
+      return res.status(403).json({ error: 'Not authorized to export this story' });
+    }
     const scenes = await pool.query(`
       SELECT polished_text, sequence_index, mood
       FROM story_scenes
@@ -632,7 +658,7 @@ THE END
  * Delete a story from library
  * SECURITY: Requires authentication and verifies story ownership
  */
-router.delete('/:storyId', authenticateToken, requireAuth, async (req, res) => {
+router.delete(STORY_ID_ROUTE, authenticateToken, requireAuth, async (req, res) => {
   try {
     const { storyId } = req.params;
     const userId = req.user.id;

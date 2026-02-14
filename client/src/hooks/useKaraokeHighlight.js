@@ -45,6 +45,42 @@ export function useKaraokeHighlight({
     // Diagnostic logging
     audioLog.info(`KARAOKE_EFFECT_RUN | hasWordTimings: ${!!wordTimings?.words} | wordCount: ${wordTimings?.words?.length || 0} | isPlaying: ${isPlaying} | showText: ${showText} | isPaused: ${isPaused} | isSceneAudio: ${isSceneAudio}`);
 
+    // Validate timings before enabling karaoke
+    // Calculate offset from first word (ElevenLabs often has lead-in silence)
+    let timingOffset = 0;
+    if (wordTimings?.words && wordTimings.words.length > 0) {
+      const words = wordTimings.words;
+      const firstStart = words[0].start_ms ?? 0;
+      const lastEnd = words[words.length - 1].end_ms ?? 0;
+
+      // Store offset for normalization instead of rejecting valid timings
+      if (firstStart > 50) {
+        timingOffset = firstStart;
+        audioLog.info(`KARAOKE_TIMING_OFFSET | applying ${timingOffset}ms offset to normalize timings`);
+      }
+
+      // Check for non-monotonic timings (actual data corruption)
+      for (let i = 1; i < words.length; i++) {
+        if (words[i].start_ms < words[i - 1].end_ms) {
+          audioLog.error(`KARAOKE_TIMING_INVALID | non-monotonic at index ${i} (${words[i].start_ms} < ${words[i - 1].end_ms})`);
+          setCurrentWordIndex(-1);
+          return;
+        }
+      }
+
+      // Check for excessive drift (but account for offset)
+      if (wordTimings.total_duration_ms) {
+        const adjustedLastEnd = lastEnd - timingOffset;
+        const adjustedTotal = wordTimings.total_duration_ms - timingOffset;
+        const drift = Math.abs(adjustedTotal - adjustedLastEnd);
+        if (drift > 500) {
+          audioLog.error(`KARAOKE_TIMING_DRIFT | total=${wordTimings.total_duration_ms}ms lastEnd=${lastEnd}ms drift=${drift}ms (after offset adjustment)`);
+          setCurrentWordIndex(-1);
+          return;
+        }
+      }
+    }
+
     // Guard conditions
     if (!wordTimings?.words || !isPlaying || !showText || isPaused || !isSceneAudio) {
       const reason = !wordTimings?.words ? 'no_word_timings' :
@@ -57,16 +93,48 @@ export function useKaraokeHighlight({
       return;
     }
 
-    audioLog.info(`KARAOKE_STARTING | words: ${wordTimings.words.length} | isSceneAudio: ${isSceneAudio} | currentTimeRef: ${currentTimeRef.current}`);
+    audioLog.info(`KARAOKE_STARTING | words: ${wordTimings.words.length} | isSceneAudio: ${isSceneAudio} | currentTimeRef: ${currentTimeRef.current} | timingOffset: ${timingOffset}ms`);
+
+    // Capture offset for use in interval (closure)
+    const offsetMs = timingOffset;
 
     let lastFoundIndex = -1;
     let pollCount = 0;
+    let lastTimeMs = -1;
+    let stallCount = 0;
+    const MAX_STALL_COUNT = 100; // 5 seconds without time change = stalled
+    const MAX_POLL_COUNT = 20000; // Safety limit (~16 minutes)
 
     // Poll audio time every 50ms for smooth highlighting
     const interval = setInterval(() => {
       pollCount++;
-      const timeMs = currentTimeRef.current * 1000;
+
+      // Safety limit to prevent infinite polling
+      if (pollCount >= MAX_POLL_COUNT) {
+        audioLog.error(`KARAOKE_MAX_POLLS | reached ${MAX_POLL_COUNT} polls, stopping`);
+        clearInterval(interval);
+        return;
+      }
+
+      // CRITICAL FIX: Apply the timing offset to compensate for ElevenLabs lead-in silence
+      // The word timings from ElevenLabs often start at 300-500ms instead of 0
+      // We need to ADD the offset to our current time to match the word timing positions
+      const rawTimeMs = currentTimeRef.current * 1000;
+      const timeMs = rawTimeMs + offsetMs;
       const words = wordTimings.words;
+
+      // Stall detection: stop polling if audio time hasn't changed
+      if (Math.abs(timeMs - lastTimeMs) < 1) {
+        stallCount++;
+        if (stallCount >= MAX_STALL_COUNT) {
+          audioLog.error(`KARAOKE_STALLED | audio time frozen at ${timeMs.toFixed(0)}ms for ${stallCount} polls, stopping`);
+          clearInterval(interval);
+          return;
+        }
+      } else {
+        stallCount = 0;
+        lastTimeMs = timeMs;
+      }
 
       // Log every 20 polls (1 second)
       if (pollCount % 20 === 0) {
@@ -82,6 +150,7 @@ export function useKaraokeHighlight({
         const mid = Math.floor((left + right) / 2);
         const word = words[mid];
 
+        // Compare adjusted time against word timings
         if (timeMs >= word.start_ms && timeMs < word.end_ms) {
           foundIndex = mid;
           break;

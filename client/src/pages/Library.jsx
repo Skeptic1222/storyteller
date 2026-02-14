@@ -11,20 +11,12 @@ import {
   ArrowLeft,
   BookOpen,
   Library as LibraryIcon,
-  ScrollText,
-  CheckCircle,
-  PauseCircle,
-  PlayCircle,
-  Circle,
-  GitBranch,
-  Star,
-  Bookmark,
-  Trash2,
-  Download
+  ScrollText
 } from 'lucide-react';
 import { apiCall } from '../config';
 import UserProfile from '../components/UserProfile';
 import { useReadingTheme } from '../context/ThemeContext';
+import { LibraryCard, ViewModeSelector } from '../components/library';
 
 // Content categories
 const CATEGORIES = {
@@ -44,6 +36,16 @@ export default function Library() {
   const [sortBy, setSortBy] = useState('recent');
   const [displayCount, setDisplayCount] = useState(12); // Pagination: show 12 initially
   const ITEMS_PER_PAGE = 12;
+
+  // View mode state with localStorage persistence
+  const [viewMode, setViewMode] = useState(() => {
+    return localStorage.getItem('storyteller_library_view_mode') || 'grid';
+  });
+
+  // Persist view mode to localStorage
+  useEffect(() => {
+    localStorage.setItem('storyteller_library_view_mode', viewMode);
+  }, [viewMode]);
 
   useEffect(() => {
     fetchLibrary();
@@ -73,13 +75,6 @@ export default function Library() {
     if (story.mode === 'dnd' || story.mode === 'campaign') return 'dnd';
     if (story.mode === 'story_bible' || story.story_bible_id) return 'story_bible';
     return 'story';
-  };
-
-  // Get icon for story based on category
-  const getStoryIcon = (story) => {
-    const cat = getStoryCategory(story);
-    if (story.cover_image_url) return null;
-    return CATEGORIES[cat]?.icon || BookOpen;
   };
 
   const toggleFavorite = async (storyId, e) => {
@@ -123,39 +118,6 @@ export default function Library() {
     return `${hours}h ${mins % 60}m`;
   };
 
-  const formatDate = (dateStr) => {
-    if (!dateStr) return '--';
-    const date = new Date(dateStr);
-    const now = new Date();
-    const diff = now - date;
-    const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-
-    if (days === 0) return 'Today';
-    if (days === 1) return 'Yesterday';
-    if (days < 7) return `${days} days ago`;
-    if (days < 30) return `${Math.floor(days / 7)} weeks ago`;
-    return date.toLocaleDateString();
-  };
-
-  const getStatusIcon = (status) => {
-    switch (status) {
-      case 'finished': return CheckCircle;
-      case 'paused': return PauseCircle;
-      case 'narrating': return PlayCircle;
-      case 'waiting_choice': return GitBranch;
-      default: return Circle;
-    }
-  };
-
-  const getStatusColor = (status) => {
-    switch (status) {
-      case 'finished': return '#22c55e';
-      case 'paused': return '#eab308';
-      case 'narrating': return '#3b82f6';
-      case 'waiting_choice': return '#a855f7';
-      default: return colors.textMuted;
-    }
-  };
 
   // Filter and sort stories - memoized for performance
   const filteredStories = useMemo(() => {
@@ -201,6 +163,31 @@ export default function Library() {
   useEffect(() => {
     setDisplayCount(ITEMS_PER_PAGE);
   }, [category, searchQuery, sortBy, filter]);
+
+  // Get container styles based on view mode
+  const getViewModeStyles = (mode) => {
+    switch (mode) {
+      case 'list':
+        return {
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '12px'
+        };
+      case 'gallery':
+        return {
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
+          gap: '16px'
+        };
+      case 'grid':
+      default:
+        return {
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
+          gap: '20px'
+        };
+    }
+  };
 
   // Navigate to appropriate page based on story type
   const handleStoryClick = (story) => {
@@ -251,6 +238,13 @@ export default function Library() {
         </div>
 
         <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+          {/* View Mode Selector */}
+          <ViewModeSelector
+            currentMode={viewMode}
+            onModeChange={setViewMode}
+            colors={colors}
+          />
+
           {/* Theme toggle - uses ThemeContext for persistence across pages */}
           <select
             value={colors.id}
@@ -324,35 +318,21 @@ export default function Library() {
         })}
       </div>
 
-      {/* Filters and Search */}
-      <div style={{
-        display: 'flex',
-        gap: '15px',
-        marginBottom: '25px',
-        flexWrap: 'wrap',
-        alignItems: 'center'
-      }}>
-        {/* Status filter tabs */}
-        <div style={{
-          display: 'flex',
-          gap: '5px',
-          background: colors.card,
-          borderRadius: '10px',
-          padding: '4px'
-        }}>
+      {/* Filters and Search - Mobile-first stacked layout */}
+      <div className="flex flex-col gap-3 mb-6 sm:flex-row sm:flex-wrap sm:items-center sm:gap-4">
+        {/* Status filter tabs - full width on mobile, auto on desktop */}
+        <div
+          className="flex gap-1 p-1 rounded-xl w-full sm:w-auto overflow-x-auto"
+          style={{ background: colors.card }}
+        >
           {['all', 'in_progress', 'completed', 'favorites'].map(f => (
             <button
               key={f}
               onClick={() => setFilter(f)}
+              className="flex-1 sm:flex-none px-3 py-2 sm:px-4 rounded-lg text-sm font-medium capitalize whitespace-nowrap min-h-[44px] transition-colors"
               style={{
                 background: filter === f ? colors.accent : 'transparent',
-                color: filter === f ? 'white' : colors.textMuted,
-                border: 'none',
-                borderRadius: '8px',
-                padding: '8px 16px',
-                fontSize: '14px',
-                cursor: 'pointer',
-                textTransform: 'capitalize'
+                color: filter === f ? 'white' : colors.textMuted
               }}
             >
               {f.replace('_', ' ')}
@@ -360,41 +340,38 @@ export default function Library() {
           ))}
         </div>
 
-        {/* Search */}
-        <input
-          type="text"
-          placeholder="Search stories..."
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          style={{
-            background: colors.card,
-            color: colors.text,
-            border: `1px solid ${colors.border}`,
-            borderRadius: '8px',
-            padding: '10px 15px',
-            fontSize: '14px',
-            flex: 1,
-            minWidth: '200px'
-          }}
-        />
+        {/* Search and Sort row - stack on mobile */}
+        <div className="flex flex-col gap-3 sm:flex-row sm:flex-1 sm:items-center">
+          {/* Search */}
+          <input
+            type="text"
+            placeholder="Search stories..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full sm:flex-1 sm:min-w-[200px] px-4 py-3 rounded-lg text-sm"
+            style={{
+              background: colors.card,
+              color: colors.text,
+              border: `1px solid ${colors.border}`
+            }}
+          />
 
-        {/* Sort */}
-        <select
-          value={sortBy}
-          onChange={(e) => setSortBy(e.target.value)}
-          style={{
-            background: colors.card,
-            color: colors.text,
-            border: `1px solid ${colors.border}`,
-            borderRadius: '8px',
-            padding: '10px 15px',
-            fontSize: '14px'
-          }}
-        >
-          <option value="recent">Recently Read</option>
-          <option value="title">Title</option>
-          <option value="progress">Progress</option>
-        </select>
+          {/* Sort */}
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value)}
+            className="w-full sm:w-auto px-4 py-3 rounded-lg text-sm min-h-[44px]"
+            style={{
+              background: colors.card,
+              color: colors.text,
+              border: `1px solid ${colors.border}`
+            }}
+          >
+            <option value="recent">Recently Read</option>
+            <option value="title">Title</option>
+            <option value="progress">Progress</option>
+          </select>
+        </div>
       </div>
 
       {/* Story Grid */}
@@ -429,295 +406,22 @@ export default function Library() {
           </button>
         </div>
       ) : (
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
-          gap: '20px'
-        }}>
-          {displayedStories.map(story => {
-            const storyCategory = getStoryCategory(story);
-            const categoryColor = CATEGORIES[storyCategory]?.color || colors.accent;
-
-            return (
-            <div
+        <div
+          className={`library-view library-view--${viewMode}`}
+          style={getViewModeStyles(viewMode)}
+        >
+          {displayedStories.map(story => (
+            <LibraryCard
               key={story.id}
-              onClick={() => handleStoryClick(story)}
-              style={{
-                background: colors.card,
-                borderRadius: '12px',
-                padding: '20px',
-                cursor: 'pointer',
-                transition: 'transform 0.2s, box-shadow 0.2s',
-                border: `1px solid ${colors.border}`,
-                position: 'relative'
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.transform = 'translateY(-4px)';
-                e.currentTarget.style.boxShadow = '0 10px 30px rgba(0,0,0,0.3)';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.transform = 'translateY(0)';
-                e.currentTarget.style.boxShadow = 'none';
-              }}
-            >
-              {/* Category + Status badges */}
-              <div style={{
-                position: 'absolute',
-                top: '15px',
-                right: '15px',
-                display: 'flex',
-                gap: '8px',
-                alignItems: 'center'
-              }}>
-                {/* Category badge */}
-                <span style={{
-                  background: `${categoryColor}22`,
-                  color: categoryColor,
-                  fontSize: '10px',
-                  padding: '2px 8px',
-                  borderRadius: '10px',
-                  fontWeight: '600'
-                }}>
-                  {CATEGORIES[storyCategory]?.label}
-                </span>
-                {/* Mature content badge - P1 FIX: Show badge for mature/adult content stories */}
-                {(() => {
-                  const config = story.config_json || {};
-                  const intensity = config.intensity || config.intensitySettings || {};
-                  const isMature = config.audience === 'mature';
-                  const hasHighAdultContent = (intensity.adultContent || 0) >= 50;
-                  const hasHighExplicitness = (intensity.explicitness || 0) >= 70;
-                  const hasHighSensuality = (intensity.sensuality || 0) >= 70;
-                  const hasHighGore = (intensity.gore || 0) >= 60;
-                  const hasHighViolence = (intensity.violence || 0) >= 60;
-
-                  // Show 18+ for mature audience or high explicit content
-                  if (isMature || hasHighAdultContent || hasHighExplicitness || hasHighSensuality) {
-                    return (
-                      <span style={{
-                        background: '#dc262622',
-                        color: '#dc2626',
-                        fontSize: '10px',
-                        padding: '2px 8px',
-                        borderRadius: '10px',
-                        fontWeight: '600',
-                        border: '1px solid #dc262644'
-                      }}>
-                        18+
-                      </span>
-                    );
-                  }
-
-                  // Show "Graphic" for high gore/violence but not explicitly adult
-                  if (hasHighGore || hasHighViolence) {
-                    return (
-                      <span style={{
-                        background: '#ea580c22',
-                        color: '#ea580c',
-                        fontSize: '10px',
-                        padding: '2px 8px',
-                        borderRadius: '10px',
-                        fontWeight: '600',
-                        border: '1px solid #ea580c44'
-                      }}>
-                        Graphic
-                      </span>
-                    );
-                  }
-
-                  return null;
-                })()}
-                {(() => {
-                  const StatusIcon = getStatusIcon(story.current_status);
-                  return (
-                    <span style={{ color: getStatusColor(story.current_status), display: 'flex' }}>
-                      <StatusIcon size={16} />
-                    </span>
-                  );
-                })()}
-              </div>
-
-              {/* Cover placeholder */}
-              <div style={{
-                height: '120px',
-                background: story.cover_image_url
-                  ? `url(${story.cover_image_url}) center/cover`
-                  : `linear-gradient(135deg, ${categoryColor}33, ${categoryColor}11)`,
-                borderRadius: '8px',
-                marginBottom: '15px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontSize: '40px'
-              }}>
-                {!story.cover_image_url && (() => {
-                  const Icon = getStoryIcon(story);
-                  return Icon ? <Icon size={32} color={categoryColor} /> : null;
-                })()}
-              </div>
-
-              {/* Title */}
-              <h3 style={{
-                margin: '0 0 8px 0',
-                fontSize: '18px',
-                fontWeight: '600',
-                color: colors.text,
-                whiteSpace: 'nowrap',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis'
-              }}>
-                {story.title || 'Untitled Story'}
-              </h3>
-
-              {/* Meta info */}
-              <div style={{
-                fontSize: '13px',
-                color: colors.textMuted,
-                marginBottom: '12px'
-              }}>
-                {story.total_scenes || 0} scenes | {formatDate(story.last_activity_at || story.started_at)}
-              </div>
-
-              {/* Preview text */}
-              <p style={{
-                fontSize: '14px',
-                color: colors.textMuted,
-                margin: '0 0 15px 0',
-                lineHeight: '1.5',
-                display: '-webkit-box',
-                WebkitLineClamp: 2,
-                WebkitBoxOrient: 'vertical',
-                overflow: 'hidden'
-              }}>
-                {story.first_scene_preview?.substring(0, 100) || 'No preview available'}...
-              </p>
-
-              {/* Progress bar */}
-              <div style={{
-                background: colors.border,
-                borderRadius: '4px',
-                height: '4px',
-                marginBottom: '12px',
-                overflow: 'hidden'
-              }}>
-                <div style={{
-                  background: colors.accent,
-                  height: '100%',
-                  width: `${story.progress_percent || 0}%`,
-                  borderRadius: '4px',
-                  transition: 'width 0.3s'
-                }} />
-              </div>
-
-              {/* Footer */}
-              <div style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center'
-              }}>
-                <span style={{ fontSize: '12px', color: colors.textMuted }}>
-                  {story.progress_percent || 0}% complete
-                </span>
-
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  {/* Favorite button */}
-                  <button
-                    onClick={(e) => toggleFavorite(story.id, e)}
-                    style={{
-                      background: 'none',
-                      border: 'none',
-                      color: story.is_favorite ? '#FF6F61' : colors.textMuted,
-                      cursor: 'pointer',
-                      padding: '4px',
-                      display: 'flex',
-                      alignItems: 'center'
-                    }}
-                    aria-label={story.is_favorite ? 'Remove from favorites' : 'Add to favorites'}
-                  >
-                    <Star size={18} fill={story.is_favorite ? '#FF6F61' : 'none'} />
-                  </button>
-
-                  {/* Bookmark count */}
-                  {story.bookmark_count > 0 && (
-                    <span style={{
-                      fontSize: '12px',
-                      color: colors.textMuted,
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '4px'
-                    }}>
-                      <Bookmark size={14} />
-                      {story.bookmark_count}
-                    </span>
-                  )}
-
-                  {/* Export button - only show if story has a recording */}
-                  {(story.recording_id || story.current_recording_id) && (
-                    <button
-                      onClick={(e) => handleExport(story.id, e)}
-                      style={{
-                        background: 'none',
-                        border: 'none',
-                        color: colors.accent,
-                        cursor: 'pointer',
-                        padding: '4px',
-                        display: 'flex',
-                        alignItems: 'center'
-                      }}
-                      title="Download story as MP3"
-                      aria-label="Download story as MP3"
-                    >
-                      <Download size={16} />
-                    </button>
-                  )}
-
-                  {/* Delete button */}
-                  <button
-                    onClick={(e) => deleteStory(story.id, e)}
-                    style={{
-                      background: 'none',
-                      border: 'none',
-                      color: colors.textMuted,
-                      cursor: 'pointer',
-                      padding: '4px',
-                      opacity: 0.7,
-                      display: 'flex',
-                      alignItems: 'center'
-                    }}
-                    aria-label="Delete story"
-                  >
-                    <Trash2 size={16} />
-                  </button>
-                </div>
-              </div>
-
-              {/* Tags */}
-              {story.themes && story.themes.length > 0 && (
-                <div style={{
-                  display: 'flex',
-                  gap: '6px',
-                  marginTop: '12px',
-                  flexWrap: 'wrap'
-                }}>
-                  {story.themes.slice(0, 3).map((theme, i) => (
-                    <span
-                      key={i}
-                      style={{
-                        background: `${categoryColor}22`,
-                        color: categoryColor,
-                        fontSize: '11px',
-                        padding: '3px 8px',
-                        borderRadius: '12px'
-                      }}
-                    >
-                      {theme}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-          })}
+              story={story}
+              viewMode={viewMode}
+              colors={colors}
+              onStoryClick={handleStoryClick}
+              onFavorite={toggleFavorite}
+              onExport={handleExport}
+              onDelete={deleteStory}
+            />
+          ))}
         </div>
       )}
 

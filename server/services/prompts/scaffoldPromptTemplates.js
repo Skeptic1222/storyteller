@@ -7,6 +7,11 @@
  * Part of the Venice Scaffolding Architecture for explicit content quality.
  */
 
+import {
+  PROVIDER_SELECTION,
+  SCAFFOLDING
+} from '../../constants/contentThresholds.js';
+
 /**
  * Placeholder type definitions with usage instructions for OpenAI
  */
@@ -148,30 +153,31 @@ AVAILABLE PLACEHOLDERS:
 `);
 
   // Add scene-level placeholders based on active intensities
-  if (romance >= 61 || adultContent >= 50) {
+  // Using centralized thresholds from constants/contentThresholds.js
+  if (romance >= SCAFFOLDING.intimateScene.romance || adultContent >= SCAFFOLDING.intimateScene.adultContent) {
     instructions.push(SCENE_PLACEHOLDER_INSTRUCTIONS.INTIMATE_SCENE(Math.max(romance, adultContent)));
   }
 
-  if (violence >= 61) {
+  if (violence >= SCAFFOLDING.violence) {
     instructions.push(SCENE_PLACEHOLDER_INSTRUCTIONS.VIOLENT_CONFRONTATION(violence));
   }
 
-  if (gore >= 61) {
+  if (gore >= SCAFFOLDING.gore) {
     instructions.push(SCENE_PLACEHOLDER_INSTRUCTIONS.HORROR_MOMENT(gore));
   }
 
   // Add inline placeholders based on active intensities
-  if (violence >= 51 || gore >= 51) {
+  if (violence >= SCAFFOLDING.language || gore >= SCAFFOLDING.language) {
     instructions.push(INLINE_PLACEHOLDER_INSTRUCTIONS.EXPLICIT_DESCRIPTION(Math.max(violence, gore)));
     instructions.push(INLINE_PLACEHOLDER_INSTRUCTIONS.GORE_DETAIL(gore));
   }
 
-  if (language >= 51) {
+  if (language >= SCAFFOLDING.language) {
     instructions.push(INLINE_PLACEHOLDER_INSTRUCTIONS.PROFANE_DIALOGUE(language));
     instructions.push(INLINE_PLACEHOLDER_INSTRUCTIONS.CRUDE_LANGUAGE(language));
   }
 
-  if (romance >= 51 || adultContent >= 30) {
+  if (romance >= SCAFFOLDING.inlinePlaceholder.romance || adultContent >= SCAFFOLDING.inlinePlaceholder.adultContent) {
     instructions.push(INLINE_PLACEHOLDER_INSTRUCTIONS.SENSUAL_DETAIL(Math.max(romance, adultContent)));
   }
 
@@ -365,6 +371,7 @@ function getDefaultWordCount(type) {
 
 /**
  * Check if scaffolding pipeline should be used based on intensity settings
+ * Uses centralized thresholds from constants/contentThresholds.js
  * @param {string} audienceSetting - 'general', 'teen', or 'mature'
  * @param {Object} intensitySettings - The intensity slider values
  * @returns {boolean} Whether to use the scaffolding pipeline
@@ -377,11 +384,11 @@ export function shouldUseScaffoldingPipeline(audienceSetting, intensitySettings)
   const { violence = 50, gore = 50, romance = 50, adultContent = 0, language = 50 } = intensitySettings;
 
   return (
-    violence >= 61 ||
-    gore >= 61 ||
-    adultContent >= 50 ||
-    romance >= 71 ||
-    language >= 51
+    violence >= SCAFFOLDING.violence ||
+    gore >= SCAFFOLDING.gore ||
+    adultContent >= PROVIDER_SELECTION.adultContent ||
+    romance >= PROVIDER_SELECTION.romance ||
+    language >= SCAFFOLDING.language
   );
 }
 

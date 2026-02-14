@@ -28,8 +28,8 @@ import {
 } from './prompts/venicePromptTemplates.js';
 
 /**
- * Call Venice with OpenRouter fallback
- * If Venice fails, tries OpenRouter with Claude 3.5 Sonnet
+ * Call Venice (fail-loud)
+ * Premium policy: no provider fallback except OpenAI->Venice (not vice-versa).
  */
 async function callVeniceWithFallback(options) {
   const startTime = Date.now();
@@ -49,22 +49,7 @@ async function callVeniceWithFallback(options) {
     result.provider = 'venice';
     return result;
   } catch (veniceError) {
-    logger.warn(`[HybridPipeline] Venice failed: ${veniceError.message}, trying OpenRouter fallback`);
-
-    if (isProviderAvailable(PROVIDERS.OPENROUTER)) {
-      try {
-        const result = await callOpenRouter({
-          ...options,
-          model: 'anthropic/claude-3.5-sonnet'  // Claude is excellent for creative writing
-        });
-        result.wasOpenRouterFallback = true;
-        return result;
-      } catch (openRouterError) {
-        logger.error(`[HybridPipeline] OpenRouter fallback also failed: ${openRouterError.message}`);
-        throw openRouterError;
-      }
-    }
-
+    logger.error(`[HybridPipeline] Venice failed (fail-loud policy): ${veniceError.message}`);
     throw veniceError;
   }
 }
@@ -645,7 +630,8 @@ function attemptMarkerRepair(polishedContent, extractedSections, originalPgConte
  * Restore explicit sections by replacing markers with original content
  * PHASE 5.3: Handles both semantic and legacy marker formats
  */
-export function restoreExplicitSections(polishedContent, extractedSections) {
+export function restoreExplicitSections(polishedContent, extractedSections, options = {}) {
+  const { strict = false } = options;
   let restoredContent = polishedContent;
   let sectionsRestored = 0;
 
@@ -703,6 +689,13 @@ export function restoreExplicitSections(polishedContent, extractedSections) {
     restored: sectionsRestored,
     failed: extractedSections.length - sectionsRestored
   });
+
+  const failedRestores = extractedSections.length - sectionsRestored;
+  if (strict && failedRestores > 0) {
+    throw new Error(
+      `[HybridPipeline] Explicit section restore failed: restored ${sectionsRestored}/${extractedSections.length} sections`
+    );
+  }
 
   return restoredContent;
 }
@@ -775,6 +768,15 @@ export async function runHybridPipeline(prompt, config, options = {}) {
 
   const startTime = Date.now();
   logger.info('[HybridPipeline] Starting hybrid content pipeline');
+  const intensity = config?.intensity || {};
+  const requiresExplicitHandling = (
+    config?.audience === 'mature' && (
+      (intensity.adultContent || 0) >= 50 ||
+      (intensity.romance || 0) >= 50 ||
+      (intensity.violence || 0) >= 60 ||
+      (intensity.gore || 0) >= 60
+    )
+  );
 
   // PHASE 5.3: Track provider attribution per segment
   const providerSegments = [];
@@ -808,6 +810,18 @@ export async function runHybridPipeline(prompt, config, options = {}) {
 
     // If no explicit content found, return as-is (Venice may not have used tags)
     if (!hasExplicitContent) {
+      if (requiresExplicitHandling) {
+        const msg = '[HybridPipeline] Expected tagged explicit content for mature/high-intensity request but found none';
+        logger.error(msg, {
+          audience: config?.audience,
+          adultContent: intensity.adultContent || 0,
+          romance: intensity.romance || 0,
+          violence: intensity.violence || 0,
+          gore: intensity.gore || 0
+        });
+        throw new Error(`${msg}. Regenerate with explicit tags.`);
+      }
+
       logger.info('[HybridPipeline] No tagged explicit content, returning raw Venice output');
       return {
         content: taggedContent,
@@ -839,7 +853,9 @@ export async function runHybridPipeline(prompt, config, options = {}) {
     }
 
     // Step 5: Restore explicit sections
-    const restoredContent = restoreExplicitSections(polishedContent, extractedSections);
+    const restoredContent = restoreExplicitSections(polishedContent, extractedSections, {
+      strict: requiresExplicitHandling
+    });
 
     // Step 6: Final coherence check (optional)
     let finalContent = restoredContent;

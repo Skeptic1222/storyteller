@@ -183,9 +183,17 @@ export function setupSessionHandlers(socket, io) {
         socket.emit('error', { message: 'Not authorized for this room' });
         return;
       }
+    } else {
+      // SECURITY: Do not allow arbitrary UUID room joins.
+      // Allow only the user's currently joined session room (set by join-session/rejoin-session).
+      const sessionData = activeSessions.get(socket.id);
+      const activeSessionId = sessionData?.session_id;
+      if (!activeSessionId || roomId !== activeSessionId) {
+        logger.warn(`[Socket] JOIN_ROOM_DENIED | roomId: ${roomId} | reason: arbitrary room join blocked | user_id: ${user.id}`);
+        socket.emit('error', { message: 'Join session room via join-session first' });
+        return;
+      }
     }
-    // Note: If room doesn't exist in extractions, allow join (may be a session room)
-    // Session rooms are validated separately via join-session event
 
     socket.join(roomId);
     logger.info(`[Socket] JOINED_ROOM | socketId: ${socket.id} | roomId: ${roomId}`);

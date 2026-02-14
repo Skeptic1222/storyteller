@@ -1241,80 +1241,9 @@ export async function detectSFXMultiAgent(sceneText, storyConfig, outline = null
     }
 
     // =========================================================================
-    // STEP 7: Guaranteed Ambient Fallback
-    // =========================================================================
-    // If no sounds were detected, add at least one genre-appropriate ambient sound
-    // This ensures stories NEVER have zero SFX
+    // STEP 7: No auto-ambient fallback in premium mode
     if (finalSfxList.length === 0) {
-      logger.warn('[SFX Pipeline] No sounds detected! Adding guaranteed ambient fallback...');
-
-      // Select genre-appropriate ambient based on context
-      const genreFallbacks = {
-        scifi: { key: 'space_station', category: 'scifi', name: 'space station ambient' },
-        cyberpunk: { key: 'neon_buzz', category: 'cyberpunk', name: 'neon buzz ambient' },
-        horror: { key: 'tension_building', category: 'horror', name: 'tension building' },
-        fantasy: { key: 'forest_day', category: 'fantasy', name: 'forest ambiance' },
-        western: { key: 'desert_wind', category: 'western', name: 'desert wind' },
-        modern: { key: 'city_traffic', category: 'modern', name: 'city ambiance' },
-        steampunk: { key: 'gears_turning', category: 'steampunk', name: 'clockwork gears' },
-        postapoc: { key: 'wind_wasteland', category: 'postapoc', name: 'wasteland wind' },
-        underwater: { key: 'underwater_ambient', category: 'underwater', name: 'underwater ambiance' }
-      };
-
-      const fallback = genreFallbacks[pipeline.context.primaryGenre] || genreFallbacks.modern;
-      const library = GENRE_SFX_LIBRARY[fallback.category];
-      const sfxDef = library?.[fallback.key];
-
-      if (sfxDef) {
-        finalSfxList.push({
-          sfxKey: `${fallback.category}.${fallback.key}`,
-          name: fallback.name,
-          category: fallback.category,
-          prompt: sfxDef.prompt,
-          duration: sfxDef.duration,
-          loop: sfxDef.loop,
-          timing: 'continuous',
-          trigger: 'Automatic ambient for scene',
-          reason: `Fallback ambient sound for ${pipeline.context.primaryGenre} genre`,
-          type: 'ambient',
-          importance: 'high',
-          source: 'guaranteed_fallback',
-          status: 'pending'
-        });
-        logger.info(`[SFX Pipeline] Added fallback ambient: ${fallback.category}.${fallback.key}`);
-      }
-
-      // Also add atmospheric sound based on mood
-      const moodFallbacks = {
-        tense: 'tension',
-        scary: 'dread',
-        mysterious: 'mysterious',
-        peaceful: 'peaceful',
-        epic: 'epic',
-        sad: 'sad',
-        romantic: 'romantic'
-      };
-
-      const moodKey = moodFallbacks[pipeline.context.mood?.toLowerCase()];
-      if (moodKey && GENRE_SFX_LIBRARY.atmosphere[moodKey]) {
-        const atmosphereDef = GENRE_SFX_LIBRARY.atmosphere[moodKey];
-        finalSfxList.push({
-          sfxKey: `atmosphere.${moodKey}`,
-          name: `${moodKey} atmosphere`,
-          category: 'atmosphere',
-          prompt: atmosphereDef.prompt,
-          duration: atmosphereDef.duration,
-          loop: atmosphereDef.loop,
-          timing: 'continuous',
-          trigger: `Scene mood: ${pipeline.context.mood}`,
-          reason: `Atmospheric sound for ${pipeline.context.mood} mood`,
-          type: 'atmospheric',
-          importance: 'medium',
-          source: 'mood_fallback',
-          status: 'pending'
-        });
-        logger.info(`[SFX Pipeline] Added mood atmosphere: atmosphere.${moodKey}`);
-      }
+      throw new Error('[SFX Pipeline] No sounds detected for scene; premium policy requires explicit SFX selection (fail-loud)');
     }
 
     // =========================================================================

@@ -475,6 +475,104 @@ async function generatePortrait(params) {
   }
 }
 
+/**
+ * Remove background from an image using FalAI's Bria RMBG 2.0 model
+ * Returns PNG with transparent alpha channel
+ *
+ * @param {Object} params
+ * @param {string} params.imageUrl - HTTPS URL to the source image
+ * @param {boolean} params.saveLocally - Whether to save locally (default: true)
+ * @returns {Promise<Object>} Result with transparent PNG URL
+ */
+async function removeBackground(params) {
+  const {
+    imageUrl,
+    saveLocally = true,
+    maxRetries = 3
+  } = params;
+
+  if (!imageUrl) {
+    throw new Error('Image URL required for background removal');
+  }
+
+  // Validate URL for security
+  if (!validateImageUrl(imageUrl)) {
+    throw new Error('Invalid or unsafe image URL for background removal');
+  }
+
+  if (!isAvailable()) {
+    throw new Error('Fal AI is not available - check FAL_KEY environment variable');
+  }
+
+  const model = 'fal-ai/bria/rmbg/v2.0';
+  logger.info(`[FalAI] Removing background with ${model}`);
+  logger.debug(`[FalAI] Source image: ${imageUrl}`);
+
+  const startTime = Date.now();
+  let lastError;
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      logger.info(`[FalAI] Background removal attempt ${attempt + 1}/${maxRetries}`);
+
+      const result = await fal.subscribe(model, {
+        input: {
+          image_url: imageUrl
+        },
+        logs: false
+      });
+
+      const outputUrl = result?.data?.image?.url;
+      if (!outputUrl) {
+        throw new Error('Fal AI returned no image URL for background removal');
+      }
+
+      const duration = Date.now() - startTime;
+      logger.info(`[FalAI] Background removed successfully in ${duration}ms`);
+
+      // Download and save locally if requested
+      let localPath = null;
+      if (saveLocally) {
+        localPath = await downloadAndSaveImage(outputUrl, 'nobg');
+      }
+
+      // Track usage
+      trackFalAIUsage('bria-rmbg', 'background-removal', duration);
+
+      return {
+        success: true,
+        imageUrl: localPath || outputUrl,
+        originalUrl: outputUrl,
+        provider: 'fal-ai',
+        model: model,
+        duration: duration,
+        hasTransparency: true
+      };
+
+    } catch (error) {
+      lastError = error;
+      const errorMsg = error.message || String(error);
+      logger.error(`[FalAI] Background removal attempt ${attempt + 1} failed:`, errorMsg);
+
+      // Check for non-retryable errors
+      const nonRetryable = ['invalid input', 'authentication', 'api_key', 'not found'];
+      if (nonRetryable.some(p => errorMsg.toLowerCase().includes(p))) {
+        logger.error('[FalAI] Non-retryable error, aborting background removal');
+        throw error;
+      }
+
+      // Exponential backoff
+      if (attempt < maxRetries - 1) {
+        const delay = Math.pow(2, attempt) * 1000;
+        logger.warn(`[FalAI] Retrying background removal in ${delay}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+
+  throw lastError;
+}
+
 export {
   generateWithCharacterReference,
   generateSceneWithCharacters,
@@ -484,7 +582,8 @@ export {
   selectProvider,
   validateImageUrl,
   downloadAndSaveImage,
-  generatePortrait
+  generatePortrait,
+  removeBackground
 };
 
 export default {
@@ -494,5 +593,6 @@ export default {
   getCharactersWithReferences,
   isAvailable,
   selectProvider,
-  generatePortrait
+  generatePortrait,
+  removeBackground
 };

@@ -5,18 +5,19 @@
 
 function SfxIndicator({ activeSfx }) {
   if (!activeSfx || activeSfx.length === 0) return null;
+  const barHeights = [8, 12, 10, 14];
 
   return (
     <div className="flex items-center gap-2 px-4 py-2 bg-slate-800/80 border border-cyan-500/30 rounded-full">
       {/* SFX wave bars animation */}
       <div className="flex items-center gap-0.5">
-        {[...Array(4)].map((_, i) => (
+        {barHeights.map((height, i) => (
           <div
             key={i}
             className="w-1 bg-cyan-400 rounded-full animate-pulse"
             style={{
-              height: `${8 + Math.random() * 8}px`,
-              animationDelay: `${i * 0.1}s`
+              height: `${height}px`,
+              animationDelay: `${i * 0.12}s`
             }}
           />
         ))}

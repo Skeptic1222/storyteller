@@ -17,6 +17,7 @@ import { rateLimiters } from '../middleware/rateLimiter.js';
 const router = Router();
 wrapRoutes(router); // Auto-wrap async handlers for error catching
 router.use(authenticateToken);
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 // Input sanitization helper
 function sanitizePremise(text) {
@@ -37,8 +38,115 @@ function sanitizePremise(text) {
   return sanitized;
 }
 
-// Default story configuration
-const DEFAULT_CONFIG = {
+const AUDIENCE_ALIASES = {
+  children: 'children',
+  child: 'children',
+  all_ages: 'general',
+  family: 'general',
+  general: 'general',
+  young_adult: 'general',
+  adult: 'mature',
+  mature: 'mature'
+};
+
+const STORY_FORMAT_ALIASES = {
+  novel_chapter: 'novel',
+  bedtime_story: 'short_story'
+};
+
+const SUPPORTED_STORY_FORMATS = new Set(['picture_book', 'short_story', 'novella', 'novel', 'series']);
+
+function normalizeAudience(value, fallback = 'general') {
+  const normalizedFallback = AUDIENCE_ALIASES[String(fallback || '').toLowerCase()] || 'general';
+  if (!value) return normalizedFallback;
+  return AUDIENCE_ALIASES[String(value).toLowerCase()] || normalizedFallback;
+}
+
+function normalizeStoryFormat(value, fallback = 'short_story') {
+  const raw = String(value || '').toLowerCase();
+  const mapped = STORY_FORMAT_ALIASES[raw] || raw;
+  if (SUPPORTED_STORY_FORMATS.has(mapped)) return mapped;
+  return SUPPORTED_STORY_FORMATS.has(fallback) ? fallback : 'short_story';
+}
+
+function normalizeConfigForClient(config = {}) {
+  if (!config || typeof config !== 'object') return {};
+  const normalized = { ...config };
+
+  if (Object.prototype.hasOwnProperty.call(normalized, 'audience')) {
+    normalized.audience = normalizeAudience(normalized.audience);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(normalized, 'story_format')) {
+    normalized.story_format = normalizeStoryFormat(normalized.story_format);
+  }
+
+  return normalized;
+}
+
+// Default story configuration for Configure page
+const DEFAULT_STORY_CONFIG = {
+  story_type: 'narrative',
+  story_format: 'short_story',
+  genres: {
+    fantasy: 70,
+    adventure: 50,
+    mystery: 30,
+    scifi: 20,
+    romance: 10,
+    horror: 20,
+    humor: 40,
+    fairytale: 30
+  },
+  intensity: {
+    violence: 20,
+    gore: 0,
+    scary: 30,
+    romance: 10,
+    language: 10,
+    adultContent: 0,
+    sensuality: 0,
+    explicitness: 0,
+    bleakness: 25,
+    sexualViolence: 0
+  },
+  audience: 'general',
+  story_length: 'medium',
+  mood: 'calm',
+  narrator_style: 'warm',
+  cover_art_style: 'fantasy',
+  voice_id: null,
+  multi_voice: false,
+  hide_speech_tags: false,
+  sfx_enabled: false,
+  sfx_level: 'low',
+  bedtime_mode: false,
+  cyoa_enabled: false,
+  cyoa_settings: {
+    auto_checkpoint: true,
+    show_choice_history: true,
+    structure_type: 'diamond',
+    allow_backtrack: true,
+    max_branches: 3
+  },
+  series_settings: {
+    protect_protagonist: true,
+    recurring_characters: true,
+    open_ending: false,
+    character_growth: true,
+    series_name: ''
+  },
+  plot_settings: {
+    structure: 'three_act',
+    ensure_resolution: true,
+    cliffhanger_allowed: false
+  },
+  custom_prompt: '',
+  author_style: 'none'
+};
+
+// Default long-term preference configuration
+const DEFAULT_PREFERENCE_CONFIG = {
   genres: {
     fantasy: 70,
     adventure: 50,
@@ -71,7 +179,7 @@ const DEFAULT_CONFIG = {
  * Get default story configuration
  */
 router.get('/defaults', (req, res) => {
-  res.json(DEFAULT_CONFIG);
+  res.json(DEFAULT_STORY_CONFIG);
 });
 
 /**
@@ -89,7 +197,7 @@ router.get('/preferences/:userId', requireAuth, async (req, res) => {
 
     if (result.rows.length === 0) {
       return res.json({
-        preferences: DEFAULT_CONFIG,
+        preferences: DEFAULT_PREFERENCE_CONFIG,
         source: 'defaults'
       });
     }
@@ -98,11 +206,11 @@ router.get('/preferences/:userId', requireAuth, async (req, res) => {
 
     // Merge with defaults
     const merged = {
-      ...DEFAULT_CONFIG,
+      ...DEFAULT_PREFERENCE_CONFIG,
       ...userPrefs,
-      genres: { ...DEFAULT_CONFIG.genres, ...userPrefs.genres },
-      intensity: { ...DEFAULT_CONFIG.intensity, ...userPrefs.intensity },
-      preferences: { ...DEFAULT_CONFIG.preferences, ...userPrefs.preferences }
+      genres: { ...DEFAULT_PREFERENCE_CONFIG.genres, ...userPrefs.genres },
+      intensity: { ...DEFAULT_PREFERENCE_CONFIG.intensity, ...userPrefs.intensity },
+      preferences: { ...DEFAULT_PREFERENCE_CONFIG.preferences, ...userPrefs.preferences }
     };
 
     res.json({
@@ -314,10 +422,13 @@ router.post('/interpret', requireAuth, async (req, res) => {
 
     const systemPrompt = `You are a helpful story configurator. Based on the user's request, suggest story configuration changes.
 
-Available genres (values 0-100): fantasy, adventure, mystery, horror (max 70), humor, romance
+Available genres (values 0-100): fantasy, adventure, mystery, horror, humor, romance, scifi, fairytale
 Story lengths: short (~5 min), medium (~15 min), long (~30 min)
 Narrator styles: warm, dramatic, playful, mysterious
-Intensity scary level: 0-70
+Audience values (canonical): children, general, mature
+Story formats (canonical): picture_book, short_story, novella, novel, series
+If user says "adult", map to "mature". If user says "all ages" or "family", map to "general".
+Intensity values are 0-100.
 
 Current config: ${JSON.stringify(current_config)}
 
@@ -327,6 +438,8 @@ Respond with JSON in this exact format:
   "config_updates": {
     "genres": { "fantasy": 80, "adventure": 60 },
     "story_length": "medium",
+    "story_format": "short_story",
+    "audience": "general",
     "intensity": { "scary": 20 },
     "narrator_style": "warm",
     "cyoa_enabled": false
@@ -350,9 +463,11 @@ Keep suggestions friendly and engaging.`;
 
     const response = parseJsonResponse(result.content);
 
+    const normalizedConfigUpdates = normalizeConfigForClient(response.config_updates || {});
+
     res.json({
       suggestion: response.suggestion || "I'll set that up for you!",
-      config_updates: response.config_updates || {}
+      config_updates: normalizedConfigUpdates
     });
 
   } catch (error) {
@@ -386,11 +501,12 @@ router.post('/smart-interpret', requireAuth, rateLimiters.ai, async (req, res) =
   logger.info('[Config] Smart interpret request:', sanitizedPremise.substring(0, 50));
 
   const result = await smartConfig.interpretPremise(sanitizedPremise, current_config || {});
+  const normalizedSuggestedConfig = normalizeConfigForClient(result.suggestedConfig || {});
 
   if (result.success) {
     res.json({
       success: true,
-      suggestedConfig: result.suggestedConfig,
+      suggestedConfig: normalizedSuggestedConfig,
       reasoning: result.reasoning,
       analysis: result.analysis
     });
@@ -406,9 +522,28 @@ router.post('/smart-interpret', requireAuth, rateLimiters.ai, async (req, res) =
 router.post('/smart-apply', requireAuth, async (req, res) => {
   try {
     const { session_id, premise, current_config } = req.body;
+    const userId = req.user.id;
+    const isAdmin = req.user.is_admin === true;
 
     if (!session_id || !premise) {
       return res.status(400).json({ error: 'session_id and premise are required' });
+    }
+    if (!UUID_REGEX.test(session_id)) {
+      return res.status(400).json({ error: 'Invalid session_id format' });
+    }
+
+    // SECURITY: enforce session ownership before applying config changes
+    const ownerCheck = await pool.query(
+      'SELECT user_id FROM story_sessions WHERE id = $1',
+      [session_id]
+    );
+
+    if (ownerCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    if (ownerCheck.rows[0].user_id !== userId && !isAdmin) {
+      return res.status(403).json({ error: 'Not authorized for this session' });
     }
 
     // Get interpretation
@@ -418,17 +553,19 @@ router.post('/smart-apply', requireAuth, async (req, res) => {
       return res.status(400).json({ success: false, error: result.error });
     }
 
+    const normalizedSuggestedConfig = normalizeConfigForClient(result.suggestedConfig || {});
+
     // Update session config in database
     await pool.query(`
       UPDATE story_sessions
       SET config_json = config_json || $1,
           updated_at = NOW()
       WHERE id = $2
-    `, [JSON.stringify(result.suggestedConfig), session_id]);
+    `, [JSON.stringify(normalizedSuggestedConfig), session_id]);
 
     res.json({
       success: true,
-      appliedConfig: result.suggestedConfig,
+      appliedConfig: normalizedSuggestedConfig,
       reasoning: result.reasoning
     });
 
@@ -668,9 +805,13 @@ router.get('/templates/:templateId', (req, res) => {
       return res.status(404).json({ success: false, error: `Template '${templateId}' not found` });
     }
 
+    const normalizedTemplate = template?.config
+      ? { ...template, config: normalizeConfigForClient(template.config) }
+      : template;
+
     res.json({
       success: true,
-      template
+      template: normalizedTemplate
     });
   } catch (error) {
     logger.error('Error fetching template:', error);
@@ -696,7 +837,10 @@ router.post('/templates/apply', (req, res) => {
       return res.status(404).json(result);
     }
 
-    res.json(result);
+    res.json({
+      ...result,
+      config: normalizeConfigForClient(result.config || {})
+    });
   } catch (error) {
     logger.error('Error applying template:', error);
     res.status(500).json({ success: false, error: 'Failed to apply template' });

@@ -315,7 +315,9 @@ export const veniceSceneGenerationPrompt = ({
   targetWordCount = 4500, // INCREASED: Was 1000, now 4500 for full scenes
   intensity = {},
   authorStyle = 'modern fiction',
-  pov = 'third-person limited'
+  pov = 'third-person limited',
+  multiVoice = false,
+  hideSpeechTags = false
 }) => {
   // Determine if mature content guidance needed
   const isMature = intensity.adultContent > 50 || intensity.gore > 50 || intensity.violence > 50;
@@ -489,7 +491,78 @@ ${characters.map(c => `
 ✗ NO FILTER WORDS: Remove "felt", "saw", "heard", "seemed", "appeared"
 ✗ NO PURPLE PROSE: Avoid "symphony of emotions", "dance of shadows", etc.
 ✗ NO ADVERB ABUSE: Cut "very", "really", "quite", "just", "rather"
+${multiVoice ? `
+# VOICE-AWARE DIALOGUE (Multi-Voice Audiobook Mode)
+This story uses MULTIPLE VOICE ACTORS. Each character has their own voice, so readers HEAR who is speaking.
+${hideSpeechTags ? `
+## CRITICAL: MINIMIZE SPEECH ATTRIBUTION
+Since voice actors speak each character's lines, "he said" / "she replied" is REDUNDANT.
 
+INSTEAD OF plain attribution:
+✗ "I don't understand," Sarah said.
+✗ "We need to leave now," Marcus replied urgently.
+✗ "Help me!" she screamed.
+
+USE action beats or body language:
+✓ "I don't understand." Sarah's brow furrowed.
+✓ "We need to leave now." Marcus grabbed her arm.
+✓ "Help me!" Her voice cracked.
+
+When attribution IS needed for clarity (complex multi-speaker scenes), use DELIVERY DESCRIPTORS:
+✓ "I know what you did," Elena whispered, her voice trembling.
+✓ "You'll never get away with this," he snarled through gritted teeth.
+
+RULE: Replace 80%+ of "said/replied/asked" with action beats or remove entirely.
+` : `
+## DELIVERY DESCRIPTORS FOR VOICE ACTING
+When writing dialogue, use RICH DELIVERY DESCRIPTORS to guide voice actors:
+
+INSTEAD OF generic attribution:
+✗ "I don't know," she said.
+✗ "Stop!" he said loudly.
+
+USE expressive delivery:
+✓ "I don't know," she whispered, voice catching.
+✓ "Stop!" he bellowed, slamming his fist on the table.
+
+EMOTIONAL DELIVERY TYPES:
+- WHISPERED/BREATHLESS: "I love you," she breathed, barely audible.
+- SHOUTED/ROARED: "Get out!" he roared, face crimson with rage.
+- TREMBLING/NERVOUS: "Is anyone there?" Her voice quavered.
+- COLD/CONTROLLED: "I see." His tone was ice.
+- SARCASTIC/DRY: "Oh, wonderful," she drawled, rolling her eyes.
+- URGENT/DESPERATE: "Please, you have to believe me!" She gripped his arm.
+
+RULE: Every dialogue line should convey HOW it's spoken, not just WHAT is said.
+`}
+
+## V3 AUDIO EMOTION PALETTE (for Voice Synthesis)
+Write dialogue that naturally maps to these vocal emotion categories for optimal voice synthesis:
+
+**Primary Emotions (map dialogue to these for best results):**
+- EXCITED: Joy, enthusiasm, triumph, anticipation → write with exclamation, energetic vocabulary
+- SAD: Grief, sorrow, melancholy, loss → write with trailing thoughts, soft phrasing
+- ANGRY: Fury, frustration, rage, indignation → write with short punchy sentences, accusations
+- CALM: Peace, control, serenity, wisdom → write with measured pacing, thoughtful pauses
+- FEARFUL: Terror, anxiety, dread, nervousness → write with fragmented speech, hesitation
+- SURPRISED: Shock, astonishment, disbelief → write with interruptions, exclamations
+
+**Delivery Modes (combine with emotions for nuanced performance):**
+- WHISPER: Secrets, intimacy, stealth, confidential → write as hushed, private speech
+- SHOUTING: Commands, warnings, desperation, emphasis → write in all caps or with exclamation
+
+**Physical State Tags (add to dialogue attribution):**
+- Breathless: Running, exertion, passion → write with ellipses, broken phrases
+- Trembling: Fear, cold, emotion → write with repeated words, stuttering
+- Strained: Pain, injury, effort → write with short gasps, incomplete thoughts
+
+**Writing Examples for Voice Synthesis:**
+✓ "I... I can't believe..." → maps to [surprised][breathless]
+✓ "Get. Out. Now." → maps to [angry][coldly]
+✓ "It's just... nothing, forget it." → maps to [sad][quietly]
+✓ "Oh my god, you did it!" → maps to [excited][loudly]
+✓ "Shh, someone's coming." → maps to [fearful][whispers]
+` : ''}
 # ANTI-REPETITION SYSTEM
 As you write, track distinctive phrases you use. Rules:
 - If you've used a distinctive 2+ word phrase (e.g., "piercing gaze"), BANNED - find alternative

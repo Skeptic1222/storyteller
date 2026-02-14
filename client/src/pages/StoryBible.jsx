@@ -2403,7 +2403,7 @@ function DetailView({
 function QuickTips({ activeTab }) {
   const tips = {
     characters: [
-      'Add voice descriptions for multi-voice narration',
+      'Add voice descriptions for voice acting',
       'Define relationships to influence dialogue tone',
       'Characters are forked into stories, keeping the original safe'
     ],

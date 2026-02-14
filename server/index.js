@@ -41,6 +41,7 @@ import streamingRoutes from './routes/streaming.js';
 import continuationRoutes from './routes/continuation.js';
 import analyticsRoutes from './routes/analytics.js';
 import storyBibleRoutes from './routes/story-bible.js';
+import testStoriesRoutes from './routes/testStories.js';
 // DnD routes removed - migrated to GameMaster project (2026-01-08)
 
 const __filename = fileURLToPath(import.meta.url);
@@ -126,19 +127,26 @@ const CONNECTION_RATE_LIMIT = {
   blockDurationMs: 300000  // 5 minute block after exceeding limit
 };
 
+function normalizeIp(rawIp) {
+  if (!rawIp) return 'unknown';
+  let ip = String(rawIp).trim();
+  if (ip.includes(',')) {
+    ip = ip.split(',')[0].trim();
+  }
+  // Normalize IPv4-mapped IPv6 format
+  if (ip.startsWith('::ffff:')) {
+    ip = ip.slice(7);
+  }
+  return ip || 'unknown';
+}
+
 /**
  * Socket.IO connection rate limiting middleware
  * Prevents DoS attacks by limiting connection attempts per IP
  */
 function connectionRateLimiter(socket, next) {
-  // Extract IP, handling IIS proxy format (IP:port)
-  const forwarded = socket.handshake.headers['x-forwarded-for'];
-  let clientIp = forwarded
-    ? forwarded.split(',')[0].trim()
-    : socket.handshake.address || 'unknown';
-
-  // Strip port if present (IIS sometimes sends IP:port)
-  clientIp = clientIp.split(':')[0] || clientIp;
+  // SECURITY: prefer normalized handshake address; do not trust raw X-Forwarded-For headers here
+  const clientIp = normalizeIp(socket.handshake.address || socket.conn?.remoteAddress || 'unknown');
 
   const now = Date.now();
   let record = connectionAttempts.get(clientIp);
@@ -178,7 +186,12 @@ async function socketAuthMiddleware(socket, next) {
   try {
     const authHeader = socket.handshake.headers?.authorization;
     const headerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
-    const token = headerToken || socket.handshake.auth?.token || socket.handshake.query?.token || null;
+    const allowQueryToken = NODE_ENV === 'development' && process.env.ALLOW_SOCKET_QUERY_TOKEN === 'true';
+    const token =
+      headerToken ||
+      socket.handshake.auth?.token ||
+      (allowQueryToken ? socket.handshake.query?.token : null) ||
+      null;
 
     socket.data.user = await authenticateSocketToken(token);
     return next();
@@ -254,17 +267,15 @@ const limiter = rateLimit({
   windowMs: 1 * 60 * 1000, // 1 minute
   max: 100, // 100 requests per minute
   message: { error: 'Too many requests, please try again later' },
-  // Custom key generator to handle IIS proxy IP:port format
+  // Use Express-trusted req.ip instead of raw proxy headers
   keyGenerator: (req) => {
-    const forwarded = req.headers['x-forwarded-for'];
-    const ip = forwarded ? forwarded.split(',')[0].trim() : req.ip || req.socket?.remoteAddress || 'unknown';
-    // Strip port if present (IIS sometimes sends IP:port)
-    return ip.split(':')[0] || ip;
+    return normalizeIp(req.ip || req.socket?.remoteAddress || 'unknown');
   },
-  // Skip validation since we have custom key generator
-  validate: { xForwardedForHeader: false, trustProxy: false }
+  // Keep limiter validation aligned with express trust-proxy config
+  validate: { xForwardedForHeader: true, trustProxy: true }
 });
 app.use('/api/', limiter);
+app.use('/storyteller/api/', limiter);
 
 // Body parsing
 app.use(express.json({ limit: '10mb' }));
@@ -275,7 +286,7 @@ app.use((req, res, next) => {
   const start = Date.now();
   res.on('finish', () => {
     const duration = Date.now() - start;
-    if (req.path.startsWith('/api/')) {
+    if (req.path.startsWith('/api/') || req.path.startsWith('/storyteller/api/')) {
       logger.info(`${req.method} ${req.path} ${res.statusCode} ${duration}ms`);
     }
   });
@@ -336,7 +347,8 @@ const apiRoutes = [
   ['streaming', streamingRoutes],
   ['continuation', continuationRoutes],
   ['analytics', analyticsRoutes],
-  ['story-bible', storyBibleRoutes]
+  ['story-bible', storyBibleRoutes],
+  ['test-stories', testStoriesRoutes]
   // DnD campaign/maps routes removed - migrated to GameMaster (2026-01-08)
 ];
 

@@ -79,3 +79,65 @@ export function hasCharacterTags(text) {
   }
   return /\[CHAR:[^\]]+\]/.test(text);
 }
+
+/**
+ * Get quote characters based on style preference
+ * @param {'double' | 'single' | 'guillemet'} style
+ * @returns {{ open: string, close: string }}
+ */
+export function getQuoteChars(style = 'double') {
+  switch (style) {
+    case 'single':
+      return { open: '\u2018', close: '\u2019' }; // ' '
+    case 'guillemet':
+      return { open: '\u00AB', close: '\u00BB' }; // « »
+    case 'double':
+    default:
+      return { open: '\u201C', close: '\u201D' }; // " "
+  }
+}
+
+/**
+ * Process text for display, optionally restoring dialogue quotes
+ *
+ * This function:
+ * 1. Strips all special tags (prosody, character)
+ * 2. Optionally restores quotes around dialogue when [CHAR:] tags are present
+ *
+ * @param {string} text - Raw text that may contain tags
+ * @param {Object} options - Processing options
+ * @param {boolean} options.showQuotes - Whether to add quotes around dialogue
+ * @param {'double' | 'single' | 'guillemet'} options.quoteStyle - Quote style
+ * @returns {string} Processed text for display
+ */
+export function processTextForDisplay(text, options = {}) {
+  const { showQuotes = true, quoteStyle = 'double' } = options;
+
+  if (!text || typeof text !== 'string') {
+    return '';
+  }
+
+  const quotes = getQuoteChars(quoteStyle);
+
+  if (showQuotes) {
+    // Character tags: [CHAR:Name]dialogue[/CHAR] → "dialogue" (restore quotes)
+    text = text.replace(/\[CHAR:[^\]]+\]([\s\S]*?)\[\/CHAR\]/g, (match, dialogue) => {
+      const trimmedDialogue = dialogue.trim();
+      if (!trimmedDialogue) return '';
+      // Only add quotes if dialogue isn't empty and doesn't already have quotes
+      if (/^[""\u201C''\u2018«]/.test(trimmedDialogue)) return trimmedDialogue;
+      return `${quotes.open}${trimmedDialogue}${quotes.close}`;
+    });
+  } else {
+    // Just strip the tags without adding quotes
+    text = text
+      .replace(/\[CHAR:[^\]]+\]/g, '')
+      .replace(/\[\/CHAR\]/g, '');
+  }
+
+  // Strip prosody/audio tags
+  text = text.replace(/\[[a-z][a-z\s\-']*\]/gi, '');
+
+  // Normalize whitespace
+  return text.replace(/\s+/g, ' ').trim();
+}

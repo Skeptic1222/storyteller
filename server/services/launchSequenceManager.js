@@ -258,13 +258,15 @@ export class LaunchSequenceManager {
 
   /**
    * Emit overall progress update
+   * CIRCULAR PROGRESS (2026-01-31): Added startTime for timer persistence across refreshes
    */
   emitProgress(message, percent, stage = null) {
     this.io.to(this.sessionId).emit('launch-progress', {
       message,
       percent,
       statuses: { ...this.stageStatuses },
-      stage
+      stage,
+      startTime: this.startTime  // For timer persistence in CircularProgress
     });
   }
 
@@ -287,13 +289,15 @@ export class LaunchSequenceManager {
     });
 
     // Emit initial state
+    // CIRCULAR PROGRESS (2026-01-31): Added startTime for timer persistence
     this.io.to(this.sessionId).emit('launch-sequence-started', {
       stages: Object.keys(STAGES).map(key => ({
         id: STAGES[key],
         name: this.getStageName(STAGES[key]),
         status: STATUS.PENDING
       })),
-      allStatuses: { ...this.stageStatuses }
+      allStatuses: { ...this.stageStatuses },
+      startTime: this.startTime
     });
 
     logger.info(`[LaunchSequence] Initialized for session ${this.sessionId}`);

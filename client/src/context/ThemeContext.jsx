@@ -20,7 +20,12 @@ const DEFAULT_PREFS = {
   fontFamily: 'serif',
   lineHeight: 1.6,
   mood: 'neutral',
-  textLayout: 'vertical' // 'vertical' | 'horizontal' | 'modal'
+  textLayout: 'vertical', // 'vertical' | 'horizontal' | 'modal' | 'ticker'
+  textColor: '#F7F4E9',      // Narrimo cream
+  backgroundColor: '#0A2342',  // Narrimo midnight
+  // Text display options
+  showDialogueQuotes: true,    // Wrap dialogue in quotation marks
+  dialogueQuoteStyle: 'double' // 'double' ("), 'single' ('), 'guillemet' («»)
 };
 
 /**
@@ -75,6 +80,12 @@ export function ThemeProvider({ children }) {
     document.documentElement.setAttribute('data-mood', prefs.mood);
     document.documentElement.setAttribute('data-theme', prefs.appTheme);
   }, [prefs.mood, prefs.appTheme]);
+
+  // Apply CSS custom properties for reader colors (view presets)
+  useEffect(() => {
+    document.documentElement.style.setProperty('--reader-text-color', prefs.textColor);
+    document.documentElement.style.setProperty('--reader-bg-color', prefs.backgroundColor);
+  }, [prefs.textColor, prefs.backgroundColor]);
 
   // Reading theme getter
   const readingTheme = READING_THEMES[prefs.readingTheme] || READING_THEMES.dark;
@@ -131,13 +142,40 @@ export function ThemeProvider({ children }) {
 
   // Text layout setter
   const setTextLayout = useCallback((layout) => {
-    const validLayouts = ['vertical', 'horizontal', 'modal'];
+    const validLayouts = ['vertical', 'horizontal', 'modal', 'ticker'];
     console.log('[ThemeContext] setTextLayout called with:', layout, '| valid:', validLayouts.includes(layout));
     if (validLayouts.includes(layout)) {
       setPrefs(prev => {
         console.log('[ThemeContext] Updating textLayout from', prev.textLayout, 'to', layout);
         return { ...prev, textLayout: layout };
       });
+    }
+  }, []);
+
+  // Reader color setters (for view presets)
+  const setTextColor = useCallback((color) => {
+    // Validate hex color format
+    if (/^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/.test(color)) {
+      setPrefs(prev => ({ ...prev, textColor: color }));
+    }
+  }, []);
+
+  const setBackgroundColor = useCallback((color) => {
+    // Validate hex color format
+    if (/^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/.test(color)) {
+      setPrefs(prev => ({ ...prev, backgroundColor: color }));
+    }
+  }, []);
+
+  // Dialogue quote display setters
+  const setShowDialogueQuotes = useCallback((show) => {
+    setPrefs(prev => ({ ...prev, showDialogueQuotes: Boolean(show) }));
+  }, []);
+
+  const setDialogueQuoteStyle = useCallback((style) => {
+    const validStyles = ['double', 'single', 'guillemet'];
+    if (validStyles.includes(style)) {
+      setPrefs(prev => ({ ...prev, dialogueQuoteStyle: style }));
     }
   }, []);
 
@@ -165,6 +203,10 @@ export function ThemeProvider({ children }) {
     lineHeight: prefs.lineHeight,
     mood: prefs.mood,
     textLayout: prefs.textLayout,
+    textColor: prefs.textColor,
+    backgroundColor: prefs.backgroundColor,
+    showDialogueQuotes: prefs.showDialogueQuotes,
+    dialogueQuoteStyle: prefs.dialogueQuoteStyle,
 
     // Raw IDs for persistence
     readingThemeId: prefs.readingTheme,
@@ -179,6 +221,10 @@ export function ThemeProvider({ children }) {
     setFontFamily,
     setLineHeight,
     setTextLayout,
+    setTextColor,
+    setBackgroundColor,
+    setShowDialogueQuotes,
+    setDialogueQuoteStyle,
     resetPrefs,
 
     // Utilities

@@ -3,6 +3,7 @@ import { io } from 'socket.io-client';
 import { SOCKET_PATH } from '../config';
 import { useAuth } from './AuthContext';
 import { getStoredToken } from '../utils/authToken';
+import { log, error as logError } from '../utils/logger';
 
 const SocketContext = createContext(null);
 
@@ -31,31 +32,31 @@ export function SocketProvider({ children }) {
     // This prevents the double-init issue where socket connects with undefined user,
     // then effect re-runs when user becomes available
     if (authLoading) {
-      console.log('[Socket] SKIP_INIT | auth still loading');
+      log('[Socket] SKIP_INIT | auth still loading');
       return;
     }
 
     // Already initialized this mount cycle - skip
     if (hasInitializedRef.current) {
-      console.log('[Socket] SKIP_INIT | already initialized this mount');
+      log('[Socket] SKIP_INIT | already initialized this mount');
       return;
     }
 
     // Prevent duplicate connections
     if (socketRef.current?.connected) {
-      console.log('[Socket] SKIP_INIT | already connected');
+      log('[Socket] SKIP_INIT | already connected');
       return;
     }
 
     // If we have a socket that's connecting or disconnecting, wait for it
     if (socketRef.current && !socketRef.current.disconnected) {
-      console.log('[Socket] SKIP_INIT | socket exists and not disconnected');
+      log('[Socket] SKIP_INIT | socket exists and not disconnected');
       return;
     }
 
     // Clean up any existing socket before creating new one
     if (socketRef.current) {
-      console.log('[Socket] Cleaning up existing socket before reconnect');
+      log('[Socket] Cleaning up existing socket before reconnect');
       try {
         socketRef.current.removeAllListeners();
         socketRef.current.disconnect();
@@ -69,7 +70,7 @@ export function SocketProvider({ children }) {
 
     // No token = not authenticated, don't connect yet
     if (!token) {
-      console.log('[Socket] SKIP_INIT | no auth token available');
+      log('[Socket] SKIP_INIT | no auth token available');
       return;
     }
 
@@ -98,11 +99,11 @@ export function SocketProvider({ children }) {
 
     socketRef.current = socketInstance;
     isConnectingRef.current = true;
-    console.log('[Socket] Initializing connection to:', window.location.origin, 'path:', SOCKET_PATH, 'hasToken:', !!token);
+    log('[Socket] Initializing connection to:', window.location.origin, 'path:', SOCKET_PATH, 'hasToken:', !!token);
 
     socketInstance.on('connect', () => {
       if (!mountedRef.current) return;
-      console.log('[Socket] CONNECTED | id:', socketInstance.id, '| authenticated:', !!token);
+      log('[Socket] CONNECTED | id:', socketInstance.id, '| authenticated:', !!token);
       isConnectingRef.current = false;
       reconnectAttemptsRef.current = 0;
       setReconnecting(false);
@@ -111,18 +112,18 @@ export function SocketProvider({ children }) {
 
     socketInstance.on('disconnect', (reason) => {
       if (!mountedRef.current) return;
-      console.log('[Socket] DISCONNECTED | reason:', reason);
+      log('[Socket] DISCONNECTED | reason:', reason);
       setConnected(false);
 
       // Handle specific disconnect reasons
       if (reason === 'io server disconnect' && mountedRef.current) {
         // Server disconnected us - try to reconnect
-        console.log('[Socket] Server initiated disconnect, attempting reconnect...');
+        log('[Socket] Server initiated disconnect, attempting reconnect...');
         setReconnecting(true);
         socketInstance.connect();
       } else if (reason === 'transport close' || reason === 'ping timeout') {
         // Network issue - show reconnecting status
-        console.log('[Socket] Network issue, will auto-reconnect...');
+        log('[Socket] Network issue, will auto-reconnect...');
         setReconnecting(true);
       }
       // 'io client disconnect' means we called disconnect() - don't auto-reconnect
@@ -130,7 +131,7 @@ export function SocketProvider({ children }) {
 
     socketInstance.on('connect_error', (error) => {
       if (!mountedRef.current) return;
-      console.error('[Socket] CONNECTION_ERROR | error:', error?.message || error, '| attempt:', reconnectAttemptsRef.current);
+      logError('[Socket] CONNECTION_ERROR | error:', error?.message || error, '| attempt:', reconnectAttemptsRef.current);
       isConnectingRef.current = false;
       setConnected(false);
       setReconnecting(true);
@@ -138,7 +139,7 @@ export function SocketProvider({ children }) {
 
       // If we've exceeded max attempts, try a fresh connection after delay
       if (reconnectAttemptsRef.current >= maxReconnectAttempts && mountedRef.current) {
-        console.log('[Socket] Max reconnect attempts reached, will retry with fresh connection in 10s');
+        log('[Socket] Max reconnect attempts reached, will retry with fresh connection in 10s');
         setTimeout(() => {
           if (mountedRef.current) {
             reconnectAttemptsRef.current = 0;
@@ -150,19 +151,19 @@ export function SocketProvider({ children }) {
 
     socketInstance.on('reconnect', (attemptNumber) => {
       if (!mountedRef.current) return;
-      console.log('[Socket] RECONNECTED | attempt:', attemptNumber);
+      log('[Socket] RECONNECTED | attempt:', attemptNumber);
       reconnectAttemptsRef.current = 0;
       setReconnecting(false);
       setConnected(true);
     });
 
     socketInstance.on('reconnect_attempt', (attemptNumber) => {
-      console.log('[Socket] RECONNECT_ATTEMPT | attempt:', attemptNumber);
+      log('[Socket] RECONNECT_ATTEMPT | attempt:', attemptNumber);
       setReconnecting(true);
     });
 
     socketInstance.on('reconnect_failed', () => {
-      console.error('[Socket] RECONNECT_FAILED | all attempts exhausted');
+      logError('[Socket] RECONNECT_FAILED | all attempts exhausted');
       setReconnecting(false);
     });
 
@@ -177,7 +178,7 @@ export function SocketProvider({ children }) {
 
       // Clean up socket on unmount
       if (socketRef.current) {
-        console.log('[Socket] Cleanup - removing listeners and disconnecting');
+        log('[Socket] Cleanup - removing listeners and disconnecting');
         try {
           socketRef.current.removeAllListeners();
           socketRef.current.disconnect();
@@ -195,7 +196,7 @@ export function SocketProvider({ children }) {
   useEffect(() => {
     // If user becomes null/undefined (logout) and we have a socket, disconnect
     if (!user && !authLoading && socketRef.current) {
-      console.log('[Socket] User logged out - disconnecting socket');
+      log('[Socket] User logged out - disconnecting socket');
       socketRef.current.disconnect();
       socketRef.current = null;
       hasInitializedRef.current = false; // Allow reinitialization on next login
@@ -207,7 +208,7 @@ export function SocketProvider({ children }) {
 
   const joinSession = useCallback((id) => {
     if (socket && id) {
-      console.log('[Socket:Emit] EVENT: join-session | session_id:', id);
+      log('[Socket:Emit] EVENT: join-session | session_id:', id);
       socket.emit('join-session', { session_id: id });
       setSessionId(id);
     }
@@ -215,7 +216,7 @@ export function SocketProvider({ children }) {
 
   const leaveSession = useCallback(() => {
     if (socket && sessionId) {
-      console.log('[Socket:Emit] EVENT: leave-session | session_id:', sessionId);
+      log('[Socket:Emit] EVENT: leave-session | session_id:', sessionId);
       socket.emit('leave-session');
       setSessionId(null);
     }

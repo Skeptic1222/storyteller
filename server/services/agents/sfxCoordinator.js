@@ -158,11 +158,29 @@ const TIMING_PATTERNS = {
 
 // SFX Level configurations
 // Controls how many sound effects are detected/generated
+// P0 FIX: Added minImportance for quality filtering
 export const SFX_LEVELS = {
+  off: {
+    name: 'Off',
+    description: 'No sound effects',
+    targetEffects: { min: 0, max: 0 },
+    minImportance: 1.0, // Nothing passes this threshold
+    promptGuidance: ''
+  },
+  minimal: {
+    name: 'Minimal',
+    description: 'Key moments only - dramatic sounds, combat',
+    targetEffects: { min: 2, max: 3 },
+    minImportance: 0.7, // Only high-importance sounds
+    promptGuidance: `Provide 2-3 sound effects per scene focusing ONLY on key dramatic moments.
+Include: Major combat sounds, dramatic reveals, critical atmosphere shifts.
+Skip subtle sounds - only the most impactful effects.`
+  },
   low: {
     name: 'Default',
     description: 'Occasional sounds - wind, rain, sword clangs',
     targetEffects: { min: 4, max: 6 },
+    minImportance: 0.5, // Moderate importance threshold
     promptGuidance: `Provide 4-6 sound effects per scene focusing on key atmospheric and action sounds.
 Include: 1-2 ambient/background sounds (environment, weather), 2-3 action sounds (footsteps, doors, objects), plus any key dramatic moments.
 IMPORTANT: Always include sounds for any mentioned hissing, beeping, humming, or atmospheric elements.`
@@ -171,6 +189,7 @@ IMPORTANT: Always include sounds for any mentioned hissing, beeping, humming, or
     name: 'More Sounds',
     description: 'Frequent sounds - engine hums, footsteps, ambient environment',
     targetEffects: { min: 6, max: 10 },
+    minImportance: 0.3, // Allow more sounds through
     promptGuidance: `Provide 6-10 sound effects per scene for an immersive experience.
 Include: 2-3 ambient layers (background, atmosphere, environmental), 3-4 action/movement sounds, 2-3 detail sounds.
 Every mentioned sound should have an effect: hissing, humming, beeping, creaking, footsteps, breathing, etc.
@@ -180,6 +199,7 @@ Consider: continuous ambient sounds, character actions, environmental details (e
     name: 'Lots of Sounds',
     description: 'Nearly continuous audio - immersive soundscape',
     targetEffects: { min: 10, max: 18 },
+    minImportance: 0.2, // Almost everything passes
     promptGuidance: `Provide 10-18 sound effects per scene for MAXIMUM immersion.
 There should almost NEVER be a moment without some sound playing.
 Layer multiple ambient sounds: constant background (engine hum, wind, crowd murmur), environmental details (console beeps, footsteps, fabric rustling), action sounds.
@@ -437,19 +457,51 @@ Include both ambient layers and punctuating sounds as appropriate for this level
 
   /**
    * Process GPT analysis into SFX specifications
+   * P0 FIX: Now enforces SFX_LEVELS limits
+   *
+   * @param {object} analysis - GPT analysis result
+   * @param {string} sceneText - Scene text for fallback detection
+   * @param {string} sfxLevel - SFX level (off, minimal, low, medium, high)
    */
-  processSFXAnalysis(analysis, sceneText) {
-    if (!analysis?.effects || !Array.isArray(analysis.effects)) {
-      // Fallback to basic detection
-      return this.sfxService.detectSceneSFX(sceneText, {});
+  processSFXAnalysis(analysis, sceneText, sfxLevel = 'low') {
+    // P0 FIX: Get level config for enforcement
+    const levelConfig = SFX_LEVELS[sfxLevel] || SFX_LEVELS.low;
+
+    // P0 FIX: Return empty if SFX is off
+    if (sfxLevel === 'off' || levelConfig.targetEffects.max === 0) {
+      logger.info('[SFXCoordinator] SFX level is off, returning empty list');
+      return [];
     }
 
-    return analysis.effects.map((effect, index) => {
+    if (!analysis?.effects || !Array.isArray(analysis.effects)) {
+      // Fallback to basic detection
+      return this.sfxService.detectSceneSFX(sceneText, { sfx_level: sfxLevel });
+    }
+
+    // Map effects to SFX specifications
+    let effects = analysis.effects.map((effect, index) => {
       const timing = TIMING_PATTERNS[effect.timing] || TIMING_PATTERNS.scene_start;
       const sfxType = effect.sfx_type || 'ambient';
 
       // Pass sfx_type for fallback matching
       const matchedKey = this.findLibraryMatch(effect.description, sfxType);
+
+      // P0 FIX: Calculate importance score for filtering
+      // Higher importance for: combat, magic, key actions; lower for ambient/background
+      let importance = 0.5; // Default
+      if (['combat', 'magic', 'action'].includes(sfxType)) {
+        importance = 0.7;
+      } else if (['emotional', 'atmosphere'].includes(sfxType)) {
+        importance = 0.4;
+      } else if (['ambient', 'weather', 'environment'].includes(sfxType)) {
+        importance = 0.3;
+      }
+      // Boost importance if explicitly marked as important
+      if (effect.reason?.toLowerCase().includes('dramatic') ||
+          effect.reason?.toLowerCase().includes('climax') ||
+          effect.reason?.toLowerCase().includes('key moment')) {
+        importance = Math.min(1.0, importance + 0.3);
+      }
 
       return {
         id: `sfx_${Date.now()}_${index}`,
@@ -463,9 +515,22 @@ Include both ambient layers and punctuating sounds as appropriate for this level
         volume: parseFloat(effect.volume) || 0.5,
         reason: effect.reason,
         offset: timing.offset,
-        fadeIn: timing.fadeIn
+        fadeIn: timing.fadeIn,
+        importance // P0 FIX: Track importance for filtering
       };
     });
+
+    // P0 FIX: Enforce SFX_LEVELS limits
+    // 1. Filter by minimum importance threshold
+    const filteredByImportance = effects.filter(e => e.importance >= levelConfig.minImportance);
+
+    // 2. Sort by importance (highest first) and limit to max
+    const sortedEffects = filteredByImportance.sort((a, b) => b.importance - a.importance);
+    const limitedEffects = sortedEffects.slice(0, levelConfig.targetEffects.max);
+
+    logger.info(`[SFXCoordinator] Level: ${sfxLevel} | Raw: ${effects.length} | After importance filter: ${filteredByImportance.length} | Final: ${limitedEffects.length}`);
+
+    return limitedEffects;
   }
 
   /**

@@ -32,6 +32,9 @@ function ChapterSelector({
   maxVisible = 5
 }) {
   const [showAllModal, setShowAllModal] = useState(false);
+  const supportsHover = typeof window !== 'undefined'
+    ? window.matchMedia?.('(hover: hover) and (pointer: fine)')?.matches ?? false
+    : true;
 
   const terms = getStoryTerminology(storyFormat, storyType);
 
@@ -61,9 +64,9 @@ function ChapterSelector({
       return 'bg-golden-400 text-slate-900 border-golden-400 font-bold shadow-md shadow-golden-400/30';
     }
     if (played) {
-      return 'bg-slate-600 text-slate-200 border-slate-500 hover:border-golden-400/50';
+      return `bg-slate-600 text-slate-200 border-slate-500 ${supportsHover ? 'hover:border-golden-400/50' : ''}`;
     }
-    return 'bg-slate-800 text-slate-400 border-slate-600 hover:border-slate-400';
+    return `bg-slate-800 text-slate-400 border-slate-600 ${supportsHover ? 'hover:border-slate-400' : ''}`;
   };
 
   return (
@@ -83,7 +86,7 @@ function ChapterSelector({
               onClick={() => handleClick(chapterNum)}
               disabled={disabled || chapterNum === currentChapter}
               className={`
-                w-8 h-8 rounded-full border-2 text-sm font-medium
+                w-11 h-11 rounded-full border-2 text-sm font-medium
                 transition-all duration-150
                 disabled:cursor-default
                 ${getButtonStyle(chapterNum)}
@@ -103,9 +106,10 @@ function ChapterSelector({
               onClick={() => setShowAllModal(true)}
               disabled={disabled}
               className={`
-                w-8 h-8 rounded-full border-2 border-slate-600 bg-slate-800
+                w-11 h-11 rounded-full border-2 border-slate-600 bg-slate-800
                 flex items-center justify-center
-                hover:border-slate-400 transition-all
+                ${supportsHover ? 'hover:border-slate-400' : ''}
+                transition-all
                 ${disabled ? 'opacity-50 cursor-not-allowed' : ''}
               `}
               title={`Show all ${totalChapters} ${terms.plural.toLowerCase()}`}
@@ -129,17 +133,21 @@ function ChapterSelector({
           onClick={() => setShowAllModal(false)}
         >
           <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="chapter-selector-title"
             className="bg-slate-800 rounded-2xl border border-slate-600 p-4 max-w-md w-full max-h-[80vh] overflow-y-auto"
             onClick={(e) => e.stopPropagation()}
           >
             {/* Modal header */}
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-golden-400 font-semibold">
+              <h3 id="chapter-selector-title" className="text-golden-400 font-semibold">
                 All {terms.plural}
               </h3>
               <button
                 onClick={() => setShowAllModal(false)}
-                className="p-1.5 rounded-lg hover:bg-slate-700 transition-colors"
+                className={`w-11 h-11 rounded-lg flex items-center justify-center ${supportsHover ? 'hover:bg-slate-700' : ''} transition-colors`}
+                aria-label="Close chapter selector"
               >
                 <X className="w-5 h-5 text-slate-400" />
               </button>
@@ -153,7 +161,7 @@ function ChapterSelector({
                   onClick={() => handleClick(chapterNum)}
                   disabled={disabled || chapterNum === currentChapter}
                   className={`
-                    w-full aspect-square rounded-lg border-2 text-sm font-medium
+                    w-full aspect-square min-h-[44px] rounded-lg border-2 text-sm font-medium
                     transition-all duration-150
                     disabled:cursor-default
                     ${getButtonStyle(chapterNum)}

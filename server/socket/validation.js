@@ -38,6 +38,23 @@ const eventSchemas = {
     };
   },
 
+  'rejoin-session': (data) => {
+    if (!data || typeof data !== 'object') {
+      return { valid: false, error: 'Data must be an object' };
+    }
+    const sessionId = data.sessionId || data.session_id;
+    if (!sessionId || !UUID_REGEX.test(sessionId)) {
+      return { valid: false, error: 'Invalid session_id format' };
+    }
+    return {
+      valid: true,
+      sanitized: {
+        sessionId,
+        session_id: sessionId
+      }
+    };
+  },
+
   'leave-session': () => ({ valid: true }),
 
   'join-room': (data) => {
@@ -92,7 +109,8 @@ const eventSchemas = {
         sessionId: sessionId,
         session_id: sessionId,
         transcript: data.transcript ? sanitizeText(String(data.transcript), 5000) : '',
-        audio: data.audio // Audio buffer, validated by type
+        audio: data.audio, // Audio buffer, validated by type
+        confidence: Number.isFinite(data.confidence) ? Math.max(0, Math.min(1, data.confidence)) : null
       }
     };
   },
@@ -111,7 +129,9 @@ const eventSchemas = {
       sanitized: {
         sessionId: sessionId,
         session_id: sessionId,
-        direction: data.direction ? sanitizeText(String(data.direction), 1000) : null
+        direction: data.direction ? sanitizeText(String(data.direction), 1000) : null,
+        voice_id: data.voice_id || data.voiceId || null,
+        autoplay: data.autoplay === true
       }
     };
   },
@@ -158,6 +178,17 @@ const eventSchemas = {
     return { valid: true, sanitized: { sessionId: sessionId, session_id: sessionId } };
   },
 
+  'check-ready': (data) => {
+    if (!data || typeof data !== 'object') {
+      return { valid: false, error: 'Data must be an object' };
+    }
+    const sessionId = data.sessionId || data.session_id;
+    if (!sessionId || !UUID_REGEX.test(sessionId)) {
+      return { valid: false, error: 'Invalid sessionId format' };
+    }
+    return { valid: true, sanitized: { sessionId, session_id: sessionId } };
+  },
+
   'retry-stage': (data) => {
     if (!data || typeof data !== 'object') {
       return { valid: false, error: 'Data must be an object' };
@@ -167,7 +198,7 @@ const eventSchemas = {
     if (!sessionId || !UUID_REGEX.test(sessionId)) {
       return { valid: false, error: 'Invalid sessionId format' };
     }
-    const validStages = ['config', 'story', 'cover', 'synopsis', 'voices', 'narration', 'sfx'];
+    const validStages = ['voices', 'sfx', 'cover', 'qa', 'audio'];
     if (!data.stage || !validStages.includes(data.stage)) {
       return { valid: false, error: `Invalid stage. Must be one of: ${validStages.join(', ')}` };
     }
@@ -269,7 +300,55 @@ const eventSchemas = {
         sessionId: sessionId,
         session_id: sessionId,
         choice_key: choiceKey ? choiceKey.toUpperCase() : null,
-        choice_id: choiceId || null
+        choice_id: choiceId || null,
+        from_recording: data.from_recording === true,
+        diverge_at_segment: Number.isInteger(data.diverge_at_segment) ? data.diverge_at_segment : null
+      }
+    };
+  },
+
+  'request-picture-book-images': (data) => {
+    if (!data || typeof data !== 'object') {
+      return { valid: false, error: 'Data must be an object' };
+    }
+    const sessionId = data.sessionId || data.session_id;
+    const sceneId = data.sceneId || data.scene_id;
+    if (!sessionId || !UUID_REGEX.test(sessionId)) {
+      return { valid: false, error: 'Invalid sessionId format' };
+    }
+    if (!sceneId || !UUID_REGEX.test(sceneId)) {
+      return { valid: false, error: 'Invalid scene_id format' };
+    }
+    return {
+      valid: true,
+      sanitized: {
+        sessionId,
+        session_id: sessionId,
+        sceneId,
+        scene_id: sceneId
+      }
+    };
+  },
+
+  'request-scene-audio': (data) => {
+    if (!data || typeof data !== 'object') {
+      return { valid: false, error: 'Data must be an object' };
+    }
+    const sessionId = data.sessionId || data.session_id;
+    const sceneId = data.sceneId || data.scene_id;
+    if (!sessionId || !UUID_REGEX.test(sessionId)) {
+      return { valid: false, error: 'Invalid sessionId format' };
+    }
+    if (sceneId && !UUID_REGEX.test(sceneId)) {
+      return { valid: false, error: 'Invalid scene_id format' };
+    }
+    return {
+      valid: true,
+      sanitized: {
+        sessionId,
+        session_id: sessionId,
+        sceneId: sceneId || null,
+        scene_id: sceneId || null
       }
     };
   },
@@ -385,6 +464,8 @@ const rateLimitConfig = {
   'voice-input': { maxRequests: 10, windowMs: 1000 },
   'continue-story': { maxRequests: 5, windowMs: 5000 },
   'submit-choice': { maxRequests: 10, windowMs: 5000 },
+  'request-scene-audio': { maxRequests: 10, windowMs: 5000 },
+  'request-picture-book-images': { maxRequests: 10, windowMs: 10000 },
   'regenerate-cover': { maxRequests: 3, windowMs: 30000 },
   'regenerate-synopsis': { maxRequests: 3, windowMs: 30000 },
   'regenerate-sfx': { maxRequests: 3, windowMs: 30000 },

@@ -17,6 +17,7 @@ import * as falAI from './falAI.js';
 import { completion, parseJsonResponse } from './openai.js';
 import { getUtilityModel } from './modelSelection.js';
 import { trackFalAIUsage } from './usageTracker.js';
+import { composeScene, compositeMultipleCharacters } from './imageCompositor.js';
 
 // Configuration
 const IMAGES_PER_SCENE = { min: 3, max: 5, default: 4 };
@@ -192,10 +193,73 @@ async function generateSceneImage(prompt, characterRef, sessionId, tier = 1) {
 }
 
 /**
+ * Composite additional characters onto a scene image
+ * Used for multi-character scenes where we want to overlay character portraits
+ *
+ * @param {string} baseImageUrl - URL of the generated scene image
+ * @param {Array} characters - Array of character objects with reference images
+ * @param {string} sceneId - Scene identifier for logging
+ * @returns {Promise<Object>} Result with composited image URL or original if fails
+ */
+async function compositeCharacterOverlays(baseImageUrl, characters, sceneId) {
+  // Filter to characters with reference images (these should already have background removed)
+  const charsWithImages = characters.filter(c => c.reference_image_url || c.portrait_url);
+
+  if (charsWithImages.length < 2) {
+    // No need to composite if only 1 or no characters
+    return { imageUrl: baseImageUrl, wasComposited: false };
+  }
+
+  try {
+    // Assign positions based on number of characters
+    const positionMap = {
+      2: ['left', 'right'],
+      3: ['left', 'center', 'right'],
+      4: ['farLeft', 'left', 'right', 'farRight']
+    };
+    const positions = positionMap[Math.min(charsWithImages.length, 4)] || positionMap[4];
+
+    // Build character array for compositor
+    const characterOverlays = charsWithImages.slice(0, 4).map((char, idx) => ({
+      url: char.reference_image_url || char.portrait_url,
+      position: positions[idx],
+      name: char.name
+    }));
+
+    logger.info(`[PictureBook] Compositing ${characterOverlays.length} characters onto scene ${sceneId}`);
+
+    // Use imageCompositor to composite all characters onto the background
+    const result = await composeScene({
+      backgroundUrl: baseImageUrl,
+      characters: characterOverlays,
+      sceneId,
+      kenBurnsEffect: 'zoomIn'
+    });
+
+    if (result?.success && result.imageUrl) {
+      logger.info(`[PictureBook] Successfully composited characters onto scene ${sceneId}`);
+      return {
+        imageUrl: result.imageUrl,
+        wasComposited: true,
+        characterCount: characterOverlays.length
+      };
+    }
+
+    return { imageUrl: baseImageUrl, wasComposited: false };
+
+  } catch (error) {
+    logger.warn(`[PictureBook] Character compositing failed for scene ${sceneId}: ${error.message}`);
+    // Return original image if compositing fails
+    return { imageUrl: baseImageUrl, wasComposited: false, error: error.message };
+  }
+}
+
+/**
  * Generate all images for a scene with fallback tiers
+ * Optionally composites multiple characters onto scene images
  */
 async function generateSceneImages(sceneId, sceneText, characters, wordTimings, options = {}) {
-  const { sessionId, style = 'storybook' } = options;
+  const { sessionId, style = 'storybook', enableCompositing = true } = options;
 
   logger.info(`[PictureBook] Generating images for scene ${sceneId}`);
 
@@ -247,6 +311,31 @@ async function generateSceneImages(sceneId, sceneText, characters, wordTimings, 
     }
 
     if (imageResult?.success) {
+      let finalImageUrl = imageResult.imageUrl;
+      let wasComposited = false;
+
+      // Step 4: Composite additional characters if enabled and multiple characters in scene
+      if (enableCompositing && breakpoint.characters?.length > 1) {
+        // Get all characters in this breakpoint that have reference images
+        const sceneChars = breakpoint.characters
+          .map(charName => charactersWithRefs.find(c => c.name === charName))
+          .filter(Boolean);
+
+        if (sceneChars.length > 1) {
+          const compositeResult = await compositeCharacterOverlays(
+            imageResult.imageUrl,
+            sceneChars,
+            sceneId
+          );
+
+          if (compositeResult.wasComposited) {
+            finalImageUrl = compositeResult.imageUrl;
+            wasComposited = true;
+            logger.info(`[PictureBook] Composited ${compositeResult.characterCount} characters onto image ${i + 1}`);
+          }
+        }
+      }
+
       // Save to database
       const insertResult = await pool.query(`
         INSERT INTO scene_images (
@@ -258,7 +347,7 @@ async function generateSceneImages(sceneId, sceneText, characters, wordTimings, 
       `, [
         sessionId,
         sceneId,
-        imageResult.imageUrl,
+        finalImageUrl,
         prompts[imageResult.tier - 1]?.prompt || '',
         imageResult.tier,
         i,
@@ -266,17 +355,18 @@ async function generateSceneImages(sceneId, sceneText, characters, wordTimings, 
         breakpoint.trigger_time_ms,
         primaryChar?.id,
         breakpoint.characters,
-        imageResult.provider,
-        'instant-character'
+        wasComposited ? 'compositor' : imageResult.provider,
+        wasComposited ? 'sharp-composite' : 'instant-character'
       ]);
 
       generatedImages.push({
         id: insertResult.rows[0].id,
         sequence_index: i,
-        image_url: imageResult.imageUrl,
+        image_url: finalImageUrl,
         trigger_word_index: breakpoint.word_index,
         trigger_time_ms: breakpoint.trigger_time_ms,
-        tier_used: imageResult.tier
+        tier_used: imageResult.tier,
+        wasComposited
       });
 
       logger.info(`[PictureBook] Image ${i + 1}/${enhancedBreakpoints.length} generated (tier ${imageResult.tier})`);
@@ -294,41 +384,66 @@ async function generateSceneImages(sceneId, sceneText, characters, wordTimings, 
 /**
  * Pre-generate character reference portraits for picture book mode
  * Called during launch sequence before story generation begins
+ *
+ * NOTE: Characters from outline.main_characters don't have database IDs yet -
+ * they're LLM-generated objects. We must look up by name to get the real ID.
  */
 async function preGenerateCharacterReferences(sessionId, characters, style = 'storybook') {
   const results = [];
 
   for (const character of characters) {
+    const characterName = character.name || 'Unknown';
+
+    // Check if already has reference (in case of retry)
     if (character.reference_image_url) {
-      // Already has reference
-      results.push({ characterId: character.id, success: true, existing: true });
+      results.push({ characterId: character.id, characterName, success: true, existing: true });
       continue;
     }
 
     try {
+      // FIX: Look up character by name to get the database-generated ID
+      // Characters from outline don't have IDs - they're LLM-generated data
+      const charLookup = await pool.query(
+        'SELECT id FROM characters WHERE story_session_id = $1 AND name = $2',
+        [sessionId, characterName]
+      );
+
+      if (charLookup.rows.length === 0) {
+        logger.warn(`[PictureBook] Character "${characterName}" not found in database - may not be saved yet`);
+        results.push({
+          characterId: null,
+          characterName,
+          success: false,
+          error: 'Character not in database yet'
+        });
+        continue;
+      }
+
+      const dbCharacterId = charLookup.rows[0].id;
+
       // Generate portrait using existing portrait generator
       const { generateAndStoreCharacterReference } = await import('./portraitGenerator.js');
 
       const result = await generateAndStoreCharacterReference(
-        character.id,
+        dbCharacterId,
         sessionId,
         { style }
       );
 
       results.push({
-        characterId: character.id,
-        characterName: character.name,
+        characterId: dbCharacterId,
+        characterName,
         success: result?.success || false,
         imageUrl: result?.imageUrl
       });
 
-      logger.info(`[PictureBook] Generated reference for ${character.name}`);
+      logger.info(`[PictureBook] Generated reference for ${characterName} (id: ${dbCharacterId})`);
 
     } catch (error) {
-      logger.error(`[PictureBook] Failed to generate reference for ${character.name}:`, error);
+      logger.error(`[PictureBook] Failed to generate reference for ${characterName}:`, error);
       results.push({
-        characterId: character.id,
-        characterName: character.name,
+        characterId: character.id || null,
+        characterName,
         success: false,
         error: error.message
       });
@@ -374,6 +489,7 @@ export {
   generateSceneImages,
   generateImageBreakpoints,
   generateImagePrompts,
+  compositeCharacterOverlays,
   preGenerateCharacterReferences,
   getSceneImages,
   isPictureBookMode,
@@ -384,6 +500,7 @@ export {
 export default {
   generateSceneImages,
   generateImageBreakpoints,
+  compositeCharacterOverlays,
   preGenerateCharacterReferences,
   getSceneImages,
   isPictureBookMode

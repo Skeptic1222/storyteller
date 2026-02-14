@@ -6,8 +6,67 @@
  *
  * The deprecated parts (tagDialogue, attributeDialoguesWithLLM) have been
  * archived to _archived/ folder.
+ *
+ * v2.1 (2026-01-27): ElevenLabs V3 Audio Quality Initiative
+ * - Made deduplication LESS aggressive to preserve narrator bridging text
+ * - Exact duplicates still removed (real bugs)
+ * - Partial matches now preserved unless they're clearly duplicated dialogue
+ * - Added CONSERVATIVE_DEDUPLICATION flag for new behavior
  */
 import { logger } from '../../utils/logger.js';
+
+// Feature flag: Use conservative deduplication that preserves more narrator text
+// Set to 'false' to use the old aggressive deduplication
+const CONSERVATIVE_DEDUPLICATION = process.env.SEGMENT_CONSERVATIVE_DEDUP !== 'false';
+
+/**
+ * Check if narration text is a true duplicate vs intentional narrative repetition
+ * True duplicates: Same text appears due to position calculation errors
+ * Intentional repetition: Narrator echoes dialogue for literary effect ("It's time," she said. It's time.)
+ *
+ * @param {string} narration - The narrator text
+ * @param {string} dialogueQuote - The dialogue quote being checked
+ * @returns {Object} { isDuplicate: boolean, confidence: 'high'|'medium'|'low', reason: string }
+ */
+function checkIfTrueDuplicate(narration, dialogueQuote) {
+  const narrationLower = narration.toLowerCase().trim();
+  const quoteLower = dialogueQuote.toLowerCase().trim();
+
+  // Exact match is DEFINITELY a duplicate (position error)
+  if (narrationLower === quoteLower) {
+    return { isDuplicate: true, confidence: 'high', reason: 'exact_match' };
+  }
+
+  // If narration is MOSTLY the dialogue (>80% overlap), it's likely a position error
+  if (narrationLower.length > 10 && quoteLower.length > 10) {
+    const narrationWords = new Set(narrationLower.split(/\s+/));
+    const quoteWords = quoteLower.split(/\s+/);
+    const matchingWords = quoteWords.filter(w => narrationWords.has(w)).length;
+    const overlapRatio = matchingWords / Math.max(quoteWords.length, 1);
+
+    if (overlapRatio > 0.8 && Math.abs(narrationLower.length - quoteLower.length) < 20) {
+      return { isDuplicate: true, confidence: 'high', reason: `word_overlap_${Math.round(overlapRatio * 100)}%` };
+    }
+  }
+
+  // Narration contains the quote as a substring - could be:
+  // 1. Position error (dialogue text leaked into narrator segment)
+  // 2. Intentional echo ("Come here," she said. Come here.)
+  //
+  // In CONSERVATIVE mode, we DON'T remove these - they might be intentional
+  if (narrationLower.includes(quoteLower)) {
+    // Only consider it a duplicate if the quote makes up most of the narration
+    const quoteRatio = quoteLower.length / narrationLower.length;
+    if (quoteRatio > 0.7) {
+      return { isDuplicate: true, confidence: 'medium', reason: 'substring_dominant' };
+    }
+    // Quote is a small part of narration - likely intentional context
+    return { isDuplicate: false, confidence: 'medium', reason: 'substring_minor' };
+  }
+
+  // No significant overlap
+  return { isDuplicate: false, confidence: 'high', reason: 'no_overlap' };
+}
 
 /**
  * Helper to build segments from a sorted dialogue map
@@ -62,43 +121,68 @@ function buildSegmentsFromMap(sceneText, sortedMap) {
         }
 
         // ====================================================================
-        // DEDUPLICATION v2.0: Check against ALL dialogue quotes, not just next
+        // DEDUPLICATION v2.1: Conservative mode preserves narrator bridging text
+        // Only removes true duplicates (position errors), not intentional echoes
         // ====================================================================
-        const narrationLower = narration.toLowerCase();
+        if (CONSERVATIVE_DEDUPLICATION) {
+          // NEW: Conservative deduplication - only remove high-confidence duplicates
+          for (const quote of allDialogueQuotes) {
+            if (!quote) continue;
 
-        // Check if entire narration matches ANY dialogue quote
-        for (const quote of allDialogueQuotes) {
-          if (quote && narrationLower === quote) {
-            logger.warn(`[SegmentBuilder] EXACT DUPLICATE: Narration matches dialogue quote exactly, skipping`);
-            narration = '';
-            break;
-          }
-          // Check if narration contains a dialogue quote
-          if (quote && quote.length > 10 && narrationLower.includes(quote)) {
-            logger.warn(`[SegmentBuilder] CONTAINS_DUPLICATE: Narration contains dialogue quote "${quote.substring(0, 30)}..."`);
-            // Remove the duplicate dialogue from narration
-            const regex = new RegExp(quote.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
-            narration = narration.replace(regex, '').trim();
-            // Clean up any leftover punctuation
-            narration = narration.replace(/[""\u201C\u201D]\s*[""\u201C\u201D]/g, '').trim();
-            narration = narration.replace(/[""\u201C\u201D]\s*$/g, '').trim();
-            narration = narration.replace(/^\s*[""\u201C\u201D]/g, '').trim();
-          }
-        }
+            const dupCheck = checkIfTrueDuplicate(narration, quote);
 
-        // Also check for partial matches (start of dialogue in narration)
-        const quoteToCheck = dialogue.quote;
-        if (narration && quoteToCheck && quoteToCheck.length > 20) {
-          const firstHalf = quoteToCheck.substring(0, Math.floor(quoteToCheck.length / 2));
-          if (narration.toLowerCase().includes(firstHalf.toLowerCase())) {
-            logger.warn(`[SegmentBuilder] PARTIAL_DUPLICATE: Narration contains start of dialogue "${firstHalf.substring(0, 20)}..."`);
-            // Find and remove everything from the partial match onward
-            const partialIdx = narration.toLowerCase().indexOf(firstHalf.toLowerCase());
-            if (partialIdx !== -1) {
-              narration = narration.substring(0, partialIdx).trim();
-              // Clean trailing punctuation/quotes
-              narration = narration.replace(/[,;:\s]*[""\u201C\u201D]?\s*$/, '').trim();
-              logger.info(`[SegmentBuilder] Truncated narration at partial match: "${narration.substring(0, 50)}..."`);
+            if (dupCheck.isDuplicate && dupCheck.confidence === 'high') {
+              logger.warn(`[SegmentBuilder] TRUE_DUPLICATE (${dupCheck.reason}): Removing narration that duplicates dialogue`);
+              narration = '';
+              break;
+            } else if (dupCheck.isDuplicate && dupCheck.confidence === 'medium') {
+              // Medium confidence - log but still remove (likely position error)
+              logger.warn(`[SegmentBuilder] LIKELY_DUPLICATE (${dupCheck.reason}): Removing narration - probably position error`);
+              narration = '';
+              break;
+            } else if (!dupCheck.isDuplicate && dupCheck.reason === 'substring_minor') {
+              // Narration contains dialogue but it's a small part - KEEP the narration
+              logger.info(`[SegmentBuilder] KEEPING_NARRATION: Contains dialogue substring but appears intentional (${dupCheck.reason})`);
+            }
+          }
+        } else {
+          // LEGACY: Aggressive deduplication (original v2.0 behavior)
+          const narrationLower = narration.toLowerCase();
+
+          // Check if entire narration matches ANY dialogue quote
+          for (const quote of allDialogueQuotes) {
+            if (quote && narrationLower === quote) {
+              logger.warn(`[SegmentBuilder] EXACT DUPLICATE: Narration matches dialogue quote exactly, skipping`);
+              narration = '';
+              break;
+            }
+            // Check if narration contains a dialogue quote
+            if (quote && quote.length > 10 && narrationLower.includes(quote)) {
+              logger.warn(`[SegmentBuilder] CONTAINS_DUPLICATE: Narration contains dialogue quote "${quote.substring(0, 30)}..."`);
+              // Remove the duplicate dialogue from narration
+              const regex = new RegExp(quote.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+              narration = narration.replace(regex, '').trim();
+              // Clean up any leftover punctuation
+              narration = narration.replace(/[""\u201C\u201D]\s*[""\u201C\u201D]/g, '').trim();
+              narration = narration.replace(/[""\u201C\u201D]\s*$/g, '').trim();
+              narration = narration.replace(/^\s*[""\u201C\u201D]/g, '').trim();
+            }
+          }
+
+          // Also check for partial matches (start of dialogue in narration)
+          const quoteToCheck = dialogue.quote;
+          if (narration && quoteToCheck && quoteToCheck.length > 20) {
+            const firstHalf = quoteToCheck.substring(0, Math.floor(quoteToCheck.length / 2));
+            if (narration.toLowerCase().includes(firstHalf.toLowerCase())) {
+              logger.warn(`[SegmentBuilder] PARTIAL_DUPLICATE: Narration contains start of dialogue "${firstHalf.substring(0, 20)}..."`);
+              // Find and remove everything from the partial match onward
+              const partialIdx = narration.toLowerCase().indexOf(firstHalf.toLowerCase());
+              if (partialIdx !== -1) {
+                narration = narration.substring(0, partialIdx).trim();
+                // Clean trailing punctuation/quotes
+                narration = narration.replace(/[,;:\s]*[""\u201C\u201D]?\s*$/, '').trim();
+                logger.info(`[SegmentBuilder] Truncated narration at partial match: "${narration.substring(0, 50)}..."`);
+              }
             }
           }
         }
@@ -146,7 +230,39 @@ function buildSegmentsFromMap(sceneText, sortedMap) {
     // CRITICAL FIX (2025-12-12): Extract dialogue text DIRECTLY from prose at the calculated positions
     // Previously we used dialogue.quote which could be truncated or different from actual prose
     // This caused narrator segments to contain fragments of dialogue that weren't captured
-    const proseAtPosition = sceneText.slice(dialogue.start_char, dialogue.end_char);
+    //
+    // FIX (2026-01-23): Don't trust dialogue.end_char - it may be wrong!
+    // Instead, find the actual closing quote from start_char position.
+    let actualEndChar = dialogue.end_char;
+    const startChar = sceneText[dialogue.start_char];
+
+    // If the dialogue starts with a quote mark, find the matching closing quote
+    if (startChar === '"' || startChar === '"' || startChar === '\u201C') {
+      const closingQuotes = ['"', '"', '\u201D'];
+      let foundClosing = -1;
+      let depth = 0;
+
+      for (let pos = dialogue.start_char + 1; pos < sceneText.length; pos++) {
+        const char = sceneText[pos];
+        // Handle nested quotes (rare but possible)
+        if (char === '"' || char === '"' || char === '\u201C') {
+          depth++;
+        } else if (closingQuotes.includes(char)) {
+          if (depth === 0) {
+            foundClosing = pos + 1; // Include the closing quote
+            break;
+          }
+          depth--;
+        }
+      }
+
+      if (foundClosing !== -1 && foundClosing !== actualEndChar) {
+        logger.warn(`[SegmentBuilder] END_CHAR_FIX[${i}] | stored: ${dialogue.end_char} | actual: ${foundClosing} | diff: ${foundClosing - dialogue.end_char} chars`);
+        actualEndChar = foundClosing;
+      }
+    }
+
+    const proseAtPosition = sceneText.slice(dialogue.start_char, actualEndChar);
     logger.info(`[SegmentBuilder] PROSE_AT_POS[${i}] | raw: "${proseAtPosition}" | len: ${proseAtPosition.length}`);
 
     // Remove surrounding quote marks from the prose text
@@ -155,15 +271,51 @@ function buildSegmentsFromMap(sceneText, sortedMap) {
       .replace(/[""\u201C\u201D'"]+$/, '') // Remove trailing quotes
       .trim();
 
-    // If we couldn't extract valid text, fall back to dialogue.quote
+    // Fail loud if extraction fails or mismatches
     if (!dialogueText || dialogueText.length === 0) {
-      dialogueText = dialogue.quote;
-      logger.error(`[SegmentBuilder] DIALOGUE_FALLBACK[${i}] | prose extraction empty, using quote: "${dialogue.quote?.substring(0, 40)}..."`);
-    } else if (dialogueText !== dialogue.quote) {
-      // Log when extracted text differs from expected quote - THIS IS THE KEY DIAGNOSTIC
-      logger.warn(`[SegmentBuilder] DIALOGUE_MISMATCH[${i}] | extracted: "${dialogueText}" | original: "${dialogue.quote}" | lenDiff: ${dialogueText.length - (dialogue.quote?.length || 0)}`);
-    } else {
-      logger.info(`[SegmentBuilder] DIALOGUE_MATCH[${i}] | text: "${dialogueText.substring(0, 40)}..." | len: ${dialogueText.length}`);
+      const err = `[SegmentBuilder] FAIL_LOUD: prose extraction empty for dialogue[${i}] (speaker: ${dialogue.speaker})`;
+      logger.error(err);
+      throw new Error(err);
+    }
+
+    // BUG FIX: Normalize both sides before comparing (dialogue.quote may have surrounding quotes)
+    const normalizedOriginal = dialogue.quote
+      .replace(/^[""\u201C\u201D'"]+/, '')
+      .replace(/[""\u201C\u201D'"]+$/, '')
+      .trim();
+
+    // Allow partial matches - sometimes the dialogue_map has extra context words
+    // e.g., "You said debts and bad luck." in map but prose only has "debts and bad luck."
+    const isExactMatch = dialogueText === normalizedOriginal;
+    const isSubstringMatch = normalizedOriginal.includes(dialogueText) || dialogueText.includes(normalizedOriginal);
+
+    // FUZZY MATCH (2026-01-23): LLM sometimes writes slightly different text in dialogue_map vs prose
+    // e.g., "She said it sounded like a choir" in map vs "it sounded like a choir" in prose
+    // If the start AND end match, the middle likely has minor wording differences - use extracted text
+    const fuzzyMatchThreshold = 20; // Check first/last 20 chars
+    const extractedStart = dialogueText.substring(0, fuzzyMatchThreshold).toLowerCase();
+    const originalStart = normalizedOriginal.substring(0, fuzzyMatchThreshold).toLowerCase();
+    const extractedEnd = dialogueText.slice(-fuzzyMatchThreshold).toLowerCase();
+    const originalEnd = normalizedOriginal.slice(-fuzzyMatchThreshold).toLowerCase();
+    const isFuzzyMatch = extractedStart === originalStart && extractedEnd === originalEnd;
+
+    if (!isExactMatch && !isSubstringMatch && !isFuzzyMatch) {
+      // Last resort: check if they share significant content (>60% overlap)
+      const extractedWords = new Set(dialogueText.toLowerCase().split(/\s+/));
+      const originalWords = normalizedOriginal.toLowerCase().split(/\s+/);
+      const matchingWords = originalWords.filter(w => extractedWords.has(w)).length;
+      const overlapRatio = matchingWords / Math.max(originalWords.length, 1);
+
+      if (overlapRatio < 0.6) {
+        const err = `[SegmentBuilder] FAIL_LOUD: DIALOGUE_MISMATCH[${i}] | extracted: "${dialogueText.substring(0, 50)}..." | original: "${normalizedOriginal.substring(0, 50)}..." | overlap: ${(overlapRatio * 100).toFixed(1)}%`;
+        logger.error(err);
+        throw new Error(err);
+      }
+      logger.warn(`[SegmentBuilder] DIALOGUE_WORD_OVERLAP[${i}] | overlap: ${(overlapRatio * 100).toFixed(1)}% | using extracted text from prose`);
+    }
+
+    if (!isExactMatch && (isSubstringMatch || isFuzzyMatch)) {
+      logger.warn(`[SegmentBuilder] DIALOGUE_PARTIAL_MATCH[${i}] | extracted: "${dialogueText.substring(0, 40)}..." | original: "${normalizedOriginal.substring(0, 40)}..." | using extracted text`);
     }
 
     // Add the dialogue
@@ -176,7 +328,7 @@ function buildSegmentsFromMap(sceneText, sortedMap) {
     });
     logger.info(`[SegmentBuilder] SEGMENT_ADDED[${i}] | type: dialogue | speaker: ${dialogue.speaker} | text: "${dialogueText?.substring(0, 50)}..." | len: ${dialogueText?.length || 0}`);
 
-    lastIndex = dialogue.end_char;
+    lastIndex = actualEndChar;
     logger.info(`[SegmentBuilder] LASTINDEX_UPDATE[${i}] | newLastIndex: ${lastIndex}`);
   }
 
@@ -186,19 +338,35 @@ function buildSegmentsFromMap(sceneText, sortedMap) {
 
     // Check final narration against all dialogue quotes for duplicates
     if (remaining) {
-      const remainingLower = remaining.toLowerCase();
-      for (const quote of allDialogueQuotes) {
-        if (quote && remainingLower === quote) {
-          logger.warn(`[SegmentBuilder] FINAL_EXACT_DUPLICATE: Final narration matches dialogue, skipping`);
-          remaining = '';
-          break;
+      if (CONSERVATIVE_DEDUPLICATION) {
+        // NEW: Conservative deduplication for final narration
+        for (const quote of allDialogueQuotes) {
+          if (!quote) continue;
+
+          const dupCheck = checkIfTrueDuplicate(remaining, quote);
+
+          if (dupCheck.isDuplicate && (dupCheck.confidence === 'high' || dupCheck.confidence === 'medium')) {
+            logger.warn(`[SegmentBuilder] FINAL_TRUE_DUPLICATE (${dupCheck.reason}): Removing final narration`);
+            remaining = '';
+            break;
+          }
         }
-        if (quote && quote.length > 10 && remainingLower.includes(quote)) {
-          logger.warn(`[SegmentBuilder] FINAL_CONTAINS_DUPLICATE: Final narration contains dialogue "${quote.substring(0, 30)}..."`);
-          const regex = new RegExp(quote.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
-          remaining = remaining.replace(regex, '').trim();
-          remaining = remaining.replace(/[""\u201C\u201D]\s*[""\u201C\u201D]/g, '').trim();
-          remaining = remaining.replace(/[""\u201C\u201D]\s*$/g, '').trim();
+      } else {
+        // LEGACY: Aggressive deduplication
+        const remainingLower = remaining.toLowerCase();
+        for (const quote of allDialogueQuotes) {
+          if (quote && remainingLower === quote) {
+            logger.warn(`[SegmentBuilder] FINAL_EXACT_DUPLICATE: Final narration matches dialogue, skipping`);
+            remaining = '';
+            break;
+          }
+          if (quote && quote.length > 10 && remainingLower.includes(quote)) {
+            logger.warn(`[SegmentBuilder] FINAL_CONTAINS_DUPLICATE: Final narration contains dialogue "${quote.substring(0, 30)}..."`);
+            const regex = new RegExp(quote.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+            remaining = remaining.replace(regex, '').trim();
+            remaining = remaining.replace(/[""\u201C\u201D]\s*[""\u201C\u201D]/g, '').trim();
+            remaining = remaining.replace(/[""\u201C\u201D]\s*$/g, '').trim();
+          }
         }
       }
     }

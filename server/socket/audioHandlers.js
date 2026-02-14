@@ -10,20 +10,115 @@ import { Orchestrator } from '../services/orchestrator.js';
 import { recordingService } from '../services/recording.js';
 import { existsSync } from 'fs';
 import { readFile } from 'fs/promises';
-import { join, dirname } from 'path';
+import { join, dirname, resolve, sep } from 'path';
 import { fileURLToPath } from 'url';
 import {
   pendingAudio,
   broadcastToRoom
 } from './state.js';
 import { requireSessionOwner } from './socketAuth.js';
+import * as pictureBookImageGenerator from '../services/pictureBookImageGenerator.js';
 import { buildTrailerIntro } from '../utils/trailerIntro.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const AUDIO_CACHE_DIR = process.env.AUDIO_CACHE_DIR || join(__dirname, '..', '..', 'public', 'audio');
+const PUBLIC_DIR = resolve(process.cwd(), 'public');
+const AUDIO_CACHE_ROOT = resolve(AUDIO_CACHE_DIR);
 
 const elevenlabs = new ElevenLabsService();
+
+function isPathWithinRoot(candidatePath, rootPath) {
+  return candidatePath === rootPath || candidatePath.startsWith(`${rootPath}${sep}`);
+}
+
+function resolveSafeAudioPath(audioUrl) {
+  if (!audioUrl || typeof audioUrl !== 'string') return null;
+
+  const value = audioUrl.trim();
+  if (!value || value.includes('\0')) return null;
+  if (/^https?:\/\//i.test(value)) return null;
+  if (/^[a-zA-Z]:[\\/]/.test(value) || value.startsWith('\\\\')) return null;
+
+  let resolvedPath;
+  if (value.startsWith('/storyteller/')) {
+    const relative = value.replace(/^\/storyteller\/+/, '');
+    resolvedPath = resolve(PUBLIC_DIR, relative);
+  } else if (value.startsWith('/')) {
+    const relative = value.replace(/^\/+/, '');
+    resolvedPath = resolve(PUBLIC_DIR, relative);
+  } else {
+    resolvedPath = resolve(AUDIO_CACHE_ROOT, value);
+  }
+
+  if (
+    isPathWithinRoot(resolvedPath, PUBLIC_DIR) ||
+    isPathWithinRoot(resolvedPath, AUDIO_CACHE_ROOT)
+  ) {
+    return resolvedPath;
+  }
+
+  return null;
+}
+
+/**
+ * Generate picture book images asynchronously
+ * Triggered after audio is ready with word timings for sync
+ */
+async function generatePictureBookImagesAsync(sessionId, scene, wordTimings, configJson) {
+  try {
+    const isPictureBook = await pictureBookImageGenerator.isPictureBookMode(sessionId);
+    if (!isPictureBook && configJson?.story_format !== 'picture_book') {
+      return;
+    }
+
+    logger.info(`[PictureBook] Starting background image generation for scene ${scene.id}`);
+    broadcastToRoom(sessionId, 'picture-book-generating', {
+      message: 'Generating storybook illustrations...',
+      sceneId: scene.id
+    });
+
+    const charResult = await pool.query(
+      'SELECT id, name, role, description, appearance, reference_image_url FROM characters WHERE story_session_id = $1',
+      [sessionId]
+    );
+    const characters = charResult.rows;
+
+    if (characters.length === 0) {
+      logger.warn(`[PictureBook] No characters found for session ${sessionId}`);
+      return;
+    }
+
+    const sceneText = scene.polished_text || scene.summary || '';
+    const style = configJson?.picture_book_style || 'storybook';
+
+    const images = await pictureBookImageGenerator.generateSceneImages(
+      scene.id,
+      sceneText,
+      characters,
+      wordTimings,
+      { sessionId, style }
+    );
+
+    if (images && images.length > 0) {
+      broadcastToRoom(sessionId, 'scene-images-ready', {
+        sceneId: scene.id,
+        sceneImages: images.map(img => ({
+          image_url: img.image_url,
+          trigger_word_index: img.trigger_word_index,
+          trigger_time_ms: img.trigger_time_ms,
+          sequence_index: img.sequence_index
+        }))
+      });
+    }
+  } catch (error) {
+    logger.error(`[PictureBook] Image generation failed:`, error);
+    broadcastToRoom(sessionId, 'picture-book-error', {
+      message: 'Failed to generate storybook illustrations',
+      error: error.message
+    });
+  }
+}
 
 /**
  * Setup playback-related socket handlers
@@ -86,6 +181,23 @@ export function setupPlaybackHandlers(socket, io) {
             wordTimings: audioDetails.scene.wordTimings || null,
             preloaded: true
           });
+
+          // Trigger picture book image generation in background (if enabled)
+          // Uses word timings to sync images with narration
+          const wordTimings = audioDetails.scene?.wordTimings;
+          if (wordTimings) {
+            try {
+              const configResult = await pool.query(
+                'SELECT config_json FROM story_sessions WHERE id = $1',
+                [session_id]
+              );
+              const configJson = configResult.rows[0]?.config_json;
+              // Fire and forget - don't await, runs in background
+              generatePictureBookImagesAsync(session_id, scene, wordTimings, configJson);
+            } catch (err) {
+              logger.warn(`[StartPlayback] Failed to trigger picture book images: ${err.message}`);
+            }
+          }
         }
 
         pendingAudio.delete(session_id);
@@ -109,6 +221,23 @@ export function setupPlaybackHandlers(socket, io) {
         stats.synopsis,
         isFirstScene
       );
+
+      // Trigger picture book image generation in background after audio is ready (fallback path)
+      // Word timings should now be stored in database from audio generation
+      try {
+        const [sceneResult, configResult] = await Promise.all([
+          pool.query('SELECT word_timings FROM story_scenes WHERE id = $1', [scene.id]),
+          pool.query('SELECT config_json FROM story_sessions WHERE id = $1', [session_id])
+        ]);
+        const wordTimings = sceneResult.rows[0]?.word_timings;
+        const configJson = configResult.rows[0]?.config_json;
+        if (wordTimings) {
+          // Fire and forget - runs in background
+          generatePictureBookImagesAsync(session_id, scene, wordTimings, configJson);
+        }
+      } catch (err) {
+        logger.warn(`[StartPlayback] Failed to trigger picture book images (fallback): ${err.message}`);
+      }
 
       pendingAudio.delete(session_id);
 
@@ -175,6 +304,106 @@ export function setupPlaybackHandlers(socket, io) {
   });
 
   /**
+   * Request picture book images for a scene (replay mode)
+   * Used when user loads an existing picture book story from library
+   * Checks if images already exist, generates them if needed
+   */
+  socket.on('request-picture-book-images', async (data) => {
+    const { session_id, scene_id } = data;
+    logger.info(`[Socket:Recv] EVENT: request-picture-book-images | session_id: ${session_id} | scene_id: ${scene_id}`);
+
+    if (!session_id || !scene_id) {
+      socket.emit('error', { message: 'session_id and scene_id are required' });
+      return;
+    }
+
+    try {
+      const user = await requireSessionOwner(socket, session_id);
+      if (!user) return;
+
+      // Check if this is a picture book session
+      const configResult = await pool.query(
+        "SELECT config_json FROM story_sessions WHERE id = $1",
+        [session_id]
+      );
+
+      if (!configResult.rows[0]) {
+        socket.emit('error', { message: 'Session not found' });
+        return;
+      }
+
+      const configJson = configResult.rows[0].config_json;
+      if (configJson?.story_format !== 'picture_book') {
+        logger.info(`[PictureBook] Session ${session_id} is not a picture book, skipping image generation`);
+        return;
+      }
+
+      // Check if images already exist for this scene
+      const existingImages = await pool.query(
+        `SELECT si.id, si.image_url, si.trigger_word_index, si.trigger_time_ms, si.sequence_index
+         FROM scene_images si
+         JOIN story_scenes sc ON sc.id = si.scene_id
+         WHERE si.scene_id = $1 AND sc.story_session_id = $2
+         ORDER BY si.sequence_index`,
+        [scene_id, session_id]
+      );
+
+      if (existingImages.rows.length > 0) {
+        logger.info(`[PictureBook] Found ${existingImages.rows.length} existing images for scene ${scene_id}`);
+        // Send existing images to client
+        socket.emit('scene-images-ready', {
+          sceneId: scene_id,
+          sceneImages: existingImages.rows.map(img => ({
+            image_url: img.image_url,
+            trigger_word_index: img.trigger_word_index,
+            trigger_time_ms: img.trigger_time_ms,
+            sequence_index: img.sequence_index
+          }))
+        });
+        return;
+      }
+
+      // No existing images - generate them
+      logger.info(`[PictureBook] No existing images for scene ${scene_id}, generating...`);
+
+      // Get scene data
+      const sceneResult = await pool.query(
+        `SELECT id, polished_text, summary, word_timings
+         FROM story_scenes
+         WHERE id = $1 AND story_session_id = $2`,
+        [scene_id, session_id]
+      );
+
+      if (!sceneResult.rows[0]) {
+        socket.emit('error', { message: 'Scene not found' });
+        return;
+      }
+
+      const scene = sceneResult.rows[0];
+      const wordTimings = scene.word_timings;
+
+      if (!wordTimings) {
+        logger.warn(`[PictureBook] No word timings available for scene ${scene_id}`);
+        socket.emit('picture-book-error', {
+          message: 'Cannot generate images: word timings not available',
+          sceneId: scene_id
+        });
+        return;
+      }
+
+      // Trigger async image generation (fire and forget)
+      generatePictureBookImagesAsync(session_id, scene, wordTimings, configJson);
+
+    } catch (error) {
+      logger.error(`[PictureBook] Request failed:`, error);
+      socket.emit('picture-book-error', {
+        message: 'Failed to request picture book images',
+        error: error.message
+      });
+    }
+  });
+
+  /**
    * Request audio generation for an existing scene (existing stories)
    * Used when user loads an existing story and clicks Play
    */
@@ -208,18 +437,19 @@ export function setupPlaybackHandlers(socket, io) {
       const synopsis = sessionResult.rows[0].synopsis;
 
       // Load the target scene (latest if not specified)
+      // FIXED: Include dialogue_map for multi-voice audio generation
       let sceneQuery;
       let sceneParams;
       if (scene_id) {
         sceneQuery = `
-          SELECT id, sequence_index, polished_text, audio_url, word_timings
+          SELECT id, sequence_index, polished_text, audio_url, word_timings, dialogue_map
           FROM story_scenes
           WHERE id = $1 AND story_session_id = $2
         `;
         sceneParams = [scene_id, session_id];
       } else {
         sceneQuery = `
-          SELECT id, sequence_index, polished_text, audio_url, word_timings
+          SELECT id, sequence_index, polished_text, audio_url, word_timings, dialogue_map
           FROM story_scenes
           WHERE story_session_id = $1
           ORDER BY sequence_index DESC
@@ -287,12 +517,11 @@ export async function streamAudioResponse(sessionId, text, voiceId) {
  */
 export async function streamCachedAudio(sessionId, audioUrl, options = {}) {
   try {
-    // Handle both relative and absolute paths
-    let audioPath = audioUrl;
-    if (audioUrl.startsWith('/')) {
-      audioPath = join(process.cwd(), 'public', audioUrl);
-    } else if (!audioUrl.includes(':')) {
-      audioPath = join(AUDIO_CACHE_DIR, audioUrl);
+    const audioPath = resolveSafeAudioPath(audioUrl);
+    if (!audioPath) {
+      logger.warn(`[CachedAudio] Rejected unsafe audio path: ${audioUrl}`);
+      broadcastToRoom(sessionId, 'audio-error', { message: 'Invalid cached audio path' });
+      return;
     }
 
     if (!existsSync(audioPath)) {
@@ -425,7 +654,7 @@ export async function streamSceneAudio(sessionId, scene, voiceId, title, synopsi
         return { type: result.cached ? 'cached' : 'generated', ...result };
       } catch (err) {
         logger.error(`[SceneAudio] Orchestrator scene audio failed: ${err.message}`);
-        return scene?.polished_text ? { type: 'fallback', text: scene.polished_text } : null;
+        throw new Error(`[SceneAudio] Orchestrator scene audio failed (fail-loud): ${err.message}`);
       }
     })();
 
@@ -466,35 +695,11 @@ export async function streamSceneAudio(sessionId, scene, voiceId, title, synopsi
     let sceneData = null;
     if (sceneResult) {
       if (sceneResult.type === 'cached') {
-        let cachedPath = sceneResult.audioUrl;
-        if (cachedPath) {
-          if (cachedPath.startsWith('/')) {
-            cachedPath = join(process.cwd(), 'public', cachedPath);
-          } else if (!cachedPath.includes(':')) {
-            cachedPath = join(AUDIO_CACHE_DIR, cachedPath);
-          }
-        }
+        const cachedPath = resolveSafeAudioPath(sceneResult.audioUrl);
 
         const cacheMissing = !cachedPath || !existsSync(cachedPath);
         if (cacheMissing) {
-          logger.warn(`[SceneAudio] Cached audio missing for ${scene.id}, regenerating...`);
-          const regenOrchestrator = new Orchestrator(sessionId);
-          const regen = await regenOrchestrator.generateSceneAudio(scene.id, effectiveVoiceId, {
-            onProgress,
-            forceRegenerate: true
-          });
-          if (regen?.audioBuffer) {
-            sceneData = {
-              audio: regen.audioBuffer.toString('base64'),
-              format: 'mp3',
-              size: regen.audioBuffer.length,
-              wordTimings: regen.wordTimings
-            };
-          } else if (scene.polished_text) {
-            // Fall back to simple TTS
-            await streamAudioResponse(sessionId, scene.polished_text, effectiveVoiceId);
-            return; // streamAudioResponse handles its own event emission
-          }
+          throw new Error(`[SceneAudio] Cached audio missing for ${scene.id}; regeneration required but not allowed in this flow`);
         } else {
           // Cached audio exists - stream it (handles its own event emission)
           // But first emit intro if available
@@ -512,21 +717,9 @@ export async function streamSceneAudio(sessionId, scene, voiceId, title, synopsi
           size: sceneResult.audioBuffer.length,
           wordTimings: sceneResult.wordTimings
         };
-      } else if (sceneResult.type === 'fallback') {
-        // Fall back to simple TTS - emit intro first if available
-        if (introData) {
-          broadcastToRoom(sessionId, 'intro-audio-ready', introData);
-        }
-        await streamAudioResponse(sessionId, sceneResult.text, effectiveVoiceId);
-        return;
       }
-    } else if (scene.polished_text) {
-      // No scene result, fall back to simple TTS
-      if (introData) {
-        broadcastToRoom(sessionId, 'intro-audio-ready', introData);
-      }
-      await streamAudioResponse(sessionId, scene.polished_text, effectiveVoiceId);
-      return;
+    } else {
+      throw new Error(`[SceneAudio] No sceneResult generated for scene ${scene.id}`);
     }
 
     // Bug 3 Fix: Emit single unified event with ALL audio ready

@@ -20,7 +20,11 @@ function StoryInfoPanel({
   if (!isOpen) return null;
 
   return (
-    <div className="bg-slate-800/95 border-b border-blue-500/30 p-4 max-h-96 overflow-y-auto">
+    <div
+      role="region"
+      aria-label="Story details panel"
+      className="bg-slate-800/95 border-b border-blue-500/30 p-4 max-h-96 overflow-y-auto"
+    >
       <h3 className="text-blue-400 font-medium flex items-center gap-2 mb-3">
         <BookOpen className="w-4 h-4" />
         Story Details

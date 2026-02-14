@@ -6,6 +6,15 @@
 import { pool } from '../database/pool.js';
 import { logger } from '../utils/logger.js';
 import crypto from 'crypto';
+import bcrypt from 'bcrypt';
+
+// Bcrypt cost factor - 12 is recommended for production (balances security vs performance)
+const BCRYPT_ROUNDS = 12;
+
+function stripHtml(str) {
+  if (typeof str !== 'string') return '';
+  return str.replace(/<[^>]*>/g, '').trim();
+}
 
 /**
  * Generate a unique share code
@@ -62,9 +71,9 @@ async function createShareLink(sessionId, options = {}) {
     ? new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000)
     : null;
 
-  // Hash password if provided
+  // Hash password if provided (using bcrypt for secure password hashing)
   const passwordHash = password
-    ? crypto.createHash('sha256').update(password).digest('hex')
+    ? await bcrypt.hash(password, BCRYPT_ROUNDS)
     : null;
 
   // Create share record
@@ -117,13 +126,13 @@ async function accessSharedStory(shareCode, password = null) {
     return { success: false, error: 'Share link has expired' };
   }
 
-  // Check password
+  // Check password (bcrypt handles timing-safe comparison internally)
   if (share.password_hash) {
     if (!password) {
       return { success: false, error: 'Password required', requiresPassword: true };
     }
-    const inputHash = crypto.createHash('sha256').update(password).digest('hex');
-    if (inputHash !== share.password_hash) {
+    const isValidPassword = await bcrypt.compare(password, share.password_hash);
+    if (!isValidPassword) {
       return { success: false, error: 'Invalid password', requiresPassword: true };
     }
   }
@@ -161,9 +170,8 @@ async function accessSharedStory(shareCode, password = null) {
     [share.story_session_id]
   );
 
-  const outline = outlineResult.rows[0]?.outline_json
-    ? JSON.parse(outlineResult.rows[0].outline_json)
-    : null;
+  // outline_json is JSONB - PostgreSQL returns it as an object, not a string
+  const outline = outlineResult.rows[0]?.outline_json || null;
 
   logger.info(`[StorySharing] Story accessed via share code: ${shareCode}`);
 
@@ -298,7 +306,7 @@ async function updateShareSettings(shareId, userId, settings) {
 
   if (password !== undefined) {
     const passwordHash = password
-      ? crypto.createHash('sha256').update(password).digest('hex')
+      ? await bcrypt.hash(password, BCRYPT_ROUNDS)
       : null;
     updates.push(`password_hash = $${paramIndex++}`);
     values.push(passwordHash);
@@ -395,6 +403,10 @@ async function getPublicStories(options = {}) {
  * Add a comment to a shared story
  */
 async function addComment(shareCode, comment, authorName = 'Anonymous') {
+  comment = stripHtml(comment);
+  authorName = stripHtml(authorName).substring(0, 100);
+  if (!comment) throw new Error('Comment cannot be empty');
+
   // Verify share allows comments
   const shareResult = await pool.query(
     'SELECT id, story_session_id, allow_comments FROM story_shares WHERE share_code = $1',

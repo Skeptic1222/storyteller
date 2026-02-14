@@ -11,6 +11,10 @@
   --narrimo-silver: #C0C0C0;
   --narrimo-glow: rgba(255, 111, 97, 0.35);
   --narrimo-glass: rgba(10, 35, 66, 0.55);
+
+  /* Reader colors (view presets - set dynamically by ThemeContext) */
+  --reader-text-color: #e0e0e0;
+  --reader-bg-color: #1a1a2e;
 }
 
 body {
@@ -54,6 +58,54 @@ button {
   user-select: none;
 }
 
+/* ===== GLOBAL FOCUS INDICATORS (Accessibility) ===== */
+/* Use focus-visible to only show focus ring on keyboard navigation, not mouse clicks */
+
+/* Default focus ring for all interactive elements */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+[role="button"]:focus-visible,
+[tabindex]:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--narrimo-midnight), 0 0 0 4px var(--narrimo-coral);
+}
+
+/* Golden/amber focus ring for primary actions */
+.focus-golden:focus-visible {
+  box-shadow: 0 0 0 2px var(--narrimo-midnight), 0 0 0 4px #fbbf24;
+}
+
+/* Purple focus ring for Story Bible related elements */
+.focus-purple:focus-visible {
+  box-shadow: 0 0 0 2px var(--narrimo-midnight), 0 0 0 4px #a855f7;
+}
+
+/* Sage focus ring for secondary elements */
+.focus-sage:focus-visible {
+  box-shadow: 0 0 0 2px var(--narrimo-midnight), 0 0 0 4px var(--narrimo-sage);
+}
+
+/* Skip to main content link for screen readers */
+.skip-link {
+  position: absolute;
+  top: -100px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--narrimo-coral);
+  color: white;
+  padding: 0.75rem 1.5rem;
+  border-radius: 0 0 0.5rem 0.5rem;
+  z-index: 9999;
+  transition: top 0.2s;
+}
+
+.skip-link:focus {
+  top: 0;
+}
+
 /* Full height on mobile - prevent double scrollbars */
 html {
   height: 100%;
@@ -69,6 +121,12 @@ body {
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
+  }
+
+  .landing-decorative-motion,
+  .landing-hero-particle {
+    animation: none !important;
+    transform: none !important;
   }
 }
 
@@ -94,8 +152,8 @@ body {
 /* Mood accent CSS custom properties - set by Story component based on genre */
 /* Default values (neutral/indigo) - overridden by inline styles */
 :root {
-  --mood-accent: #6366f1;
-  --mood-glow: #6366f140;
+  --mood-accent: #FF6F61;
+  --mood-glow: rgba(255, 111, 97, 0.25);
 }
 
 /* Mood-aware accent classes - use var(--mood-accent) for dynamic theming */
@@ -227,19 +285,39 @@ body {
 .story-text-readable {
   font-family: Georgia, 'Times New Roman', serif;
   font-size: 1.125rem; /* 18px base for readability */
-  line-height: 1.85;
-  letter-spacing: 0.015em;
+  line-height: 1.9; /* Increased for better vertical rhythm */
+  letter-spacing: 0.02em; /* Slightly more letter spacing */
+  word-spacing: 0.05em; /* Add word spacing for clarity */
   max-width: 68ch; /* Optimal reading width */
   margin: 0 auto;
-  color: #e8e3d8; /* Warm cream tone */
+  color: var(--reader-text-color, #ebe6db); /* Uses view preset color */
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
+  font-weight: 400;
+}
+
+/* Reader container - applies view preset background */
+.reader-container {
+  background-color: var(--reader-bg-color);
+  transition: background-color 0.3s ease, color 0.3s ease;
 }
 
 .story-text-readable p,
 .story-text-readable .paragraph {
-  margin-bottom: 1.4em; /* Clear paragraph separation */
+  margin-bottom: 1.6em; /* More paragraph separation */
   text-indent: 0; /* No indent for modern look */
+}
+
+/* Story plain text - ensure consistent spacing */
+.story-plain p {
+  margin-bottom: 1.5em !important; /* Force paragraph spacing */
+  line-height: inherit;
+}
+
+/* Karaoke text - ensure readable spacing */
+.story-karaoke {
+  line-height: 2.1 !important; /* Extra line height for word highlighting */
+  word-spacing: 0.08em; /* More word spacing when karaoke active */
 }
 
 /* Alternative with traditional book indentation */
@@ -345,4 +423,457 @@ body {
 
 .sfx-wave-bar {
   animation: sfx-wave 0.6s ease-in-out infinite;
+}
+
+/* ===========================================
+   Ken Burns Effect Animations for Picture Book
+   =========================================== */
+
+/* Core Ken Burns keyframes - 6 variants for visual variety */
+@keyframes kenBurnsZoomIn {
+  0% { transform: scale(1) translate(0, 0); }
+  100% { transform: scale(1.15) translate(0, 0); }
+}
+
+@keyframes kenBurnsZoomOut {
+  0% { transform: scale(1.15) translate(0, 0); }
+  100% { transform: scale(1) translate(0, 0); }
+}
+
+@keyframes kenBurnsPanLeft {
+  0% { transform: scale(1.1) translate(3%, 0); }
+  100% { transform: scale(1.1) translate(-3%, 0); }
+}
+
+@keyframes kenBurnsPanRight {
+  0% { transform: scale(1.1) translate(-3%, 0); }
+  100% { transform: scale(1.1) translate(3%, 0); }
+}
+
+@keyframes kenBurnsPanUp {
+  0% { transform: scale(1.1) translate(0, 3%); }
+  100% { transform: scale(1.1) translate(0, -3%); }
+}
+
+@keyframes kenBurnsPanDown {
+  0% { transform: scale(1.1) translate(0, -3%); }
+  100% { transform: scale(1.1) translate(0, 3%); }
+}
+
+/* Diagonal combinations for more cinematic feel */
+@keyframes kenBurnsZoomPanNE {
+  0% { transform: scale(1) translate(0, 0); }
+  100% { transform: scale(1.15) translate(-2%, -2%); }
+}
+
+@keyframes kenBurnsZoomPanSW {
+  0% { transform: scale(1) translate(0, 0); }
+  100% { transform: scale(1.15) translate(2%, 2%); }
+}
+
+/* Animation classes - uses CSS custom property for dynamic duration */
+.ken-burns-zoom-in {
+  animation: kenBurnsZoomIn var(--kb-duration, 8s) ease-out forwards;
+}
+
+.ken-burns-zoom-out {
+  animation: kenBurnsZoomOut var(--kb-duration, 8s) ease-out forwards;
+}
+
+.ken-burns-pan-left {
+  animation: kenBurnsPanLeft var(--kb-duration, 8s) ease-in-out forwards;
+}
+
+.ken-burns-pan-right {
+  animation: kenBurnsPanRight var(--kb-duration, 8s) ease-in-out forwards;
+}
+
+.ken-burns-pan-up {
+  animation: kenBurnsPanUp var(--kb-duration, 8s) ease-in-out forwards;
+}
+
+.ken-burns-pan-down {
+  animation: kenBurnsPanDown var(--kb-duration, 8s) ease-in-out forwards;
+}
+
+.ken-burns-zoom-pan-ne {
+  animation: kenBurnsZoomPanNE var(--kb-duration, 8s) ease-out forwards;
+}
+
+.ken-burns-zoom-pan-sw {
+  animation: kenBurnsZoomPanSW var(--kb-duration, 8s) ease-out forwards;
+}
+
+/* Pause state for when audio is paused */
+.ken-burns-paused {
+  animation-play-state: paused !important;
+}
+
+/* Container needs overflow hidden to crop the zoomed/panned image */
+.ken-burns-container {
+  overflow: hidden;
+  position: relative;
+}
+
+/* Accessibility: respect user preference for reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  [class*="ken-burns-"] {
+    animation: none !important;
+    transform: scale(1) translate(0, 0) !important;
+  }
+}
+
+/* Picture Book fullscreen mode */
+.picture-book-fullscreen {
+  position: fixed !important;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 50;
+  background: rgba(0, 0, 0, 0.95);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.picture-book-fullscreen .ken-burns-container {
+  max-width: 100vw;
+  max-height: 100vh;
+  width: 100%;
+  height: 100%;
+}
+
+.picture-book-fullscreen img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+/* ================================
+   LIBRARY VIEW STYLES
+   ================================ */
+
+/* View mode responsive breakpoints */
+.library-view--grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 20px;
+}
+
+.library-view--list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.library-view--gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 16px;
+}
+
+/* Mobile responsive adjustments */
+@media (max-width: 640px) {
+  .library-view--grid {
+    grid-template-columns: 1fr;
+  }
+
+  .library-view--gallery {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+  }
+
+  .library-card--list {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .library-card--list > div:last-child {
+    width: 100%;
+    justify-content: space-between;
+  }
+}
+
+@media (min-width: 641px) and (max-width: 1024px) {
+  .library-view--grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .library-view--gallery {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (min-width: 1025px) {
+  .library-view--gallery {
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  }
+}
+
+/* Genre badge transitions */
+.genre-badge {
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.genre-badge:hover {
+  transform: scale(1.05);
+}
+
+/* Content rating badge pulse for 18+ */
+.content-rating-badge[title*="explicit"] {
+  animation: rating-pulse 2s ease-in-out infinite;
+}
+
+@keyframes rating-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.8; }
+}
+
+/* ============================================
+   CIRCULAR PROGRESS ANIMATIONS (2026-02-01)
+   Narrimo-inspired progress indicator styles
+   ============================================ */
+
+/* Narrimo quadrant color variables */
+:root {
+  --narrimo-q1-start: #0A2342; /* Navy */
+  --narrimo-q1-end: #1A4A7A;
+  --narrimo-q2-start: #22B8CF; /* Cyan */
+  --narrimo-q2-end: #4DD0E1;
+  --narrimo-q3-start: #B8860B; /* Tan/Bronze */
+  --narrimo-q3-end: #D4A574;
+  --narrimo-q4-start: #6A8A82; /* Sage */
+  --narrimo-q4-end: #8FB3A5;
+}
+
+/* Badge fill animation - expands from center with clip-path */
+@keyframes badgeFill {
+  0% {
+    clip-path: circle(0% at 50% 50%);
+    filter: brightness(0.5);
+  }
+  50% {
+    clip-path: circle(50% at 50% 50%);
+    filter: brightness(0.8);
+  }
+  100% {
+    clip-path: circle(100% at 50% 50%);
+    filter: brightness(1);
+  }
+}
+
+.badge-filling {
+  animation: badgeFill 0.6s ease-out forwards;
+}
+
+/* Badge glow effect */
+@keyframes badgeGlow {
+  0%, 100% {
+    box-shadow: 0 0 10px currentColor, 0 0 20px currentColor;
+  }
+  50% {
+    box-shadow: 0 0 20px currentColor, 0 0 40px currentColor;
+  }
+}
+
+.badge-active-glow {
+  animation: badgeGlow 2s ease-in-out infinite;
+}
+
+/* Badge bounce on completion */
+@keyframes badgeBounce {
+  0% { transform: scale(1); }
+  30% { transform: scale(1.2); }
+  50% { transform: scale(0.95); }
+  70% { transform: scale(1.1); }
+  100% { transform: scale(1); }
+}
+
+.badge-complete-bounce {
+  animation: badgeBounce 0.5s ease-out;
+}
+
+/* Hourglass flow animation for TimeDisplay */
+@keyframes hourglassFlow {
+  0%, 100% {
+    transform: rotate(0deg);
+    opacity: 0.8;
+  }
+  25% {
+    transform: rotate(5deg);
+    opacity: 1;
+  }
+  75% {
+    transform: rotate(-5deg);
+    opacity: 1;
+  }
+}
+
+.hourglass-flow {
+  animation: hourglassFlow 2s ease-in-out infinite;
+}
+
+/* Progress ring glow pulse */
+@keyframes ringGlow {
+  0%, 100% {
+    filter: drop-shadow(0 0 8px currentColor);
+  }
+  50% {
+    filter: drop-shadow(0 0 20px currentColor);
+  }
+}
+
+.ring-glow-pulse {
+  animation: ringGlow 2s ease-in-out infinite;
+}
+
+/* Quadrant shimmer effect */
+@keyframes quadrantShimmer {
+  0% {
+    opacity: 0.8;
+    filter: brightness(1);
+  }
+  50% {
+    opacity: 1;
+    filter: brightness(1.2);
+  }
+  100% {
+    opacity: 0.8;
+    filter: brightness(1);
+  }
+}
+
+.quadrant-active {
+  animation: quadrantShimmer 1.5s ease-in-out infinite;
+}
+
+/* Sage color utility classes */
+.text-sage-400 {
+  color: var(--narrimo-sage);
+}
+
+.bg-sage-500\/20 {
+  background-color: rgba(106, 138, 130, 0.2);
+}
+
+/* Narrimo midnight background */
+.bg-narrimo-midnight {
+  background-color: var(--narrimo-midnight);
+}
+
+/* Library card hover animations */
+.library-card--grid:hover,
+.library-card--gallery:hover {
+  z-index: 10;
+}
+
+/* Gallery overlay animation */
+.library-card--gallery > div:last-child {
+  transition: opacity 0.2s ease;
+}
+
+/* View mode selector button hover */
+.view-mode-selector button:hover:not([aria-pressed="true"]) {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* ============================================
+   MOBILE TOUCH TARGET OPTIMIZATION
+   Ensures 44px minimum touch targets on mobile
+   ============================================ */
+@media (max-width: 640px) {
+  /* Story player control buttons - ensure 44px touch targets */
+  .story-controls button,
+  .control-bar button,
+  .player-controls button {
+    min-width: 44px;
+    min-height: 44px;
+    padding: 10px;
+  }
+
+  /* Action buttons in cards - larger touch targets */
+  .library-card button {
+    min-width: 40px;
+    min-height: 40px;
+    padding: 8px;
+  }
+
+  /* Settings panel controls */
+  .settings-panel button,
+  .settings-panel select {
+    min-height: 44px;
+    padding: 12px;
+  }
+
+  /* Form inputs - comfortable touch targets */
+  input[type="text"],
+  input[type="email"],
+  input[type="password"],
+  select,
+  textarea {
+    min-height: 44px;
+    font-size: 16px; /* Prevents iOS zoom on focus */
+  }
+}
+
+/* ============================================
+   LANDSCAPE LAYOUT OPTIMIZATION
+   Side-by-side layout for story player in landscape
+   ============================================ */
+@media (max-width: 844px) and (orientation: landscape) {
+  /* Story page - side by side layout */
+  .story-page-container,
+  .story-player-layout {
+    flex-direction: row;
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  .story-content-area,
+  .story-main {
+    width: 60%;
+    height: 100%;
+    overflow-y: auto;
+  }
+
+  .story-sidebar,
+  .story-controls-panel {
+    width: 40%;
+    height: 100%;
+    border-left: 1px solid rgba(255, 255, 255, 0.1);
+  }
+
+  /* Hide non-essential elements in landscape */
+  .landscape-hide {
+    display: none !important;
+  }
+
+  /* Reduce navbar height further in landscape */
+  nav.fixed {
+    height: 48px;
+  }
+  nav.fixed + div {
+    height: 48px;
+  }
+  nav.fixed img {
+    height: 36px;
+  }
+}
+
+/* ============================================
+   TABLET PORTRAIT OPTIMIZATION (iPad etc)
+   ============================================ */
+@media (min-width: 641px) and (max-width: 1024px) and (orientation: portrait) {
+  /* Two column grid for library in tablet portrait */
+  .library-view--grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 20px;
+  }
+
+  /* Larger touch targets for tablet */
+  button {
+    min-height: 48px;
+  }
 }

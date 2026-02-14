@@ -112,7 +112,8 @@ import {
   countTokens,
   extractStoryFacts,
   determineComplexity,
-  validateStoryText
+  validateStoryText,
+  parseDialogueSegments
 } from './openai.js';
 
 // Venice Scaffolding Pipeline - OpenAI creates structure, Venice enhances explicit content
@@ -208,7 +209,8 @@ async function validateAndRegenerateIfShort(text, storyFormat, regenerateFunc, c
         content: currentText,
         attempt: attempt + 1,
         isRegenerated: attempt > 0,
-        wordCount
+        wordCount,
+        passedMinimum: true
       };
     }
 
@@ -259,11 +261,87 @@ async function validateAndRegenerateIfShort(text, storyFormat, regenerateFunc, c
  * @param {Array} characters - Known characters
  * @param {Object} options - Configuration options
  * @param {boolean} options.allowEmptyDialogue - If true, return empty dialogue map instead of throwing on missing tags
+ * @param {boolean} options.recoverWithLegacyParser - If true, attempt quote-based recovery when tags are missing
  * @param {string} options.sourceType - Source pipeline type for logging ('scaffold', 'hybrid', 'standard')
  * @returns {Object} { dialogueMap, newCharacters, format }
  */
+function buildRecoveredDialogueMapFromSegments(content, recoveredSegments = []) {
+  if (!content || !Array.isArray(recoveredSegments) || recoveredSegments.length === 0) {
+    return [];
+  }
+
+  const dialogueSegments = recoveredSegments.filter(segment => (
+    segment &&
+    segment.voice_role === 'dialogue' &&
+    typeof segment.speaker === 'string' &&
+    segment.speaker.trim().length > 0 &&
+    segment.speaker.toLowerCase() !== 'narrator' &&
+    segment.speaker.toLowerCase() !== 'unknown' &&
+    typeof segment.text === 'string' &&
+    segment.text.trim().length > 0
+  ));
+
+  const dialogueMap = [];
+  let searchFrom = 0;
+
+  for (const segment of dialogueSegments) {
+    const quote = segment.text.trim().replace(/^["“”'`]+|["“”'`]+$/g, '').trim();
+    if (!quote) continue;
+
+    const candidateMatches = [
+      `"${quote}"`,
+      `“${quote}”`,
+      quote
+    ];
+
+    let startChar = -1;
+    let matchedText = quote;
+
+    for (const candidate of candidateMatches) {
+      const idx = content.indexOf(candidate, searchFrom);
+      if (idx !== -1) {
+        startChar = idx;
+        matchedText = candidate;
+        break;
+      }
+    }
+
+    if (startChar === -1) {
+      const fallbackIdx = content.indexOf(quote);
+      if (fallbackIdx !== -1) {
+        startChar = fallbackIdx;
+        matchedText = quote;
+      }
+    }
+
+    if (startChar === -1) {
+      logger.warn(`[extractDialogueFromContent] Could not locate recovered quote in prose for speaker "${segment.speaker}"`);
+      continue;
+    }
+
+    const endChar = startChar + matchedText.length;
+    searchFrom = Math.max(searchFrom, endChar);
+
+    dialogueMap.push({
+      speaker: segment.speaker,
+      quote,
+      start_char: startChar,
+      end_char: endChar,
+      index: dialogueMap.length,
+      emotion: segment.emotion || 'neutral',
+      delivery: segment.attribution || segment.delivery || null
+    });
+  }
+
+  return dialogueMap;
+}
+
 function extractDialogueFromContent(content, characters, options = {}) {
-  const { allowEmptyDialogue = false, sourceType = 'unknown' } = options;
+  const {
+    allowEmptyDialogue = false,
+    sourceType = 'unknown',
+    recoverWithLegacyParser = false
+  } = options;
 
   // Try to extract dialogue using tag parser (if Venice used tags)
   const segments = parseTaggedProse(content);
@@ -278,7 +356,7 @@ function extractDialogueFromContent(content, characters, options = {}) {
         speakersFound.add(segment.speaker);
         dialogueMap.push({
           speaker: segment.speaker,
-          text: segment.text,
+          quote: segment.text,
           index: index
         });
       }
@@ -300,8 +378,41 @@ function extractDialogueFromContent(content, characters, options = {}) {
     return {
       dialogueMap,
       newCharacters,
-      format: 'tag_based'
+      format: 'tag_based',
+      segments
     };
+  }
+
+  if (recoverWithLegacyParser) {
+    logger.warn(`[extractDialogueFromContent] No dialogue tags found in ${sourceType} output - attempting legacy quote recovery`);
+
+    const recoveredSegments = parseDialogueSegments(content, characters, null);
+    const recoveredDialogueMap = buildRecoveredDialogueMapFromSegments(content, recoveredSegments);
+
+    if (recoveredDialogueMap.length > 0) {
+      const knownNames = new Set(characters.map(c => c.name.toLowerCase()));
+      const speakersFound = new Set(recoveredDialogueMap.map(entry => entry.speaker));
+      const newCharacters = [...speakersFound]
+        .filter(name => !knownNames.has(name.toLowerCase()))
+        .map(name => ({
+          name,
+          gender: 'unknown',
+          role: 'minor',
+          description: 'Character inferred from untagged dialogue'
+        }));
+
+      logger.warn(`[extractDialogueFromContent] Recovered ${recoveredDialogueMap.length} dialogue entries via legacy quote parser for ${sourceType}`);
+
+      return {
+        dialogueMap: recoveredDialogueMap,
+        newCharacters,
+        format: 'position_based',
+        segments: recoveredSegments,
+        recoveredWith: 'legacy_quote_parser'
+      };
+    }
+
+    logger.error(`[extractDialogueFromContent] Legacy quote recovery failed for ${sourceType} output`);
   }
 
   // No tags found - check if graceful fallback is allowed
@@ -1127,14 +1238,15 @@ export class Orchestrator {
         // If multi-voice is enabled, extract dialogue from the scaffolded content
         if (willUseMultiVoice && this.characters.length > 0) {
           logger.info('[Orchestrator] Extracting dialogue from scaffolded content for multi-voice');
-          // Allow empty dialogue for scaffold pipeline - graceful degradation to narrator-only
           const dialogueExtracted = extractDialogueFromContent(pipelineResult.content, this.characters, {
-            allowEmptyDialogue: true,
+            allowEmptyDialogue: false,
+            recoverWithLegacyParser: true,
             sourceType: 'scaffold'
           });
           sceneResult.dialogue_map = dialogueExtracted.dialogueMap;
           sceneResult.new_characters = dialogueExtracted.newCharacters;
           sceneResult.prose_format = dialogueExtracted.format;
+          sceneResult.segments = dialogueExtracted.segments || null;
           if (dialogueExtracted.narratorSegments) {
             sceneResult.narratorSegments = dialogueExtracted.narratorSegments;
           }
@@ -1206,14 +1318,15 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
       // If multi-voice is enabled, extract dialogue from the hybrid content
       if (willUseMultiVoice && this.characters.length > 0) {
         logger.info('[Orchestrator] Extracting dialogue from hybrid content for multi-voice');
-        // Allow empty dialogue for hybrid pipeline - graceful degradation to narrator-only
         const dialogueExtracted = extractDialogueFromContent(hybridResult.content, this.characters, {
-          allowEmptyDialogue: true,
+          allowEmptyDialogue: false,
+          recoverWithLegacyParser: true,
           sourceType: 'hybrid'
         });
         sceneResult.dialogue_map = dialogueExtracted.dialogueMap;
         sceneResult.new_characters = dialogueExtracted.newCharacters;
         sceneResult.prose_format = dialogueExtracted.format;
+        sceneResult.segments = dialogueExtracted.segments || null;
         if (dialogueExtracted.narratorSegments) {
           sceneResult.narratorSegments = dialogueExtracted.narratorSegments;
         }
@@ -1317,6 +1430,14 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
     // Update rawText with potentially regenerated content
     rawText = validationResult.content;
 
+    if (!validationResult.passedMinimum) {
+      const minRequired = getMinWordCount(storyFormat);
+      throw new Error(
+        `CHAPTER_LENGTH_VALIDATION_FAILED: Scene ${sceneIndex + 1} has ${validationResult.wordCount} words after ` +
+        `${validationResult.attempt || 0} attempt(s), below minimum ${minRequired}`
+      );
+    }
+
     if (validationResult.isRegenerated) {
       logger.info(`[Orchestrator] Chapter regenerated for length | finalWordCount: ${validationResult.wordCount} | attempts: ${validationResult.attempt}`);
     } else {
@@ -1374,7 +1495,14 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
       const agentResults = await Promise.allSettled([
         checkSafety(rawText, { ...effectiveLimits, audience }, this.sessionId),
         checkLoreConsistency(rawText, { characters: this.characters, setting: this.outline.setting, previousEvents: previousScene, storyBible: this.storyBible }, this.sessionId),
-        willUseMultiVoice ? Promise.resolve(rawText) : polishForNarration(rawText, { narrator_style: this.session.config_json?.narrator_style || 'warm', bedtime_mode: this.session.bedtime_mode }, this.sessionId),
+        // QUALITY FIX (2026-01-31): Always run polish pass, even for multi-voice
+        // The old code skipped polish entirely for multi-voice, causing 95% quality regression
+        // Now we pass preserve_dialogue_tags:true so polish preserves [CHAR:]...[/CHAR] tags
+        polishForNarration(rawText, {
+          narrator_style: this.session.config_json?.narrator_style || 'warm',
+          bedtime_mode: this.session.bedtime_mode,
+          preserve_dialogue_tags: willUseMultiVoice  // Preserve [CHAR:]...[/CHAR] tags for multi-voice
+        }, this.sessionId),
         extractStoryFacts(rawText, { outline: this.outline, characters: this.characters }, this.sessionId)
       ]);
 
@@ -1645,7 +1773,7 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
 
     // Get segments
     let segments;
-    if (proseFormat === 'tag_based' && preComputedSegments?.length > 0) {
+    if (preComputedSegments?.length > 0) {
       segments = convertTagSegmentsToTTS(preComputedSegments);
     } else if (dialogueMap?.length > 0) {
       segments = convertDialogueMapToSegments(finalText, dialogueMap);
@@ -1941,10 +2069,14 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
     const sceneSfx = [];
 
     try {
+      const sfxLevel = this.session.config_json?.sfx_level || 'low';
       const detectedSfx = await sfxCoordinator.analyzeScene(text, {
         mood,
         genre: this.session.config_json?.genre,
-        setting: this.outline?.setting
+        setting: this.outline?.setting,
+        title: this.session?.title || this.outline?.title,
+        outline: this.outline,
+        sfxLevel
       });
 
       if (detectedSfx?.length > 0) {
@@ -2155,11 +2287,15 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
     let audioBuffer, wordTimings;
     let audioUrl;
 
-    if (useMultiVoice && this.characters.length > 0) {
-      if (!scene.dialogue_map?.length) {
-        throw new Error(`MULTI-VOICE FAILED: No dialogue_map for scene ${scene.id}`);
-      }
+    // Check if multi-voice is possible (has dialogue_map)
+    // If not, gracefully fall back to single-voice mode
+    const canUseMultiVoice = useMultiVoice && this.characters.length > 0 && scene.dialogue_map?.length > 0;
 
+    if (!canUseMultiVoice && useMultiVoice && this.characters.length > 0) {
+      logger.warn(`[Orchestrator] Multi-voice requested but dialogue_map missing for scene ${scene.id}, falling back to single-voice`);
+    }
+
+    if (canUseMultiVoice) {
       const result = await this._generateMultiVoiceAudio({
         finalText: scene.polished_text,
         proseFormat: 'position_based',

@@ -1,5 +1,11 @@
 # Storyteller API Reference
 
+## Testing & Hardening Snapshot
+
+- API integration tests run via `node --test server/tests/api.test.js` (or `npm test`) against `TEST_URL` (default `http://localhost:5100`), with optional `TEST_AUTH_TOKEN` for authenticated paths.
+- Socket payload hardening is unit-tested via `node --test server/socket/validation.test.js` to verify sanitized event payloads.
+- Current automated API coverage includes health, library auth behavior, voices, SFX, config endpoints, validation failures, and basic rate-limiting behavior.
+
 ## Authentication (`/api/auth`)
 ```
 POST   /auth/google                # Google OAuth login
@@ -76,16 +82,16 @@ POST   /recordings/playback/:id/complete       # Complete playback
 
 ## Library (`/api/library`)
 ```
-GET    /library                    # Get user's story library
-GET    /library/:storyId           # Get library story details
-POST   /library/:storyId/progress  # Update reading progress
-POST   /library/:storyId/bookmark  # Add bookmark
-DELETE /library/:storyId/bookmark/:id  # Remove bookmark
-POST   /library/:storyId/favorite  # Toggle favorite
-GET    /library/preferences/:userId    # Get library preferences
-PUT    /library/preferences/:userId    # Update library preferences
-GET    /library/:storyId/export    # Export story
-DELETE /library/:storyId           # Delete from library
+GET    /library                        # Get authenticated user's story library
+GET    /library/:storyId               # Get story details (owner/admin only)
+POST   /library/:storyId/progress      # Update reading progress (owner/admin only)
+POST   /library/:storyId/bookmark      # Add bookmark (owner/admin only)
+DELETE /library/:storyId/bookmark/:id  # Remove bookmark (owner/admin only)
+POST   /library/:storyId/favorite      # Toggle favorite (owner/admin only)
+GET    /library/preferences            # Get authenticated user's reader prefs
+PUT    /library/preferences            # Update authenticated user's reader prefs
+GET    /library/:storyId/export        # Export story (owner/admin only)
+DELETE /library/:storyId               # Delete story (owner/admin only)
 ```
 
 ## Lorebook (`/api/lorebook`)
@@ -125,6 +131,10 @@ GET    /config/agent-prompts       # Get agent prompts (debug)
 POST   /config/interpret           # Interpret voice command
 ```
 
+Notes:
+- Canonical audience values returned by config endpoints are `children`, `general`, and `mature`.
+- Legacy aliases such as `adult`, `all_ages`, `family`, and `young_adult` are normalized server-side before response payloads are returned.
+
 ## PayPal (`/api/paypal`)
 ```
 GET    /paypal/status              # Get PayPal integration status
@@ -159,7 +169,12 @@ join-session      # Join a story session { session_id }
 leave-session     # Leave current session
 voice-input       # Send voice transcript { session_id, transcript, confidence }
 continue-story    # Request next scene { session_id, voice_id }
-submit-choice     # Submit CYOA choice { session_id, choice_key, voice_id }
+submit-choice     # Submit CYOA choice { session_id, choice_key|choice_id, from_recording?, diverge_at_segment? }
+request-scene-audio          # Generate/get scene audio { session_id, scene_id? }
+request-picture-book-images  # Generate/get picture-book images { session_id, scene_id }
+confirm-ready     # Confirm launch ready event { session_id }
+check-ready       # Re-check/re-emit ready state after retries { session_id }
+retry-stage       # Retry a launch stage { session_id, stage }
 pause-story       # Pause narration { session_id }
 resume-story      # Resume narration { session_id }
 rtc-start         # Start realtime conversation { session_id }

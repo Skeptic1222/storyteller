@@ -88,7 +88,7 @@ function NavBar({ immersive = false, transparent = false }) {
       >
         <div className="flex items-center justify-between px-4 py-3 bg-[#0A2342]/85 backdrop-blur-md">
           <Link to="/" className="flex items-center gap-2" aria-label="Narrimo home">
-            <img src={LOGO_SRC} alt="Narrimo logo" className="h-14 md:h-16 w-auto object-contain" />
+            <img src={LOGO_SRC} alt="Narrimo logo" className="h-16 md:h-20 w-auto object-contain" />
           </Link>
           <UserProfile />
         </div>
@@ -103,9 +103,9 @@ function NavBar({ immersive = false, transparent = false }) {
       } ${transparent ? '' : 'bg-[#0A2342]/90 backdrop-blur-md border-b border-white/10'}`}
       >
         <div className="max-w-6xl mx-auto px-4">
-          <div className="flex items-center justify-between h-24">
-            <Link to="/" className="flex items-center gap-3" aria-label="Narrimo home">
-              <img src={LOGO_SRC} alt="Narrimo logo" className="h-14 md:h-16 w-auto object-contain" />
+          <div className="flex items-center justify-between h-16 md:h-24">
+            <Link to="/" className="flex items-center gap-2 md:gap-3" aria-label="Narrimo home">
+              <img src={LOGO_SRC} alt="Narrimo logo" className="h-14 md:h-20 w-auto object-contain" />
             </Link>
 
             <div className="hidden lg:flex items-center gap-2">
@@ -150,7 +150,7 @@ function NavBar({ immersive = false, transparent = false }) {
           </div>
         )}
       </nav>
-      <div className="h-24" />
+      <div className="h-16 md:h-24" />
     </>
   );
 }

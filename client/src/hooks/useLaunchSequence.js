@@ -71,7 +71,8 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
   const [scene, setScene] = useState(null);
   const [error, setError] = useState(null);
   const [warnings, setWarnings] = useState([]);
-  const [launchProgress, setLaunchProgress] = useState({ percent: 0, message: '', stage: null });
+  // CIRCULAR PROGRESS (2026-01-31): Added startTime for timer persistence
+  const [launchProgress, setLaunchProgress] = useState({ percent: 0, message: '', stage: null, startTime: null });
 
   // Ready to play state (simplified - no countdown)
   const [isReadyToPlay, setIsReadyToPlay] = useState(false);
@@ -367,11 +368,16 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
 
     // Launch sequence started - initialize UI
     const handleSequenceStarted = (data) => {
-      console.log('[Socket:Recv] EVENT: launch-sequence-started | sessionId:', data?.session_id);
+      console.log('[Socket:Recv] EVENT: launch-sequence-started | sessionId:', data?.session_id, '| startTime:', data?.startTime);
       setIsActive(true);
       setError(null);
       setWarnings([]);
       readyReceivedRef.current = false;
+
+      // CIRCULAR PROGRESS (2026-01-31): Capture startTime for timer persistence
+      if (data.startTime) {
+        setLaunchProgress(prev => ({ ...prev, startTime: data.startTime }));
+      }
 
       if (data.allStatuses) {
         // Add STORY stage - mark as SUCCESS since story generation is complete when launch starts
@@ -423,11 +429,13 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
     // Overall progress update
     const handleProgress = (data) => {
       console.log('[Socket:Recv] EVENT: launch-progress | percent:', data?.percent, '| message:', data?.message?.substring(0, 40), '| stage:', data?.stage);
-      setLaunchProgress({
+      // CIRCULAR PROGRESS (2026-01-31): Preserve or update startTime from server
+      setLaunchProgress(prev => ({
         percent: data?.percent ?? 0,
         message: data?.message || '',
-        stage: data?.stage || null
-      });
+        stage: data?.stage || null,
+        startTime: data?.startTime || prev.startTime  // Preserve startTime if not in this event
+      }));
     };
 
     // Launch sequence ready - all validations passed
@@ -437,13 +445,15 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
       // P0 FIX: Use persistent ref instead of state for duplicate guard
       // isReady state gets cleared in handleAudioReady, breaking this guard
       // launchCompletedRef persists across state changes
-      if (launchCompletedRef.current && !data.isRetry) {
+      // ATOMIC GUARD: Set ref first, then check previous value
+      // This prevents two concurrent events from both passing the check
+      const wasAlreadyCompleted = launchCompletedRef.current;
+      launchCompletedRef.current = true;
+
+      if (wasAlreadyCompleted && !data.isRetry) {
         console.log('[Launch] SKIP_DUPLICATE | reason: launch_completed_ref');
         return;
       }
-
-      // Mark launch as completed BEFORE setting state
-      launchCompletedRef.current = true;
       setIsReady(true);
       setStats(data.stats);
       setScene(data.scene);
@@ -458,7 +468,7 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
         setWarnings(data.stats.warnings);
       }
 
-      // Update SFX details from ready event as fallback (in case sfx-detail-update was missed)
+      // Update SFX details from ready event (covers missed sfx-detail-update)
       if (data.sfxDetails && data.sfxDetails.sfxCount > 0) {
         console.log('[Launch] SFX_FALLBACK | sfxCount:', data.sfxDetails.sfxCount, '| cachedCount:', data.sfxDetails.cachedCount);
         setSfxDetails({
@@ -471,7 +481,7 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
         });
       }
 
-      // Update voice details from ready event as fallback (in case voice-assignment-update was missed)
+      // Update voice details from ready event (covers missed voice-assignment-update)
       if (data.voiceDetails && data.voiceDetails.characters && data.voiceDetails.characters.length > 0) {
         console.log('[Launch] VOICE_FALLBACK | characters:', data.voiceDetails.characters?.length, '| totalVoices:', data.voiceDetails.totalVoices);
         setCharacterVoices(data.voiceDetails.characters);
@@ -507,9 +517,17 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
       console.log('[Launch] Ready to play - no countdown');
       setIsReadyToPlay(true);
 
-      // P1 FIX: Mark launch sequence as inactive when ready
-      // This ensures LaunchScreen hides and story content becomes visible
-      setIsActive(false);
+      // DUAL PROGRESS BAR FIX (2026-01-31): Only hide launch screen if audio is preloaded
+      // If audio isn't ready, keep launch screen active so deferred TTS shows in same UI
+      const hasPreloadedAudio = data.audioDetails && data.audioDetails.hasAudio;
+      if (hasPreloadedAudio) {
+        console.log('[Launch] Audio preloaded - hiding launch screen');
+        setIsActive(false);
+      } else {
+        console.log('[Launch] NO_PRELOADED_AUDIO | Keeping launch screen active for deferred TTS');
+        // Keep isActive=true so LaunchScreen stays visible during deferred audio generation
+        // The launch screen will hide when playback actually starts (audio-ready event)
+      }
     };
 
     // Launch sequence error
@@ -760,7 +778,7 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
       }
     };
 
-    // Audio ready - generation complete
+    // Audio ready - generation complete (deferred TTS path)
     const handleAudioReady = (data) => {
       console.log('[Socket:Recv] EVENT: audio-ready (useLaunchSequence) | audio queued, keeping loading visible until playback');
       setIsGeneratingAudio(false);
@@ -782,13 +800,27 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
       // LaunchScreen will hide when isPlaying becomes true (audio actually starts)
       setIsAudioQueued(true);
 
-      // Reset launch-specific state but keep LaunchScreen visible via isAudioQueued
+      // DUAL PROGRESS BAR FIX (2026-01-31):
+      // Now that audio is ready (from deferred TTS), hide launch screen
+      // isAudioQueued keeps the loading spinner visible until playback starts
       setIsActive(false);
+      setIsReadyToPlay(false);
       // P0 FIX: DO NOT clear isReady here - it breaks the duplicate guard in handleSequenceReady
       // The launchCompletedRef now handles duplicate prevention, so clearing isReady is unnecessary
       // setIsReady(false); // REMOVED - was causing progress bar reversion bug
-      setIsReadyToPlay(false);
       // DO NOT reset: sfxDetails, characterVoices, stats, scene - still needed for playback
+    };
+
+    // Audio error (generation/playback failed)
+    const handleAudioError = (data) => {
+      console.error('[Socket:Recv] EVENT: audio-error (useLaunchSequence) | message:', data?.message);
+      setIsGeneratingAudio(false);
+      setAudioGenerationStatus(null);
+      setIsAudioQueued(false);
+      setIsReadyToPlay(false);
+      playbackStartedRef.current = false; // allow user to retry start-playback
+      setError(data?.message || 'Audio generation failed');
+      onErrorRef.current?.({ error: data?.message || 'Audio generation failed' });
     };
 
     // Audio generating - progress/status updates during deferred narration generation
@@ -833,6 +865,7 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
     socket.on('playback-starting', handlePlaybackStarting);
     socket.on('audio-generating', handleAudioGenerating);
     socket.on('audio-ready', handleAudioReady);
+    socket.on('audio-error', handleAudioError);
 
     // Cleanup
     return () => {
@@ -862,6 +895,7 @@ export function useLaunchSequence(socket, sessionId, options = {}) {
       socket.off('playback-starting', handlePlaybackStarting);
       socket.off('audio-generating', handleAudioGenerating);
       socket.off('audio-ready', handleAudioReady);
+      socket.off('audio-error', handleAudioError);
     };
   }, [socket, sessionId, confirmReady, reset, isReady, stageStatuses, retryingStage]);
 

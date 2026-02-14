@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Home, Sparkles, History, BookOpen, Volume2, VolumeX, Settings, Feather, Disc } from 'lucide-react';
+import { Home, Sparkles, History, BookOpen, Volume2, VolumeX, Settings, Feather, Disc, Minus, Plus, ChevronUp, ChevronDown } from 'lucide-react';
 import { useSocket } from '../context/SocketContext';
 import { useAudio } from '../context/AudioContext';
 import UserProfile from '../components/UserProfile';
@@ -14,14 +14,14 @@ import DivergenceModal from '../components/DivergenceModal';
 import LaunchScreen from '../components/LaunchScreen';
 import BookPageLayout from '../components/BookPageLayout';
 import PictureBookImageDisplay from '../components/PictureBookImageDisplay';
-import { AudioErrorBanner, ChapterSelector, ControlBar, CoverFullscreenOverlay, SettingsPanel, SfxIndicator, StoryInfoPanel } from '../components/story';
+import { AudioErrorBanner, ChapterSelector, ControlBar, CoverFullscreenOverlay, CoverThumbnail, SettingsPanel, SfxIndicator, StoryInfoPanel, TickerView, ViewSelector, VIEW_PRESETS } from '../components/story';
 import { useQAChecks } from '../components/QAChecksPanel';
 import { useRecordings } from '../hooks/useRecordings';
 import { useLaunchSequence } from '../hooks/useLaunchSequence';
 import { useStateRef, useSfxManager, useKeyboardShortcuts, useKaraokeHighlight, useStorySocket, useAutoContinue, useCoverArt, useCYOAState, useHeaderPanels, useStoryConfig } from '../hooks';
 import { apiCall, API_BASE } from '../config';
 import { initClientLogger, sfxLog, audioLog, socketLog } from '../utils/clientLogger';
-import { stripAllTags } from '../utils/textUtils';
+import { stripAllTags, processTextForDisplay } from '../utils/textUtils';
 import { AUTHOR_NAMES } from '../constants/authorStyles';
 import { getMoodFromGenres, MOOD_ACCENTS } from '../constants/themes';
 import { useTheme } from '../context/ThemeContext';
@@ -40,7 +40,7 @@ function Story() {
   const { sessionId } = useParams();
   const navigate = useNavigate();
   const { socket, connected, joinSession, leaveSession } = useSocket();
-  const { isPlaying, isPaused, isStartingPlayback, playAudio, playUrl, queueAudio, pause, resume, stop, isUnlocked, hasPendingAudio, volume, setVolume, currentTime, duration } = useAudio();
+  const { isPlaying, isPaused, isStartingPlayback, playAudio, playUrl, queueAudio, pause, resume, stop, isUnlocked, hasPendingAudio, volume, setVolume, seekTo, currentTime, duration } = useAudio();
   const audioUnlockAttempted = useRef(false);
 
   const [session, setSession] = useState(null);
@@ -104,10 +104,35 @@ function Story() {
   const [wordTimings, setWordTimings] = useState(null); // For karaoke/read-along text highlighting
   const [sceneImages, setSceneImages] = useState([]); // Picture book images for current scene
 
+  // Mobile header collapse - auto-collapse on mobile when playing, user can toggle
+  const [mobileHeaderExpanded, setMobileHeaderExpanded] = useState(true);
+
   // P1 FIX: Use ThemeContext for textLayout instead of local state
   // This ensures ControlBar buttons and BookPageLayout use the same state source
   // ThemeContext handles localStorage persistence automatically
-  const { textLayout, setTextLayout } = useTheme();
+  const { textLayout, setTextLayout, setFontSize: setThemeFontSize, setFontFamily, setLineHeight, showDialogueQuotes, dialogueQuoteStyle } = useTheme();
+
+  // View preset state - tracks which reading preset is active (default, kindle, night, ticker)
+  const [currentViewPreset, setCurrentViewPreset] = useState(() => {
+    // Derive initial preset from textLayout
+    if (textLayout === 'ticker') return 'ticker';
+    return 'default';
+  });
+
+  // Keep preset in sync when layout is changed from other controls.
+  useEffect(() => {
+    if (textLayout === 'ticker' && currentViewPreset !== 'ticker') {
+      setCurrentViewPreset('ticker');
+    }
+    if (textLayout !== 'ticker' && currentViewPreset === 'ticker') {
+      setCurrentViewPreset('default');
+    }
+  }, [textLayout, currentViewPreset]);
+
+  // Ticker mode state
+  const [tickerPlaying, setTickerPlaying] = useState(false);
+  const [tickerWordIndex, setTickerWordIndex] = useState(0);
+  const [tickerWpm, setTickerWpm] = useState(300); // Words per minute
 
   // Note: currentWordIndex is computed by useKaraokeHighlight hook below
 
@@ -158,6 +183,27 @@ function Story() {
     setShowStoryInfo(false);
     setShowSettings(false);
   }, [setShowChoiceHistory, setShowStoryInfo, setShowSettings]);
+
+  // View preset change handler - applies preset settings
+  const handleViewPresetChange = useCallback((presetId, preset) => {
+    console.log('[Story] View preset changed:', presetId, preset);
+    setCurrentViewPreset(presetId);
+
+    // Apply preset settings
+    if (preset?.settings) {
+      if (preset.settings.fontSize) {
+        setFontSize(preset.settings.fontSize);
+        setThemeFontSize(preset.settings.fontSize);
+      }
+      if (preset.settings.fontFamily) {
+        setFontFamily(preset.settings.fontFamily);
+      }
+      if (preset.settings.lineHeight) {
+        setLineHeight(preset.settings.lineHeight);
+      }
+      // textLayout is handled by ViewSelector via ThemeContext
+    }
+  }, [setFontSize, setThemeFontSize, setFontFamily, setLineHeight]);
 
   // Story data state
   const [storyOutline, setStoryOutline] = useState(null);
@@ -560,6 +606,16 @@ function Story() {
     }
   }, [karaokeEnabled]);
 
+  // BUGFIX: Handle Scene 1 choices from launch sequence
+  // Choices are delivered via launchScene but need to be set in pendingChoices
+  // This runs once when launch completes and launchScene has choices
+  useEffect(() => {
+    if (launchReady && launchScene?.choices?.length > 0 && pendingChoices.length === 0 && choices.length === 0) {
+      console.log('[Story] Scene 1 choices detected from launch sequence, setting pendingChoices:', launchScene.choices.length);
+      setPendingChoices(launchScene.choices);
+    }
+  }, [launchReady, launchScene, pendingChoices.length, choices.length, setPendingChoices]);
+
   // Show pending choices when choice audio finishes playing
   useEffect(() => {
     // When audio stops and we have pending choices, show them
@@ -570,6 +626,33 @@ function Story() {
       setChoiceAudioPlaying(false);
     }
   }, [isPlaying, choiceAudioPlaying, pendingChoices]);
+
+  // BUGFIX: Fallback to show choices when no choice audio is expected
+  // If scene audio FINISHES and we have pending choices but no choice audio is playing,
+  // show the choices after a short delay (choice narration may have failed or been skipped)
+  // CRITICAL FIX: Must wait for isPlaying=false (audio finished), not just sceneAudioStarted=true (audio started)
+  // Otherwise choices appear while narration is still playing!
+  useEffect(() => {
+    // Don't start timer if:
+    // - Scene audio hasn't started yet
+    // - Audio is still playing (narration not finished)
+    // - Choice audio is playing
+    // - No pending choices
+    // - Choices already shown
+    if (!sceneAudioStarted || isPlaying || choiceAudioPlaying || pendingChoices.length === 0 || choices.length > 0) {
+      return;
+    }
+    // Scene audio has finished (isPlaying=false after sceneAudioStarted=true)
+    // Wait a moment for choice audio event, then show choices if none arrives
+    const fallbackTimer = setTimeout(() => {
+      if (pendingChoices.length > 0 && choices.length === 0 && !choiceAudioPlaying) {
+        console.log('[Story] Choice audio fallback - showing choices after narration finished');
+        setChoices(pendingChoices);
+        setPendingChoices([]);
+      }
+    }, 2000);
+    return () => clearTimeout(fallbackTimer);
+  }, [sceneAudioStarted, isPlaying, choiceAudioPlaying, pendingChoices, choices.length, setChoices, setPendingChoices]);
 
   // Clear "playback requested" once SCENE audio starts.
   // Intro/synopsis audio may play while scene narration is still generating.
@@ -589,7 +672,8 @@ function Story() {
   const handleStartPlayback = useCallback(() => {
     if (!socket || !sessionId) return;
 
-    console.log('[Story] Starting playback via launch sequence...');
+    // P0 FIX: Enhanced logging for debugging preloaded audio issues
+    console.log('[Story] handleStartPlayback | preloadedAudio:', !!preloadedAudio, '| hasAudio:', preloadedAudio?.hasAudio, '| hasIntro:', !!preloadedAudio?.intro, '| hasScene:', !!preloadedAudio?.scene);
     setManualContinue(false); // Reset manual continue flag - user clicked Begin Chapter
     setPlaybackRequested(true);
 
@@ -629,7 +713,12 @@ function Story() {
           console.log('[Audio] WORD_TIMINGS_DEBUG (preloaded) | count:', wordCount);
           setWordTimings(preloadedAudio.scene.wordTimings);
         } else {
+          // Fail loud: karaoke data missing; prevent playback
           setWordTimings(null);
+          setAudioError('Audio ready but word timings missing; cannot start playback. Please retry generation.');
+          setIsAudioQueued(false);
+          setPlaybackRequested(false);
+          return;
         }
 
         setSceneAudioQueued(true);
@@ -662,17 +751,43 @@ function Story() {
         );
       }
 
+      // PRE-GENERATION FIX: Queue choice narration audio (plays after scene audio)
+      // This ensures all audio is pre-generated and plays in sequence: intro → scene → choice narration
+      if (preloadedAudio.choice && preloadedAudio.choice.base64) {
+        console.log('[Audio] Queueing preloaded choice narration audio | choiceCount:', preloadedAudio.choice.choiceCount);
+        queueAudio(
+          preloadedAudio.choice.base64,
+          'mp3',
+          // onStart callback - choice audio begins
+          () => {
+            console.log('[Audio] STATE: CHOICE_AUDIO_PLAYING | preloaded choice narration started');
+            setChoiceAudioPlaying(true);
+          },
+          // onEnd callback - choice audio finished, show choices
+          () => {
+            console.log('[Audio] STATE: CHOICE_AUDIO_COMPLETE | showing choices');
+            setChoiceAudioPlaying(false);
+            // Show pending choices now that narration is complete
+            if (pendingChoices.length > 0) {
+              setChoices(pendingChoices);
+              setPendingChoices([]);
+            }
+          }
+        );
+      }
+
       // Clear preloaded audio after use (one-time use)
       setPreloadedAudio(null);
       return;
     }
 
     // Fallback: No preloaded audio - request server-side audio generation
-    // This triggers the legacy flow with a second progress bar
-    console.log('[Story] No preloaded audio, falling back to triggerPlayback()');
+    // DUAL PROGRESS BAR FIX (2026-01-31): This now uses the SAME progress UI
+    // The launch screen stays visible (isActive=true) until audio-ready is received
+    console.log('[Story] NO_PRELOADED_AUDIO | Triggering deferred TTS generation | LaunchScreen will show progress');
     triggerPlayback();
     // SFX is NOT triggered here - it triggers when wordTimings change (scene audio ready)
-  }, [socket, sessionId, triggerPlayback, preloadedAudio, setPreloadedAudio, queueAudio, setIntroAudioQueued, setSceneAudioStarted, setSceneAudioQueued, setIsAudioQueued, setWordTimings, sfxDetails, sfxEnabled, playSfxWithState]);
+  }, [socket, sessionId, triggerPlayback, preloadedAudio, setPreloadedAudio, queueAudio, setIntroAudioQueued, setSceneAudioStarted, setSceneAudioQueued, setIsAudioQueued, setWordTimings, sfxDetails, sfxEnabled, playSfxWithState, pendingChoices, setChoices, setPendingChoices, setChoiceAudioPlaying]);
 
   // Cancel playback - uses launch sequence hook
   const handleCancelPlayback = useCallback(() => {
@@ -806,7 +921,7 @@ function Story() {
     sessionId,
     session,
     audioContext: { playAudio, queueAudio, pause, resume },
-    sfxContext: { playSfxWithState, sfxEnabledRef, sfxDetailsRef },
+    sfxContext: { playSfxWithState, sfxEnabledRef, sfxDetailsRef, stopAllSfx },
     stateSetters: {
       setIntroAudioQueued,
       setSceneAudioStarted,
@@ -820,7 +935,8 @@ function Story() {
       setIsGenerating,
       setGenerationProgress,
       setChoiceHistory,
-      setAudioError
+      setAudioError,
+      setStoryEnded // P0 FIX: Pass to enable server-side story completion handling
     },
     refs: { sceneAudioStartedRef },
     callbacks: { continueStory, resetLaunch },
@@ -961,6 +1077,17 @@ function Story() {
     const playStoredAudio = async () => {
       try {
         console.log('[Story] Replay mode: playing stored audio:', fullUrl);
+
+        // Request picture book images if this is a picture book story
+        // This triggers server-side generation or retrieval of scene images
+        if (session?.config_json?.story_format === 'picture_book' && currentScene?.scene_id && socket) {
+          console.log('[Story] Replay mode: requesting picture book images for scene', currentScene.scene_id);
+          socket.emit('request-picture-book-images', {
+            session_id: sessionId,
+            scene_id: currentScene.scene_id
+          });
+        }
+
         await playUrl(fullUrl);
         // Set state after playUrl resolves (audio has started playing)
         console.log('[Audio] Replay: stored audio playback started');
@@ -975,7 +1102,7 @@ function Story() {
     // Small delay to ensure UI is ready
     const timer = setTimeout(playStoredAudio, 100);
     return () => clearTimeout(timer);
-  }, [currentScene?.audio_url, isGenerating, launchActive, sceneAudioStarted, isPlaying, isPaused, playUrl]);
+  }, [currentScene?.audio_url, currentScene?.scene_id, isGenerating, launchActive, sceneAudioStarted, isPlaying, isPaused, playUrl, session?.config_json?.story_format, sessionId, socket]);
 
   // Effect for autoplay when countdown finishes and autoplay is enabled
   // The useLaunchSequence hook handles autoplay internally, but we listen for playback start
@@ -1060,6 +1187,13 @@ function Story() {
     }
   }, [sceneAudioStarted, sceneAudioQueued]);
 
+  // Auto-collapse header on mobile when audio starts playing (maximize reading area)
+  useEffect(() => {
+    if (isPlaying && window.innerWidth < 640) {
+      setMobileHeaderExpanded(false);
+    }
+  }, [isPlaying]);
+
   // Auto-continue story when audio finishes - extracted to useAutoContinue hook
   // Uses continueStoryAuto which respects autoplay setting (vs manual continueStory which requires Begin Chapter click)
   const { pendingAutoContinue } = useAutoContinue({
@@ -1107,6 +1241,10 @@ function Story() {
 
   const endStory = useCallback(async () => {
     try {
+      // P0 FIX: Set storyEnded FIRST to stop all SFX before cleanup
+      setStoryEnded(true);
+      stopAllSfx();
+
       await apiCall(`/stories/${sessionId}/end`, {
         method: 'POST',
         body: JSON.stringify({ reason: 'user_ended' })
@@ -1115,9 +1253,11 @@ function Story() {
     } catch (error) {
       console.error('Failed to end story:', error);
     }
-  }, [sessionId, navigate]);
+  }, [sessionId, navigate, stopAllSfx]);
 
   const goHome = useCallback(() => {
+    // P0 FIX: Set storyEnded to ensure SFX stop completely
+    setStoryEnded(true);
     stop();
     stopAllSfx();
     navigate('/');
@@ -1259,9 +1399,61 @@ function Story() {
       <header className="bg-slate-900/80 backdrop-blur-sm border-b border-slate-700">
         {/* Top Bar */}
         <div className="flex items-center justify-between p-3">
-          <button onClick={goHome} className="p-2 rounded-full hover:bg-slate-800">
-            <Home className="w-5 h-5 text-slate-300" />
-          </button>
+          <div className="flex items-center gap-3">
+            <button onClick={goHome} className="p-2 rounded-full hover:bg-slate-800">
+              <Home className="w-5 h-5 text-slate-300" />
+            </button>
+
+            {/* Cover Thumbnail - clickable to expand */}
+            {coverUrl && !shouldHideStoryHeader && (
+              <CoverThumbnail
+                coverUrl={coverUrl}
+                title={session?.title || 'Story Cover'}
+                size="small"
+                onExpand={openCoverFullscreen}
+              />
+            )}
+
+            {/* View Preset Icons */}
+            {!shouldHideStoryHeader && (
+              <ViewSelector
+                currentPreset={currentViewPreset}
+                onPresetChange={handleViewPresetChange}
+                compact={true}
+              />
+            )}
+
+            {/* Font Size Controls */}
+            {!shouldHideStoryHeader && (
+              <div className="flex items-center gap-0.5 bg-slate-800/50 rounded-lg px-1 py-0.5">
+                <button
+                  onClick={() => {
+                    const newSize = Math.max(12, fontSize - 2);
+                    setFontSize(newSize);
+                    setThemeFontSize(newSize);
+                  }}
+                  disabled={fontSize <= 12}
+                  className="p-1 rounded hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed"
+                  title="Decrease font size"
+                >
+                  <Minus className="w-3.5 h-3.5 text-slate-300" />
+                </button>
+                <span className="text-xs text-slate-300 w-6 text-center font-mono">{fontSize}</span>
+                <button
+                  onClick={() => {
+                    const newSize = Math.min(32, fontSize + 2);
+                    setFontSize(newSize);
+                    setThemeFontSize(newSize);
+                  }}
+                  disabled={fontSize >= 32}
+                  className="p-1 rounded hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed"
+                  title="Increase font size"
+                >
+                  <Plus className="w-3.5 h-3.5 text-slate-300" />
+                </button>
+              </div>
+            )}
+          </div>
 
           <div className="flex items-center gap-2">
             {/* Recording Indicator */}
@@ -1329,73 +1521,99 @@ function Story() {
 
         {/* Story Title & Details - Hide when LaunchScreen is visible to avoid duplicate titles */}
         {/* Extracted boolean logic for clarity: show header only when NOT in any overlay/launch phase */}
+        {/* On mobile: collapsible to maximize reading area; always visible on desktop (sm+) */}
         {!shouldHideStoryHeader && (
-          <div className="px-4 pb-3 text-center">
-            <h1 className="text-3xl md:text-4xl font-bold text-golden-400 mb-2 leading-tight">
-              {session?.title || outlineData?.title || launchStats?.title || 'Creating your story...'}
-            </h1>
+          <>
+            {/* Mobile collapse toggle - only visible on mobile */}
+            <button
+              onClick={() => setMobileHeaderExpanded(!mobileHeaderExpanded)}
+              className="sm:hidden w-full py-1 flex items-center justify-center gap-1 text-slate-500 hover:text-slate-300 transition-colors"
+              aria-expanded={mobileHeaderExpanded}
+              aria-label={mobileHeaderExpanded ? 'Collapse story details' : 'Expand story details'}
+            >
+              {mobileHeaderExpanded ? (
+                <>
+                  <ChevronUp className="w-4 h-4" />
+                  <span className="text-xs">Collapse</span>
+                </>
+              ) : (
+                <>
+                  <span className="text-xs truncate max-w-[200px]">{session?.title || 'Story'}</span>
+                  <ChevronDown className="w-4 h-4" />
+                </>
+              )}
+            </button>
 
-            {/* Meta Tags */}
-            <div className="flex items-center justify-center gap-2 flex-wrap text-sm">
-              {config.story_type && (
-                <span className={`px-2 py-0.5 rounded-full text-xs ${
-                  config.story_type === 'cyoa' ? 'bg-amber-500/20 text-amber-400' :
-                  'bg-slate-700 text-slate-300'
-                }`}>
-                  {config.story_type === 'cyoa' ? 'Choose Your Own Adventure' : config.story_type}
-                </span>
-              )}
-              {config.genre && (
-                <span className="px-2 py-0.5 rounded-full text-xs bg-slate-700 text-slate-300">{config.genre}</span>
-              )}
-              {authorStyleName && (
-                <span className="text-purple-400 flex items-center gap-1 px-2 py-0.5 rounded-full bg-purple-500/10">
-                  <Feather className="w-3 h-3" />
-                  <span className="text-purple-300/70 text-xs">Style:</span> {authorStyleName}
-                </span>
-              )}
-              {config.narrator_style && (
-                <span className="text-cyan-400 text-xs px-2 py-0.5 rounded-full bg-cyan-500/10">
-                  {config.narrator_style.charAt(0).toUpperCase() + config.narrator_style.slice(1)} Tone
-                </span>
-              )}
-              {currentScene?.mood && currentScene.mood.toLowerCase() !== (config.narrator_style || '').toLowerCase() && (
-                <span className="text-slate-400 text-xs px-2 py-0.5 rounded-full bg-slate-700">
-                  Mood: {currentScene.mood}
-                </span>
-              )}
-            </div>
+            {/* Collapsible content - hidden on mobile when collapsed, always visible on desktop */}
+            <div className={`px-4 pb-3 text-center transition-all duration-300 overflow-hidden ${
+              mobileHeaderExpanded ? 'max-h-[500px] opacity-100' : 'max-h-0 opacity-0 sm:max-h-[500px] sm:opacity-100'
+            }`}>
+              <h1 className="text-3xl md:text-4xl font-bold text-golden-400 mb-2 leading-tight">
+                {session?.title || outlineData?.title || launchStats?.title || 'Creating your story...'}
+              </h1>
 
-            {/* Synopsis */}
-            {outlineSynopsisText && (
-              <p className="text-slate-400 text-sm mt-2 max-w-lg mx-auto line-clamp-2">
-                {outlineSynopsisText}
-              </p>
-            )}
-
-            {/* Scene Counter with Progress Bar */}
-            {currentScene && (
-              <div className="mt-3 max-w-xs mx-auto">
-                <div className="text-slate-500 text-xs mb-1">
-                  {isCyoaEnabled
-                    ? `Chapter ${(currentScene.scene_index !== undefined ? currentScene.scene_index : 0) + 1}`
-                    : `Scene ${(currentScene.scene_index !== undefined ? currentScene.scene_index : 0) + 1}${session?.estimated_scenes ? ` of ~${session.estimated_scenes}` : ''}`
-                  }
-                </div>
-                {/* Visual Progress Bar */}
-                {!isCyoaEnabled && session?.estimated_scenes && (
-                  <div className="w-full h-1.5 bg-slate-700 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-gradient-to-r from-golden-400 to-golden-500 rounded-full transition-all duration-500"
-                      style={{
-                        width: `${Math.min(100, (((currentScene.scene_index !== undefined ? currentScene.scene_index : 0) + 1) / session.estimated_scenes) * 100)}%`
-                      }}
-                    />
-                  </div>
+              {/* Meta Tags */}
+              <div className="flex items-center justify-center gap-2 flex-wrap text-sm">
+                {config.story_type && (
+                  <span className={`px-2 py-0.5 rounded-full text-xs ${
+                    config.story_type === 'cyoa' ? 'bg-amber-500/20 text-amber-400' :
+                    'bg-slate-700 text-slate-300'
+                  }`}>
+                    {config.story_type === 'cyoa' ? 'Choose Your Own Adventure' : config.story_type}
+                  </span>
+                )}
+                {config.genre && (
+                  <span className="px-2 py-0.5 rounded-full text-xs bg-slate-700 text-slate-300">{config.genre}</span>
+                )}
+                {authorStyleName && (
+                  <span className="text-purple-400 flex items-center gap-1 px-2 py-0.5 rounded-full bg-purple-500/10">
+                    <Feather className="w-3 h-3" />
+                    <span className="text-purple-300/70 text-xs">Style:</span> {authorStyleName}
+                  </span>
+                )}
+                {config.narrator_style && (
+                  <span className="text-cyan-400 text-xs px-2 py-0.5 rounded-full bg-cyan-500/10">
+                    {config.narrator_style.charAt(0).toUpperCase() + config.narrator_style.slice(1)} Tone
+                  </span>
+                )}
+                {currentScene?.mood && currentScene.mood.toLowerCase() !== (config.narrator_style || '').toLowerCase() && (
+                  <span className="text-slate-400 text-xs px-2 py-0.5 rounded-full bg-slate-700">
+                    Mood: {currentScene.mood}
+                  </span>
                 )}
               </div>
-            )}
-          </div>
+
+              {/* Synopsis */}
+              {outlineSynopsisText && (
+                <p className="text-slate-400 text-sm mt-2 max-w-lg mx-auto line-clamp-2">
+                  {outlineSynopsisText}
+                </p>
+              )}
+
+              {/* Scene Counter with Progress Bar */}
+              {currentScene && (
+                <div className="mt-3 max-w-xs mx-auto">
+                  <div className="text-slate-500 text-xs mb-1">
+                    {isCyoaEnabled
+                      ? `Chapter ${(currentScene.scene_index !== undefined ? currentScene.scene_index : 0) + 1}`
+                      : `Scene ${(currentScene.scene_index !== undefined ? currentScene.scene_index : 0) + 1}${session?.estimated_scenes ? ` of ~${session.estimated_scenes}` : ''}`
+                    }
+                  </div>
+                  {/* Visual Progress Bar */}
+                  {!isCyoaEnabled && session?.estimated_scenes && (
+                    <div className="w-full h-1.5 bg-slate-700 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-golden-400 to-golden-500 rounded-full transition-all duration-500"
+                        style={{
+                          width: `${Math.min(100, (((currentScene.scene_index !== undefined ? currentScene.scene_index : 0) + 1) / session.estimated_scenes) * 100)}%`
+                        }}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </>
         )}
 
       </header>
@@ -1474,46 +1692,62 @@ function Story() {
           </div>
         ) : (
           <>
-            {/* Book Page Layout - Float cover with text wrap, karaoke/read-along */}
+            {/* Text Display - BookPageLayout or TickerView based on textLayout setting */}
             {/* Only show after launch is complete to prevent premature playback */}
             {showText && currentScene && !launchActive && (
-              <div className="max-w-2xl mx-auto mb-8">
-                <BookPageLayout
-                  // Story metadata
-                  title={session?.title || outlineData?.title || launchStats?.title || 'Your Story'}
-                  synopsis={outlineSynopsisText || launchStats?.synopsis || ''}
-                  storyText={stripAllTags(currentScene.text || currentScene.polished_text || currentScene.summary || '')}
+              textLayout === 'ticker' ? (
+                // Ticker View - Speed reading mode with word-by-word display
+                <div className="w-full max-w-4xl mx-auto mb-8 h-64">
+                  <TickerView
+                    text={processTextForDisplay(currentScene.text || currentScene.polished_text || currentScene.summary || '', { showQuotes: showDialogueQuotes, quoteStyle: dialogueQuoteStyle })}
+                    isPlaying={tickerPlaying}
+                    onTogglePlay={() => setTickerPlaying(prev => !prev)}
+                    currentWordIndex={tickerWordIndex}
+                    onWordIndexChange={setTickerWordIndex}
+                    wpm={tickerWpm}
+                    onWpmChange={setTickerWpm}
+                  />
+                </div>
+              ) : (
+                // Book Page Layout - Float cover with text wrap, karaoke/read-along
+                <div className="max-w-2xl mx-auto mb-8">
+                  <BookPageLayout
+                    // Story metadata
+                    title={session?.title || outlineData?.title || launchStats?.title || 'Your Story'}
+                    synopsis={outlineSynopsisText || launchStats?.synopsis || ''}
+                    storyText={processTextForDisplay(currentScene.text || currentScene.polished_text || currentScene.summary || '', { showQuotes: showDialogueQuotes, quoteStyle: dialogueQuoteStyle })}
 
-                  // Story details for expandable badge
-                  storyDetails={{
-                    authorStyle: session?.author_style ? AUTHOR_NAMES[session.author_style] || session.author_style : '',
-                    setting: outlineSettingText,
-                    themes: outlineThemes,
-                    mood: session?.mood || outlineData?.mood || ''
-                  }}
+                    // Story details for expandable badge
+                    storyDetails={{
+                      authorStyle: session?.author_style ? AUTHOR_NAMES[session.author_style] || session.author_style : '',
+                      setting: outlineSettingText,
+                      themes: outlineThemes,
+                      mood: session?.mood || outlineData?.mood || ''
+                    }}
 
-                  // Chapter index for auto-expand behavior (0-based)
-                  chapterIndex={currentScene?.scene_index ?? 0}
+                    // Chapter index for auto-expand behavior (0-based)
+                    chapterIndex={currentScene?.scene_index ?? 0}
 
-                  // Cover art
-                  coverUrl={coverUrl}
+                    // Cover art
+                    coverUrl={coverUrl}
 
-                  // Karaoke/word highlighting
-                  wordTimings={karaokeEnabled ? wordTimings : null}
-                  currentWordIndex={karaokeEnabled ? currentWordIndex : -1}
+                    // Karaoke/word highlighting
+                    wordTimings={karaokeEnabled ? wordTimings : null}
+                    currentWordIndex={karaokeEnabled ? currentWordIndex : -1}
 
-                  // Text size (user preference from settings)
-                  fontSize={fontSize}
+                    // Text size (user preference from settings)
+                    fontSize={fontSize}
 
-                  // Callbacks
-                  onWordClick={(wordIndex, timeSeconds) => {
-                    console.log(`Word clicked: ${wordIndex} at ${timeSeconds}s`);
-                  }}
+                    // Callbacks
+                    onWordClick={(wordIndex, timeSeconds) => {
+                      console.log(`Word clicked: ${wordIndex} at ${timeSeconds}s`);
+                    }}
 
-                  // State (controls whether karaoke is active)
-                  isPrePlayback={!isPlaying && isReadyToPlay}
-                />
-              </div>
+                    // State (controls whether karaoke is active)
+                    isPrePlayback={!isPlaying && isReadyToPlay}
+                  />
+                </div>
+              )
             )}
 
             {/* Picture Book Images - Display when in picture book mode with images */}
@@ -1555,11 +1789,12 @@ function Story() {
           // P2: Simplified overlay visibility to single source of truth
           // Show overlay ONLY while:
           // 1. Story isn't ended, AND
-          // 2. Generating OR Launch is active OR audio is queued (covers entire generation-to-playback flow)
+          // 2. Generating OR Launch is active OR audio is queued OR ready to play (covers entire generation-to-playback flow)
           // 3. Audio hasn't started playing OR launch is still active (launchActive takes precedence)
           // CRITICAL: Including isGenerating ensures progress bar shows immediately when generation starts
           // FIX: Keep overlay visible during entire launch phase even after audio starts
-          const showLaunchOverlay = !storyEnded && (isGenerating || launchActive || isAudioQueued) && (!sceneAudioStarted || launchActive);
+          // P0 FIX: Include isReadyToPlay to keep "Begin Chapter" button visible after launch completes
+          const showLaunchOverlay = !storyEnded && (isGenerating || launchActive || isAudioQueued || isReadyToPlay) && (!sceneAudioStarted || launchActive || isReadyToPlay);
 
           if (!showLaunchOverlay) return null;
 
@@ -1645,6 +1880,7 @@ function Story() {
             onContinue={continueStory}
             onGoHome={goHome}
             onShowChoiceHistory={() => setShowChoiceHistory(true)}
+            onSeek={seekTo}
             isGenerating={isGenerating}
             hasChoices={choices.length > 0}
             isCyoaEnabled={isCyoaEnabled}
@@ -1662,6 +1898,15 @@ function Story() {
             onSfxToggle={toggleSfx}
             textLayout={textLayout}
             onTextLayoutChange={setTextLayout}
+            // View presets (style themes)
+            currentViewPreset={currentViewPreset}
+            onPresetChange={handleViewPresetChange}
+            // Font size controls
+            fontSize={fontSize}
+            onFontSizeChange={(size) => {
+              setFontSize(size);
+              setThemeFontSize(size);
+            }}
           />
 
           {/* Chapter Selector - shows when we have multiple scenes */}

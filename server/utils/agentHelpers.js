@@ -18,10 +18,25 @@ export function parseCharacterTraits(character) {
   }
 
   try {
-    if (typeof character.traits_json === 'string') {
-      return JSON.parse(character.traits_json);
+    let parsed = character.traits_json;
+
+    // If it's a JSON string, parse it
+    if (typeof parsed === 'string') {
+      try {
+        parsed = JSON.parse(parsed);
+      } catch {
+        // Plain string like "calm, wise, bold" - treat as comma-separated trait list
+        return { traits: parsed.split(',').map(t => t.trim()).filter(Boolean) };
+      }
     }
-    return character.traits_json;
+
+    // If it's an array, wrap it in an object for consistent access
+    if (Array.isArray(parsed)) {
+      return { traits: parsed };
+    }
+
+    // Object - return as-is (may have .personality, .traits, etc.)
+    return parsed;
   } catch (error) {
     logger.warn(`[AgentHelpers] Failed to parse traits for ${character.name}:`, error.message);
     return {};

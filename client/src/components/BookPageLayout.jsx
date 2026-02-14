@@ -145,6 +145,7 @@ function BookPageLayout({
 
   const textContainerRef = useRef(null);
   const wordRefs = useRef(new Map());
+  const lastManualScrollRef = useRef(0);
 
   // Line detection state - tracks which line range the current word is on
   const [currentLineRange, setCurrentLineRange] = useState({ start: -1, end: -1 });
@@ -227,6 +228,9 @@ function BookPageLayout({
     if (currentWordIndex >= 0 && currentWordIndex < words.length) {
       const wordEl = wordRefs.current.get(currentWordIndex);
       if (wordEl && textContainerRef.current) {
+        // Respect recent user scroll gestures to avoid fighting manual reading.
+        if (Date.now() - lastManualScrollRef.current < 1200) return;
+
         const container = textContainerRef.current;
         const wordRect = wordEl.getBoundingClientRect();
         const containerRect = container.getBoundingClientRect();
@@ -307,6 +311,9 @@ function BookPageLayout({
       {showCoverFullscreen && effectiveCoverUrl && (
         <div
           className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Fullscreen cover image"
           onClick={() => setShowCoverFullscreen(false)}
         >
           <button
@@ -325,9 +332,10 @@ function BookPageLayout({
         </div>
       )}
 
-      {/* Main Book Page - Unified Container */}
+      {/* Main Book Page - Unified Container with dynamic reader colors */}
       <div
-        className="book-page-content relative bg-slate-800/70 rounded-2xl border border-slate-600 overflow-hidden"
+        className="book-page-content reader-container relative rounded-2xl border border-slate-600 overflow-hidden"
+        style={{ backgroundColor: 'var(--reader-bg-color, rgba(30, 41, 59, 0.7))' }}
         onMouseEnter={() => setTextBoxHovered(true)}
         onMouseLeave={() => setTextBoxHovered(false)}
       >
@@ -346,6 +354,9 @@ function BookPageLayout({
         <div
           ref={textContainerRef}
           className="book-page-scroll p-5 md:p-6 max-h-[60vh] overflow-y-auto"
+          onScroll={() => {
+            lastManualScrollRef.current = Date.now();
+          }}
         >
           {/* Floating Cover Art (left side) */}
           {effectiveCoverUrl && coverState === 'full' && (
@@ -519,35 +530,38 @@ function BookPageLayout({
                       <div className="story-karaoke leading-loose" style={{ fontSize: `${fontSize}px` }}>
                         {words.map((word, idx) => {
                           const rawText = word.text || word.word || '';
-                          const wordText = stripAllTags(rawText);
+                          const wordText = stripAllTags(rawText).trim();
                           const isOnCurrentLine = currentLineRange.start >= 0 &&
                             idx >= currentLineRange.start &&
                             idx <= currentLineRange.end;
+                          const needsSpace = idx < words.length - 1 && !wordText.endsWith('-');
                           return (
-                            <span
-                              key={idx}
-                              ref={el => wordRefs.current.set(idx, el)}
-                              onClick={() => handleWordClick(idx)}
-                              className={`
-                                inline px-1 py-0.5 rounded-sm cursor-pointer
-                                transition-colors duration-100 ease-out
-                                ${idx === currentWordIndex
-                                  ? 'bg-golden-400/90 text-slate-900 font-semibold'
-                                  : idx < currentWordIndex
-                                    ? 'text-slate-500'
-                                    : 'text-slate-100 hover:bg-slate-700/30'
-                                }
-                                ${isOnCurrentLine && idx !== currentWordIndex ? 'karaoke-current-line' : ''}
-                              `}
-                            >
-                              {wordText}
+                            <span key={idx}>
+                              <span
+                                ref={el => wordRefs.current.set(idx, el)}
+                                onClick={() => handleWordClick(idx)}
+                                className={`
+                                  inline px-1 py-0.5 rounded-sm cursor-pointer
+                                  transition-colors duration-100 ease-out
+                                  ${idx === currentWordIndex
+                                    ? 'bg-golden-400/90 text-slate-900 font-semibold'
+                                    : idx < currentWordIndex
+                                      ? 'text-slate-500'
+                                      : 'text-slate-100 hover:bg-slate-700/30'
+                                  }
+                                  ${isOnCurrentLine && idx !== currentWordIndex ? 'karaoke-current-line' : ''}
+                                `}
+                              >
+                                {wordText}
+                              </span>
+                              {needsSpace && ' '}
                             </span>
                           );
                         })}
                       </div>
                     ) : (
                       /* Plain paragraph in modal */
-                      <p className="text-base leading-relaxed text-slate-100" style={{ fontSize: `${fontSize}px` }}>
+                      <p className="paragraph whitespace-pre-wrap text-inherit" style={{ fontSize: `${fontSize}px` }}>
                         {paragraphs[currentParagraphIndex] || ''}
                       </p>
                     )}
@@ -585,28 +599,31 @@ function BookPageLayout({
                     <div className="story-karaoke leading-loose col-span-2" style={{ fontSize: `${fontSize}px` }}>
                       {words.map((word, idx) => {
                         const rawText = word.text || word.word || '';
-                        const wordText = stripAllTags(rawText);
+                        const wordText = stripAllTags(rawText).trim();
                         const isOnCurrentLine = currentLineRange.start >= 0 &&
                           idx >= currentLineRange.start &&
                           idx <= currentLineRange.end;
+                        const needsSpace = idx < words.length - 1 && !wordText.endsWith('-');
                         return (
-                          <span
-                            key={idx}
-                            ref={el => wordRefs.current.set(idx, el)}
-                            onClick={() => handleWordClick(idx)}
-                            className={`
-                              inline px-1 py-0.5 rounded-sm cursor-pointer
-                              transition-colors duration-100 ease-out
-                              ${idx === currentWordIndex
-                                ? 'bg-golden-400/90 text-slate-900 font-semibold'
-                                : idx < currentWordIndex
-                                  ? 'text-slate-500'
-                                  : 'text-slate-100 hover:bg-slate-700/30'
-                              }
-                              ${isOnCurrentLine && idx !== currentWordIndex ? 'karaoke-current-line' : ''}
-                            `}
-                          >
-                            {wordText}
+                          <span key={idx}>
+                            <span
+                              ref={el => wordRefs.current.set(idx, el)}
+                              onClick={() => handleWordClick(idx)}
+                              className={`
+                                inline px-1 py-0.5 rounded-sm cursor-pointer
+                                transition-colors duration-100 ease-out
+                                ${idx === currentWordIndex
+                                  ? 'bg-golden-400/90 text-slate-900 font-semibold'
+                                  : idx < currentWordIndex
+                                    ? 'text-slate-500'
+                                    : 'text-slate-100 hover:bg-slate-700/30'
+                                }
+                                ${isOnCurrentLine && idx !== currentWordIndex ? 'karaoke-current-line' : ''}
+                              `}
+                            >
+                              {wordText}
+                            </span>
+                            {needsSpace && ' '}
                           </span>
                         );
                       })}
@@ -614,7 +631,7 @@ function BookPageLayout({
                   ) : (
                     /* Plain text in two columns */
                     paragraphs.map((paragraph, idx) => (
-                      <p key={idx} className={`mb-5 whitespace-pre-wrap text-slate-100 ${idx % 2 === 0 ? '' : ''}`} style={{ fontSize: `${fontSize}px` }}>
+                      <p key={idx} className="paragraph whitespace-pre-wrap text-inherit" style={{ fontSize: `${fontSize}px` }}>
                         {paragraph}
                       </p>
                     ))
@@ -629,38 +646,43 @@ function BookPageLayout({
                       {words.map((word, idx) => {
                         // Strip prosody tags from word text (safety net for any tags that slip through)
                         const rawText = word.text || word.word || '';
-                        const wordText = stripAllTags(rawText);
+                        // Strip tags AND trailing/leading whitespace from the word itself
+                        const wordText = stripAllTags(rawText).trim();
                         // Check if this word is on the current line being read
                         const isOnCurrentLine = currentLineRange.start >= 0 &&
                           idx >= currentLineRange.start &&
                           idx <= currentLineRange.end;
+                        // Add space after word unless it's the last word or ends with hyphen
+                        const needsSpace = idx < words.length - 1 && !wordText.endsWith('-');
                         return (
-                          <span
-                            key={idx}
-                            ref={el => wordRefs.current.set(idx, el)}
-                            onClick={() => handleWordClick(idx)}
-                            className={`
-                              inline px-1 py-0.5 rounded-sm cursor-pointer
-                              transition-colors duration-100 ease-out
-                              ${idx === currentWordIndex
-                                ? 'bg-golden-400/90 text-slate-900 font-semibold'
-                                : idx < currentWordIndex
-                                  ? 'text-slate-500'
-                                  : 'text-slate-100 hover:bg-slate-700/30'
-                              }
-                              ${isOnCurrentLine && idx !== currentWordIndex ? 'karaoke-current-line' : ''}
-                            `}
-                          >
-                            {wordText}
+                          <span key={idx}>
+                            <span
+                              ref={el => wordRefs.current.set(idx, el)}
+                              onClick={() => handleWordClick(idx)}
+                              className={`
+                                inline px-1 py-0.5 rounded-sm cursor-pointer
+                                transition-colors duration-100 ease-out
+                                ${idx === currentWordIndex
+                                  ? 'bg-golden-400/90 text-slate-900 font-semibold'
+                                  : idx < currentWordIndex
+                                    ? 'text-slate-500'
+                                    : 'text-slate-100 hover:bg-slate-700/30'
+                                }
+                                ${isOnCurrentLine && idx !== currentWordIndex ? 'karaoke-current-line' : ''}
+                              `}
+                            >
+                              {wordText}
+                            </span>
+                            {needsSpace && ' '}
                           </span>
                         );
                       })}
                     </div>
                   ) : (
                     /* Plain text fallback - Kindle-style readable formatting */
-                    <div className="story-plain leading-relaxed" style={{ fontSize: `${fontSize}px` }}>
+                    <div className="story-plain" style={{ fontSize: `${fontSize}px` }}>
                       {paragraphs.map((paragraph, idx) => (
-                        <p key={idx} className="mb-5 whitespace-pre-wrap">
+                        <p key={idx} className="paragraph whitespace-pre-wrap text-inherit">
                           {paragraph}
                         </p>
                       ))}

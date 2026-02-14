@@ -516,7 +516,29 @@ export class SoundEffectsService {
 
     const duration = options.duration || 10;
     const loop = options.loop || false;
-    const promptInfluence = options.prompt_influence || 0.5;
+    const sfxType = options.sfx_type || 'general'; // P0 FIX: Track SFX type for prompt_influence
+
+    // P0 FIX: Dynamic prompt_influence based on SFX type
+    // - Ambient sounds (0.3): Let the AI be more creative, natural variation
+    // - Action sounds (0.7): Follow prompt closely for precise timing
+    // - General/atmospheric (0.5): Balanced approach
+    let promptInfluence = options.prompt_influence;
+    if (promptInfluence === undefined) {
+      switch (sfxType) {
+        case 'ambient':
+        case 'atmosphere':
+        case 'locations':
+          promptInfluence = 0.3; // More creative freedom for ambient loops
+          break;
+        case 'action':
+        case 'actions':
+        case 'combat':
+          promptInfluence = 0.7; // Follow prompt closely for action sounds
+          break;
+        default:
+          promptInfluence = 0.5; // Balanced for general sounds
+      }
+    }
 
     // Check cache first
     const cached = await this.checkCache(prompt, duration, loop);
@@ -526,15 +548,17 @@ export class SoundEffectsService {
     }
 
     try {
-      logger.info(`[SFX] Generating: "${prompt.substring(0, 50)}..." (${duration}s, loop=${loop})`);
+      logger.info(`[SFX] Generating: "${prompt.substring(0, 50)}..." (${duration}s, loop=${loop}, influence=${promptInfluence})`);
 
+      // P0 FIX: Add loop_enhance parameter when generating looping sounds
+      // This tells ElevenLabs to optimize the audio for seamless looping
       const response = await axios.post(
         `${ELEVENLABS_API_URL}/sound-generation`,
         {
           text: prompt,
           duration_seconds: duration,
           prompt_influence: promptInfluence,
-          ...(loop ? { loop: true } : {})
+          ...(loop ? { loop_enhance: true } : {}) // P0 FIX: Use loop_enhance (not loop) for API
         },
         {
           headers: {
@@ -585,9 +609,11 @@ export class SoundEffectsService {
       throw new Error(`Unknown SFX: ${sfxKey}`);
     }
 
+    // P0 FIX: Pass sfx_type (category) to enable dynamic prompt_influence
     return this.generateSoundEffect(sfxDef.prompt, {
       duration: sfxDef.duration,
-      loop: sfxDef.loop
+      loop: sfxDef.loop,
+      sfx_type: category // Pass category for dynamic prompt_influence
     });
   }
 

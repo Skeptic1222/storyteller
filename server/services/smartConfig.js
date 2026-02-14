@@ -20,7 +20,9 @@ import logger from '../utils/logger.js';
 import { completion, parseJsonResponse } from './openai.js';
 import { getUtilityModel } from './modelSelection.js';
 import { AUTHOR_STYLES } from './authorStyles.js';
-import { analyzePremiseLLM, convertLLMAnalysisToKeywordFormat, generateReasoningFromLLM } from './configAnalyzer.js';
+import { analyzePremiseLLM, generateReasoningFromLLM, SENSIBLE_DEFAULTS } from './configAnalyzer.js';
+import { multiPassAnalyze, hasComplexRequirements, COMPLEX_PREMISE_THRESHOLD } from './premiseProcessor.js';
+import { detectNarratorArchetype, getArchetypeForGenre } from './narratorArchetypes.js';
 
 function formatAuthorCatalogLine(id, author) {
   const genres = Array.isArray(author?.genres) ? author.genres.join(', ') : '';
@@ -82,127 +84,97 @@ function buildAuthorStyleCatalogForPremise(premiseText, maxEntries = 24) {
     .join('\n');
 }
 
-// Genre keyword mappings for rule-based detection
-const GENRE_KEYWORDS = {
-  horror: ['horror', 'scary', 'terrifying', 'frightening', 'creepy', 'haunted', 'ghost', 'demon', 'monster', 'nightmare', 'blood', 'gore', 'zombie', 'vampire', 'werewolf', 'slasher', 'halloween', 'spooky'],
-  fantasy: ['fantasy', 'magic', 'wizard', 'dragon', 'elf', 'dwarf', 'kingdom', 'quest', 'sword', 'sorcery', 'spell', 'enchanted', 'mythical', 'fairy', 'unicorn', 'castle', 'knight', 'princess', 'prince'],
-  scifi: ['scifi', 'sci-fi', 'science fiction', 'space', 'alien', 'robot', 'android', 'cyborg', 'spaceship', 'galaxy', 'planet', 'future', 'dystopian', 'cyberpunk', 'laser', 'technology', 'AI', 'artificial intelligence'],
-  mystery: ['mystery', 'detective', 'murder', 'crime', 'investigation', 'clue', 'suspect', 'whodunit', 'thriller', 'suspense', 'noir', 'case', 'evidence', 'spy', 'espionage', 'conspiracy', 'secret'],
-  romance: ['romance', 'love', 'romantic', 'relationship', 'dating', 'wedding', 'passion', 'heart', 'kiss', 'couple', 'soulmate', 'affection', 'desire'],
-  adventure: ['adventure', 'quest', 'journey', 'explore', 'expedition', 'treasure', 'hunt', 'discover', 'voyage', 'travel', 'escape', 'survival', 'action'],
-  humor: ['humor', 'funny', 'comedy', 'comedic', 'hilarious', 'silly', 'joke', 'laugh', 'absurd', 'parody', 'satire', 'witty', 'whimsical'],
-  fairytale: ['fairytale', 'fairy tale', 'once upon a time', 'princess', 'prince', 'enchanted', 'magical kingdom', 'happily ever after', 'fable', 'folklore', 'bedtime'],
-  // P6: Added YA/Poetry/Literary genres
-  literary: ['literary', 'literary fiction', 'character study', 'introspective', 'stream of consciousness', 'experimental', 'avant-garde', 'postmodern', 'surreal', 'surrealist', 'absurdist', 'dreamlike', 'kafkaesque'],
-  poetry: ['poetic', 'poetry', 'lyrical', 'verse', 'prose poetry', 'metaphorical', 'symbolic', 'abstract narrative', 'lyrical prose'],
-  ya: ['young adult', 'ya', 'teen', 'teenager', 'coming of age', 'high school', 'middle grade', 'tween']
-};
-
-// Intensity keyword mappings
-const INTENSITY_KEYWORDS = {
-  violence: ['violent', 'violence', 'battle', 'war', 'fight', 'combat', 'attack', 'kill', 'killing', 'death', 'weapon', 'sword fight', 'gun', 'explosion', 'murder', 'slaughter', 'massacre'],
-  gore: ['gore', 'gory', 'blood', 'bloody', 'graphic', 'gruesome', 'dismember', 'brutal', 'visceral', 'intestines', 'decapitate', 'mutilate'],
-  scary: ['scary', 'terrifying', 'frightening', 'creepy', 'haunted', 'nightmare', 'dread', 'fear', 'suspenseful', 'tense', 'eerie', 'horrifying', 'chilling'],
-  romance: ['steamy', 'passionate', 'intimate', 'sensual', 'erotic', 'seductive', 'explicit', 'adult romance', 'love scene', 'sex scene', 'sexual encounter', 'making love'],
-  adultContent: ['explicit', 'adult only', 'mature content', 'nsfw', '18+', 'erotic', 'sexual', 'nude', 'nudity', 'x-rated', 'sex', 'sex scene', 'hardcore', 'porn', 'pornographic', 'smut', 'xxx', 'intercourse', 'orgasm', 'foreplay', 'threesome', 'orgy']
-};
-
-// Mood keyword mappings
-const MOOD_KEYWORDS = {
-  calm: ['calm', 'peaceful', 'relaxing', 'soothing', 'gentle', 'serene', 'bedtime', 'cozy', 'warm', 'comforting', 'quiet'],
-  exciting: ['exciting', 'action', 'thrilling', 'fast-paced', 'intense', 'adrenaline', 'energetic', 'dynamic', 'explosive'],
-  scary: ['scary', 'horror', 'creepy', 'frightening', 'terrifying', 'spooky', 'eerie', 'unsettling', 'disturbing'],
-  funny: ['funny', 'comedy', 'humorous', 'hilarious', 'silly', 'comedic', 'witty', 'absurd', 'lighthearted'],
-  mysterious: ['mysterious', 'mystery', 'enigmatic', 'suspenseful', 'intriguing', 'secrets', 'unknown', 'noir'],
-  dramatic: ['dramatic', 'emotional', 'intense', 'epic', 'powerful', 'sweeping', 'tragic', 'poignant']
-};
-
-// Format detection keywords
-const FORMAT_KEYWORDS = {
-  cyoa: ['interactive', 'choices', 'choose your own', 'cyoa', 'adventure game', 'branching', 'decision', 'you decide', 'multiple endings'],
-  episodic: ['episodic', 'series', 'episode', 'chapter', 'serial', 'ongoing', 'anthology'],
-  picture_book: ['picture book', 'illustrated', 'children\'s book', 'kids', 'young children', 'toddler', 'preschool'],
-  short_story: ['short story', 'a short', 'quick story', 'brief story', 'one-shot', 'standalone', '5 minute', '10 minute', '15 minute'],
-  novella: ['novella', 'medium length', 'longer story', 'medium story', '30 minute', '45 minute'],
-  novel: ['novel', 'long story', 'full-length', 'epic saga', 'epic story', '60 minute', 'hour long']
-};
-
-// Story length detection keywords (P2: Expanded)
-const LENGTH_KEYWORDS = {
-  short: ['short', 'quick', 'brief', '5 minute', '10 minute', 'one scene', 'flash fiction', 'micro story', 'quick tale', 'mini story', 'bite-sized'],
-  medium: ['medium', 'normal', '15 minute', '20 minute', 'standard', 'regular length', 'moderate length', 'typical story'],
-  long: ['long', 'epic', 'extended', '30 minute', '45 minute', 'hour long', 'feature length', 'full length', 'spanning', 'multi-volume', 'several books', 'saga', 'sprawling', 'extensive', 'lengthy', 'marathon']
-};
-
-// Bedtime mode keywords - use word boundaries to avoid false positives like "hyper sleep"
-const BEDTIME_KEYWORDS = ['bedtime', 'before bed', 'wind down', 'relaxing story', 'calm story', 'soothing story', 'night time story', 'good night', 'go to sleep', 'falling asleep', 'sleepy time'];
-
-// Character count estimation patterns
-const CHARACTER_COUNT_PATTERNS = {
-  // Explicit numbers
-  numbers: {
-    pattern: /(\d+)\s*(?:characters?|people|heroes?|protagonists?|adventurers?|friends?|companions?|warriors?|members?|astronauts?|scientists?|soldiers?|sailors?|survivors?|strangers?|travelers?|explorers?|knights?|wizards?|crew\s*members?|men|women|kids|children|teens|students|agents?|detectives?|officers?|victims?)/gi,
-    extract: (match) => parseInt(match[1])
+// =============================================================================
+// AUDIENCE SAFETY CAPS - Enforces content intensity limits per audience
+// =============================================================================
+const AUDIENCE_INTENSITY_CAPS = {
+  children: {
+    scary: 15, violence: 10, gore: 0, romance: 5,
+    adultContent: 0, sensuality: 0, explicitness: 0,
+    language: 5, bleakness: 20, sexualViolence: 0
   },
-  // Word numbers
-  wordNumbers: {
-    'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
-    'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10,
-    'a dozen': 12, 'several': 4, 'few': 3, 'couple': 2, 'pair': 2,
-    'handful': 5, 'many': 8, 'group': 5, 'team': 5, 'party': 4
+  young_adult: {
+    scary: 40, violence: 30, gore: 10, romance: 30,
+    adultContent: 10, sensuality: 20, explicitness: 0,
+    language: 40, bleakness: 50, sexualViolence: 0
   },
-  // Cast size indicators
-  solo: ['lone', 'solo', 'solitary', 'single hero', 'one person', 'alone'],
-  duo: ['two friends', 'two heroes', 'pair of', 'couple of', 'partners', 'duo'],
-  small: ['small group', 'few friends', 'trio', 'small team', 'band of'],
-  medium: ['group of', 'team of', 'party of', 'several', 'companions'],
-  large: ['large group', 'army', 'many characters', 'ensemble', 'large cast', 'full cast']
+  general: {
+    scary: 60, violence: 50, gore: 30, romance: 50,
+    adultContent: 30, sensuality: 40, explicitness: 20,
+    language: 60, bleakness: 70, sexualViolence: 10
+  },
+  mature: {
+    // No caps - full range allowed
+    scary: 100, violence: 100, gore: 100, romance: 100,
+    adultContent: 100, sensuality: 100, explicitness: 100,
+    language: 100, bleakness: 100, sexualViolence: 100
+  }
 };
 
-// Multi-narrator / voice cast keywords
-const MULTI_NARRATOR_KEYWORDS = [
-  'multi-narrator', 'multi narrator', 'multiple narrators', 'voice cast',
-  'different voices', 'multiple voices', 'voice for each', 'voices for each',
-  'character voices', 'distinct voices', 'unique voices', 'full cast',
-  'audio drama', 'radio play', 'dramatized', 'voiced characters'
-];
+/**
+ * Enforce audience safety caps on intensity values
+ * Clamps intensity values to safe maximums based on audience
+ */
+function enforceAudienceSafetyCaps(intensity, audience) {
+  const caps = AUDIENCE_INTENSITY_CAPS[audience] || AUDIENCE_INTENSITY_CAPS.general;
+  const capped = { ...intensity };
 
-// Sound effects keywords (P1: Tuned - explicit only, removed broad terms)
-const SFX_KEYWORDS = [
-  'sound effects', 'sfx', 'sound fx', 'audio effects', 'ambient sounds',
-  'ambient audio', 'background sounds', 'environmental sounds'
-];
+  for (const [field, maxValue] of Object.entries(caps)) {
+    if (typeof capped[field] === 'number' && capped[field] > maxValue) {
+      logger.info(`[SmartConfig] Capping ${field} from ${capped[field]} to ${maxValue} for ${audience} audience`);
+      capped[field] = maxValue;
+    }
+  }
 
-// SFX Level detection keywords - determines low/medium/high intensity
-// IMPORTANT: Keywords must be specific to avoid false positives
-// "with sound effects" should NOT match - only explicit quantity phrases should
-const SFX_LEVEL_KEYWORDS = {
-  high: [
-    // Explicit "lots" phrases - require full phrase
-    'lots of sound effects', 'lots of sfx', 'lot of sound effects',
-    'many sound effects', 'tons of sound effects', 'tons of sfx',
-    // Immersive/quality descriptors
-    'full soundscape', 'rich soundscape', 'immersive audio experience',
-    'maximum immersion', 'full immersion', 'fully immersive',
-    'audio drama', 'radio drama', 'cinematic audio', 'cinematic sound',
-    'film-quality audio', 'movie-quality sound', 'professional audio',
-    'hollywood sound', 'blockbuster audio', 'full audio experience',
-    'sound design heavy', 'heavy sound design',
-    'every sound effect', 'all the sound effects'
-  ],
-  medium: [
-    // Moderate quantity phrases
-    'more sound effects', 'some sound effects', 'several sound effects',
-    'frequent sound effects', 'regular sound effects',
-    'enhanced audio', 'better audio', 'improved sound',
-    'extra sound effects', 'additional sound effects',
-    'good amount of sound effects', 'decent sound effects'
-  ]
-  // 'low'/default: generic phrases like "with sound effects", "sound effects"
+  return capped;
+}
+
+// =============================================================================
+// COVER ART STYLE ALIGNMENT - Maps genres to appropriate art styles
+// =============================================================================
+const GENRE_TO_ART_STYLE = {
+  horror: 'gothic',
+  fantasy: 'fantasy',
+  scifi: 'scifi',
+  mystery: 'noir',
+  romance: 'romantic',
+  erotica: 'romantic',
+  adventure: 'adventure',
+  humor: 'cartoon',
+  fairytale: 'storybook',
+  literary: 'painterly',
+  poetry: 'watercolor',
+  ya: 'modern',
+  thriller: 'noir'
 };
 
-// Intensity boosters - words that increase intensity scores
-const INTENSITY_BOOSTERS = ['really', 'very', 'extremely', 'extreme', 'super', 'incredibly', 'intensely', 'highly', 'absolutely', 'totally', 'brutal', 'graphic', 'intense', 'severe', 'heavy', 'maximum', 'full'];
+/**
+ * Derive cover art style from genre scores
+ * Uses the dominant genre to select appropriate art style
+ */
+function deriveArtStyleFromGenres(genres) {
+  if (!genres || typeof genres !== 'object') {
+    return 'fantasy'; // Default
+  }
+
+  let dominantGenre = null;
+  let highestScore = 0;
+
+  for (const [genre, score] of Object.entries(genres)) {
+    if (typeof score === 'number' && score > highestScore) {
+      highestScore = score;
+      dominantGenre = genre;
+    }
+  }
+
+  if (!dominantGenre || highestScore < 30) {
+    return 'fantasy'; // Default
+  }
+
+  return GENRE_TO_ART_STYLE[dominantGenre] || 'fantasy';
+}
+
+// NOTE: NEGATION_PREFIXES removed - LLM handles negation detection now
 
 // =============================================================================
 // CONFIG TEMPLATES (Presets)
@@ -488,35 +460,12 @@ const AUTHOR_STYLE_RECOMMENDATIONS = {
   default: ['none']
 };
 
-// P0: Negation prefixes for feature detection
-const NEGATION_PREFIXES = ['no ', 'not ', 'without ', "don't ", "doesn't ", 'never ', 'avoid ', 'skip ', 'disable '];
-
 class SmartConfigEngine {
   constructor() {
     this.logger = logger;
   }
 
-  /**
-   * P0: Detect if a feature keyword is negated in text
-   * Returns { detected: boolean, negated: boolean }
-   * @param {string} text - Lowercased text to search
-   * @param {Array} keywords - Keywords to look for
-   * @param {string} featureName - Name of feature for logging
-   */
-  detectNegatedFeature(text, keywords, featureName) {
-    for (const keyword of keywords) {
-      for (const neg of NEGATION_PREFIXES) {
-        if (text.includes(neg + keyword)) {
-          this.logger.info(`[SmartConfig] Negation detected: "${neg}${keyword}" - disabling ${featureName}`);
-          return { detected: true, negated: true };
-        }
-      }
-      if (text.includes(keyword)) {
-        return { detected: true, negated: false };
-      }
-    }
-    return { detected: false, negated: false };
-  }
+  // NOTE: detectNegatedFeature() has been removed - LLM handles negation detection
 
   /**
    * P3: Extract author preference from text
@@ -658,274 +607,321 @@ class SmartConfigEngine {
    * Main entry point - interpret a premise and return suggested configuration
    * @param {string} premiseText - Natural language story premise
    * @param {object} currentConfig - Current configuration (optional)
+   * @param {object} storyBibleData - Optional Story Bible context for multi-pass
    * @returns {object} - Suggested configuration changes
    */
-  async interpretPremise(premiseText, currentConfig = {}) {
+  async interpretPremise(premiseText, currentConfig = {}, storyBibleData = null) {
     if (!premiseText || typeof premiseText !== 'string' || premiseText.trim().length < 3) {
       return { success: false, error: 'Premise text is required' };
     }
 
-    const text = premiseText.toLowerCase();
     this.logger.info('[SmartConfig] Interpreting premise:', premiseText.substring(0, 100));
 
     try {
-      // P2: Primary analysis is now LLM-based via configAnalyzer
-      // This replaces the 10+ fragile keyword detection systems with structured LLM analysis
-      let llmAnalysis = null;
+      // Determine whether to use multi-pass or single-pass analysis
+      const useMultiPass = premiseText.length > COMPLEX_PREMISE_THRESHOLD ||
+                           hasComplexRequirements(premiseText) ||
+                           storyBibleData !== null;
 
-      // Always run LLM analysis for better context understanding
-      // Fallback to keyword-only if LLM analysis fails
-      this.logger.info('[SmartConfig] Running LLM-based analysis (replaces keyword detection)');
-      llmAnalysis = await analyzePremiseLLM(premiseText);
+      let llmAnalysis;
 
-      if (!llmAnalysis) {
-        this.logger.warn('[SmartConfig] LLM analysis failed, falling back to keyword-based analysis');
+      if (useMultiPass) {
+        // MULTI-PASS: For complex premises (> 800 chars, style requirements, etc.)
+        this.logger.info('[SmartConfig] Using MULTI-PASS analysis for complex premise', {
+          length: premiseText.length,
+          hasStoryBible: !!storyBibleData,
+          hasComplexRequirements: hasComplexRequirements(premiseText)
+        });
+
+        llmAnalysis = await multiPassAnalyze(premiseText, storyBibleData);
+
+        // Check for multi-pass failure
+        if (llmAnalysis._multiPassFailed) {
+          this.logger.warn('[SmartConfig] Multi-pass analysis failed, falling back to single-pass');
+          llmAnalysis = await analyzePremiseLLM(premiseText);
+        }
+      } else {
+        // SINGLE-PASS: For simple premises (quick, efficient)
+        this.logger.info('[SmartConfig] Using SINGLE-PASS analysis for simple premise');
+        llmAnalysis = await analyzePremiseLLM(premiseText);
       }
 
-      // Convert LLM analysis to keywordAnalysis format for compatibility with existing config generation
-      const keywordAnalysis = llmAnalysis
-        ? convertLLMAnalysisToKeywordFormat(llmAnalysis)
-        : this.analyzeKeywords(text);
+      // analyzePremiseLLM always returns a valid object (uses SENSIBLE_DEFAULTS on failure)
+      // Check if it was a fallback by looking for the llm_failed flag
+      if (llmAnalysis.llm_failed) {
+        this.logger.warn('[SmartConfig] LLM analysis failed, using sensible defaults');
+      }
 
-      // Step 3: Generate config from analysis
-      // P1 FIX: Pass llmAnalysis as the AI analysis parameter (was incorrectly passing null)
-      // This ensures narrator moods, voice preferences, and other LLM-derived settings are used
-      const suggestedConfig = this.generateConfig(keywordAnalysis, llmAnalysis, currentConfig);
+      // Generate config directly from LLM analysis
+      // Multi-pass results are already in the right format; single-pass needs generateConfig
+      const suggestedConfig = llmAnalysis._multiPassProcessed
+        ? await this.convertMultiPassToConfig(llmAnalysis, currentConfig)
+        : this.generateConfig(llmAnalysis, currentConfig);
 
-      // Use LLM reasoning if available, otherwise use keyword reasoning
-      const reasoning = llmAnalysis
-        ? generateReasoningFromLLM(llmAnalysis)
-        : this.generateReasoning(keywordAnalysis, null);
+      // Generate human-readable reasoning
+      const reasoning = llmAnalysis._multiPassProcessed
+        ? this.generateMultiPassReasoning(llmAnalysis)
+        : generateReasoningFromLLM(llmAnalysis);
 
       return {
         success: true,
         analysis: {
           llm: llmAnalysis,
-          fallbackKeywords: llmAnalysis ? null : keywordAnalysis  // Include keywords only if LLM failed
+          llm_failed: llmAnalysis.llm_failed || false,
+          multi_pass: llmAnalysis._multiPassProcessed || false
         },
         suggestedConfig,
         reasoning
       };
     } catch (error) {
       this.logger.error('[SmartConfig] Error interpreting premise:', error);
-      // Fall back to keyword-only analysis
-      const keywordAnalysis = this.analyzeKeywords(text);
+      // Use sensible defaults on catastrophic failure
+      const fallbackAnalysis = { ...SENSIBLE_DEFAULTS, llm_failed: true, error: error.message };
       return {
         success: true,
-        analysis: { fallbackKeywords: keywordAnalysis },
-        suggestedConfig: this.generateConfig(keywordAnalysis, null, currentConfig),
-        reasoning: this.generateReasoning(keywordAnalysis, null)
+        analysis: { llm: fallbackAnalysis, llm_failed: true },
+        suggestedConfig: this.generateConfig(fallbackAnalysis, currentConfig),
+        reasoning: 'Analysis failed, using sensible defaults for a general adventure story.'
       };
     }
   }
 
   /**
-   * Analyze premise text using keyword matching
+   * Convert multi-pass analysis result to final config format
+   * Multi-pass already does most synthesis, this adds remaining transformations
    */
-  analyzeKeywords(text) {
-    const analysis = {
-      genres: {},
-      intensity: {},
-      mood: null,
-      format: null,
-      story_length: null,
-      bedtime_mode: false,
-      audience: 'general',
-      multi_narrator: false,
-      multi_narrator_explicitly_disabled: false,  // P0: Negation detection flag
-      sfx_enabled: false,
-      sfx_explicitly_disabled: false,  // P0: Negation detection flag
-      sfx_level: null,  // null = default, 'medium', 'high'
-      character_count: null,  // { min: X, max: Y, estimated: Z }
-      detectedKeywords: []
+  async convertMultiPassToConfig(multiPassResult, currentConfig) {
+    const config = {};
+
+    // Genres - already processed by multi-pass
+    config.genres = multiPassResult.genres || {};
+
+    // Mood and format
+    config.mood = multiPassResult.mood || currentConfig.mood || 'calm';
+    config.story_format = multiPassResult.format || 'short_story';
+    config.story_length = multiPassResult.story_length || 'medium';
+
+    // CYOA detection
+    if (config.story_format === 'cyoa') {
+      config.story_type = 'cyoa';
+      config.cyoa_enabled = true;
+    } else {
+      config.story_type = 'narrative';
+      config.cyoa_enabled = false;
+    }
+
+    // Audience
+    config.audience = multiPassResult.audience || 'general';
+
+    // Intensity - already processed with cross-validation
+    config.intensity = multiPassResult.intensity || {};
+
+    // Author style - key benefit of multi-pass
+    config.author_style = multiPassResult.author_style || null;
+    config.humor_type = multiPassResult.humor_type || null;
+    config.cultural_flavor = multiPassResult.cultural_flavor || null;
+
+    // Narrator - enriched by multi-pass style extraction
+    if (multiPassResult.narrator) {
+      config.narrator = multiPassResult.narrator;
+      config.narrator_style = this.mapVoiceStyleToNarratorStyle(multiPassResult.narrator.voice_style);
+    } else {
+      config.narrator_style = 'warm';
+    }
+
+    // Recommend voice based on multi-pass narrator inference
+    const voiceRec = this.recommendVoice(config.narrator_style, {
+      genres: config.genres,
+      mood: config.mood,
+      audience: config.audience,
+      narratorRecommendation: multiPassResult.narrator || null
+    });
+    if (voiceRec) {
+      config.recommended_voice = voiceRec;
+    }
+
+    // Audio features - voice acting (support both new and legacy field names)
+    // Default to TRUE for most stories (standard audiobook practice)
+    const voiceActedFromLLM = multiPassResult.voice_acted ?? multiPassResult.voiceActed ?? multiPassResult.multi_narrator;
+    config.voice_acted = voiceActedFromLLM !== undefined ? voiceActedFromLLM : true; // Default TRUE
+    config.multi_narrator = config.voice_acted; // Backward compatibility
+    config.sfx_enabled = multiPassResult.sfx_enabled || false;
+    config.sfx_level = multiPassResult.sfx_level || null;
+
+    // Bedtime mode
+    config.bedtime_mode = multiPassResult.bedtime_mode || false;
+    if (config.bedtime_mode) {
+      config.mood = 'calm';
+      config.intensity = config.intensity || {};
+      config.intensity.scary = Math.min(config.intensity.scary || 0, 20);
+      config.intensity.violence = Math.min(config.intensity.violence || 0, 10);
+    }
+
+    // Character count
+    if (multiPassResult.character_count) {
+      config.character_count = multiPassResult.character_count;
+    }
+
+    // Cover art style derived from genres
+    config.cover_art_style = this.deriveArtStyleFromGenres(config.genres);
+
+    // Narrator Archetype Detection
+    // Determines prosody, pacing, and emotional delivery based on genre/tone/audience
+    const dominantGenre = this.getDominantGenre(config.genres);
+    const archetypeResult = await detectNarratorArchetype({
+      genre: dominantGenre,
+      premise: null, // Premise not needed for rule-based detection
+      tone: config.mood,
+      targetAudience: config.audience
+    }, { useLLM: false });
+
+    config.narrator_archetype = archetypeResult.archetype?.id || null;
+    config.archetype_confidence = archetypeResult.confidence || 0.75;
+    config.archetype_detection_method = archetypeResult.method || 'genre_mapping';
+
+    this.logger.info(`[SmartConfig] Narrator archetype detected: ${config.narrator_archetype} (confidence: ${config.archetype_confidence})`);
+
+    // Preserve multi-pass metadata
+    config._multiPassProcessed = true;
+    config._culturalFlavor = multiPassResult.cultural_flavor;
+    config._humorType = multiPassResult.humor_type;
+
+    this.logger.info('[SmartConfig] Multi-pass config converted', {
+      author_style: config.author_style,
+      cultural_flavor: config._culturalFlavor,
+      humor_type: config._humorType,
+      narrator_tone: config.narrator?.tone_descriptors,
+      narrator_archetype: config.narrator_archetype
+    });
+
+    return config;
+  }
+
+  /**
+   * Map voice style to narrator style for consistency
+   */
+  mapVoiceStyleToNarratorStyle(voiceStyle) {
+    const mapping = {
+      'wry': 'mysterious',
+      'dramatic': 'dramatic',
+      'warm': 'warm',
+      'mysterious': 'mysterious',
+      'playful': 'playful',
+      'epic': 'epic',
+      'horror': 'horror',
+      'noir': 'noir',
+      'whimsical': 'whimsical',
+      'calm': 'warm'
+    };
+    return mapping[voiceStyle] || 'warm';
+  }
+
+  /**
+   * Derive cover art style from genre scores (duplicated for self-containment)
+   */
+  deriveArtStyleFromGenres(genres) {
+    if (!genres || typeof genres !== 'object') return 'fantasy';
+
+    const genreToArt = {
+      horror: 'gothic', fantasy: 'fantasy', scifi: 'scifi', mystery: 'noir',
+      romance: 'romantic', erotica: 'romantic', adventure: 'adventure',
+      humor: 'cartoon', fairytale: 'storybook', literary: 'painterly',
+      poetry: 'watercolor', ya: 'modern', thriller: 'noir'
     };
 
-    // Check for intensity boosters in the text
-    const hasBooster = INTENSITY_BOOSTERS.some(b => text.includes(b));
-    const boosterMultiplier = hasBooster ? 1.5 : 1.0;
+    let dominantGenre = null;
+    let highestScore = 0;
 
-    // Genre detection
-    for (const [genre, keywords] of Object.entries(GENRE_KEYWORDS)) {
-      const matches = keywords.filter(kw => text.includes(kw));
-      if (matches.length > 0) {
-        // Score based on number of matches and keyword specificity
-        const score = Math.min(100, 30 + (matches.length * 15));
-        analysis.genres[genre] = score;
-        analysis.detectedKeywords.push(...matches);
+    for (const [genre, score] of Object.entries(genres)) {
+      if (typeof score === 'number' && score > highestScore) {
+        highestScore = score;
+        dominantGenre = genre;
       }
     }
 
-    // Intensity detection with booster support
-    for (const [type, keywords] of Object.entries(INTENSITY_KEYWORDS)) {
-      const matches = keywords.filter(kw => text.includes(kw));
-      if (matches.length > 0) {
-        // Higher base for explicit keywords, apply booster if present
-        let score = 20 + (matches.length * 25);
-
-        // Check if this specific intensity type has a booster nearby
-        // e.g., "really violent" or "very scary"
-        let boosted = false;
-        for (const booster of INTENSITY_BOOSTERS) {
-          if (boosted) break;
-          for (const kw of matches) {
-            // Direct pattern: "really scary"
-            if (text.includes(`${booster} ${kw}`)) {
-              score = Math.min(100, score * 1.5);
-              boosted = true;
-              break;
-            }
-            // Compound pattern: "really violent and scary" should boost scary too
-            if (text.match(new RegExp(`${booster}\\s+\\w+\\s+and\\s+${kw}`))) {
-              score = Math.min(100, score * 1.4);
-              boosted = true;
-              break;
-            }
-          }
-        }
-
-        analysis.intensity[type] = Math.min(100, Math.round(score));
-        analysis.detectedKeywords.push(...matches);
-      }
-    }
-
-    // Also detect "scary" from mood keywords for intensity
-    if (!analysis.intensity.scary) {
-      const scaryMoodKeywords = MOOD_KEYWORDS.scary || [];
-      const scaryMatches = scaryMoodKeywords.filter(kw => text.includes(kw));
-      if (scaryMatches.length > 0) {
-        let score = 30 + (scaryMatches.length * 20);
-        // Check for boosters - direct pattern or compound pattern like "really X and scary"
-        for (const booster of INTENSITY_BOOSTERS) {
-          if (scaryMatches.some(kw => text.includes(`${booster} ${kw}`))) {
-            score = Math.min(100, score * 1.5);
-            break;
-          }
-          // Also check for compound patterns: "really violent and scary"
-          if (text.match(new RegExp(`${booster}\\s+\\w+\\s+and\\s+(${scaryMatches.join('|')})`))) {
-            score = Math.min(100, score * 1.4);
-            break;
-          }
-        }
-        analysis.intensity.scary = Math.min(100, Math.round(score));
-        analysis.detectedKeywords.push(...scaryMatches);
-      }
-    }
-
-    // Mood detection
-    for (const [mood, keywords] of Object.entries(MOOD_KEYWORDS)) {
-      if (keywords.some(kw => text.includes(kw))) {
-        analysis.mood = mood;
-        break;
-      }
-    }
-
-    // Format detection - check all formats and pick the best match
-    for (const [format, keywords] of Object.entries(FORMAT_KEYWORDS)) {
-      if (keywords.some(kw => text.includes(kw))) {
-        analysis.format = format;
-        this.logger.info(`[SmartConfig] Detected format: ${format}`);
-        break;
-      }
-    }
-
-    // Multi-narrator detection with negation support (P0)
-    const multiNarratorResult = this.detectNegatedFeature(text, MULTI_NARRATOR_KEYWORDS, 'multi_narrator');
-    if (multiNarratorResult.detected) {
-      if (multiNarratorResult.negated) {
-        analysis.multi_narrator = false;
-        analysis.multi_narrator_explicitly_disabled = true;
-        analysis.detectedKeywords.push('multi-narrator-disabled');
-        this.logger.info('[SmartConfig] Multi-narrator explicitly disabled by user');
-      } else {
-        analysis.multi_narrator = true;
-        analysis.detectedKeywords.push('multi-narrator');
-        this.logger.info('[SmartConfig] Detected multi-narrator request');
-      }
-    }
-
-    // Sound effects detection with negation support (P0)
-    const sfxResult = this.detectNegatedFeature(text, SFX_KEYWORDS, 'sfx_enabled');
-    if (sfxResult.detected) {
-      if (sfxResult.negated) {
-        analysis.sfx_enabled = false;
-        analysis.sfx_explicitly_disabled = true;
-        analysis.detectedKeywords.push('sfx-disabled');
-        this.logger.info('[SmartConfig] Sound effects explicitly disabled by user');
-      } else {
-        analysis.sfx_enabled = true;
-        analysis.detectedKeywords.push('sound effects');
-        this.logger.info('[SmartConfig] Detected sound effects request');
-      }
-    }
-
-    // SFX Level detection - check for phrases indicating more sound effects
-    // High level: "lots of sound effects", "immersive audio", "audio drama"
-    // Medium level: "more sounds", "enhanced audio"
-    if (SFX_LEVEL_KEYWORDS.high.some(kw => text.includes(kw))) {
-      analysis.sfx_level = 'high';
-      analysis.sfx_enabled = true;  // Implicitly enable SFX if asking for lots
-      analysis.detectedKeywords.push('high sfx level');
-      this.logger.info('[SmartConfig] Detected HIGH sfx level request');
-    } else if (SFX_LEVEL_KEYWORDS.medium.some(kw => text.includes(kw))) {
-      analysis.sfx_level = 'medium';
-      analysis.sfx_enabled = true;  // Implicitly enable SFX if asking for more
-      analysis.detectedKeywords.push('medium sfx level');
-      this.logger.info('[SmartConfig] Detected MEDIUM sfx level request');
-    }
-
-    // Story length detection
-    for (const [length, keywords] of Object.entries(LENGTH_KEYWORDS)) {
-      if (keywords.some(kw => text.includes(kw))) {
-        analysis.story_length = length;
-        this.logger.info(`[SmartConfig] Detected story length: ${length}`);
-        break;
-      }
-    }
-
-    // Bedtime mode detection
-    if (BEDTIME_KEYWORDS.some(kw => text.includes(kw))) {
-      analysis.bedtime_mode = true;
-      analysis.audience = 'children'; // Bedtime implies child-friendly
-      analysis.mood = analysis.mood || 'calm';
-      this.logger.info('[SmartConfig] Detected bedtime mode');
-    }
-
-    // Character count estimation
-    analysis.character_count = this.estimateCharacterCount(text);
-    if (analysis.character_count) {
-      this.logger.info(`[SmartConfig] Estimated character count: ${analysis.character_count.min}-${analysis.character_count.max} (est: ${analysis.character_count.estimated})`);
-    }
-
-    // Audience detection - be more aggressive about setting mature
-    // Horror + Violence = mature
-    // High intensity in any violent/scary category = mature
-    const isViolent = (analysis.intensity.violence || 0) > 40 || (analysis.intensity.gore || 0) > 30;
-    const isHorror = (analysis.genres.horror || 0) > 40;
-    const isScary = (analysis.intensity.scary || 0) > 50;
-
-    if (analysis.intensity.adultContent > 0 || analysis.intensity.gore > 50) {
-      analysis.audience = 'mature';
-    } else if ((isHorror && isViolent) || (isHorror && isScary) || (isViolent && isScary)) {
-      // Combination of horror/violence/scary suggests mature content
-      analysis.audience = 'mature';
-      this.logger.info('[SmartConfig] Auto-detected mature audience from content combination');
-    } else if (text.includes('for children') || text.includes('for kids') || text.includes('bedtime') ||
-               text.includes('young children') || text.includes('preschool') || text.includes('toddler') ||
-               text.includes('kid friendly') || text.includes('child friendly')) {
-      analysis.audience = 'children';
-    }
-
-    // P3: Author preference extraction
-    // Need to use original case text for proper author name detection
-    const authorPreference = this.extractAuthorPreference(text);
-    if (authorPreference) {
-      analysis.authorPreference = authorPreference;
-      analysis.detectedKeywords.push(`author:${authorPreference}`);
-      this.logger.info(`[SmartConfig] Detected author preference: ${authorPreference}`);
-    }
-
-    return analysis;
+    if (!dominantGenre || highestScore < 30) return 'fantasy';
+    return genreToArt[dominantGenre] || 'fantasy';
   }
+
+  /**
+   * Generate human-readable reasoning from multi-pass analysis
+   */
+  generateMultiPassReasoning(multiPassResult) {
+    const lines = [];
+
+    // Author style (key benefit of multi-pass)
+    if (multiPassResult.author_style) {
+      lines.push(`✍️ **Writing Style**: ${multiPassResult.author_style}`);
+      if (multiPassResult.author_reasoning) {
+        lines.push(`   ${multiPassResult.author_reasoning}`);
+      }
+      if (multiPassResult.author_confidence) {
+        lines.push(`   Confidence: ${multiPassResult.author_confidence}%`);
+      }
+    }
+
+    // Cultural flavor and humor type (unique to multi-pass)
+    if (multiPassResult.cultural_flavor && multiPassResult.cultural_flavor !== 'neutral') {
+      lines.push(`🌍 **Cultural Flavor**: ${multiPassResult.cultural_flavor}`);
+    }
+    if (multiPassResult.humor_type && multiPassResult.humor_type !== 'none') {
+      lines.push(`😄 **Humor Type**: ${multiPassResult.humor_type.replace(/_/g, ' ')}`);
+    }
+
+    // Genres
+    if (multiPassResult.genres) {
+      const topGenres = Object.entries(multiPassResult.genres)
+        .filter(([_, score]) => typeof score === 'number' && score > 30)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([genre, score]) => `${genre} (${score}%)`)
+        .join(', ');
+
+      if (topGenres) {
+        lines.push(`📚 **Genres**: ${topGenres}`);
+        if (multiPassResult.genres_reasoning) {
+          lines.push(`   ${multiPassResult.genres_reasoning}`);
+        }
+      }
+    }
+
+    // Narrator (enriched by multi-pass)
+    if (multiPassResult.narrator) {
+      const n = multiPassResult.narrator;
+      lines.push(`🎙️ **Narrator**: ${n.preferred_gender || 'neutral'} voice, ${n.voice_style || 'dramatic'} style`);
+      if (n.tone_descriptors) {
+        lines.push(`   Tone: ${n.tone_descriptors}`);
+      }
+    }
+
+    // Intensity
+    if (multiPassResult.intensity?.reasoning) {
+      lines.push(`⚡ **Content Intensity**:`);
+      lines.push(`   ${multiPassResult.intensity.reasoning}`);
+    }
+
+    // Audience
+    if (multiPassResult.audience) {
+      lines.push(`👥 **Audience**: ${multiPassResult.audience}`);
+      if (multiPassResult.audience_reasoning) {
+        lines.push(`   ${multiPassResult.audience_reasoning}`);
+      }
+    }
+
+    // Dark comedy classification
+    if (multiPassResult.story_classification === 'dark_comedy') {
+      lines.push(`🎭 **Classification**: Dark Comedy (high bleakness + humor)`);
+    }
+
+    if (lines.length === 0) {
+      return 'Multi-pass analysis complete. Configuration generated from premise.';
+    }
+
+    return lines.join('\n');
+  }
+
+  // NOTE: analyzeKeywords() has been removed - LLM-only analysis is now used
+  // See analyzePremiseLLM() in configAnalyzer.js for the primary analysis method
 
   /**
    * Use AI to deeply analyze the premise for nuanced understanding
@@ -1002,19 +998,29 @@ REQUIRED FIELDS (all must be present):
 AVAILABLE AUTHOR STYLES (authorPreference must be one of these ids):
 ${authorCatalog}
 
-12. AUDIO FEATURES - EXTREMELY STRICT RULES:
+12. AUDIO FEATURES:
 
     Defaults:
     - sfxEnabled: false
-    - multiNarrator: false
+    - voiceActed: true (DEFAULT for most stories - voice acting is standard audiobook practice)
 
     sfxEnabled: Boolean
     - TRUE only if premise contains EXACT phrases: "sound effects", "sfx", "audio effects", "ambient sounds", "ambient audio"
     - FALSE for everything else (examples that should NOT enable audio: atmospheric, cinematic, immersive, vivid, rich, detailed, dramatic)
 
-    multiNarrator: Boolean
-    - TRUE only if premise contains EXACT phrases: "multi-voice", "multiple voices", "voice cast", "different voices for", "audio drama", "radio play", "full cast", "voiced characters"
-    - FALSE for everything else (examples that should NOT enable multiNarrator: multiple characters, dialogue-heavy, many speakers, conversations)
+    voiceActed: Boolean (this is about VOICE ACTING for dialogue, NOT narrative POV!)
+    - TRUE (default) for stories with:
+      * Multiple speaking characters (2+ characters with dialogue)
+      * Dialogue-driven or conversation-heavy scenes
+      * Ensemble casts, family stories, group dynamics
+      * This is standard audiobook practice - different voices for different characters
+    - FALSE only if:
+      * User explicitly requests "single narrator", "one voice reads all", "no character voices"
+      * Story is primarily internal monologue or narration with minimal dialogue
+      * Poetry, literary prose without character dialogue
+      * Solo character with no one to talk to
+    - IMPORTANT: "first person" and "POV" refer to NARRATIVE PERSPECTIVE, not voice acting!
+      A first-person story CAN and SHOULD have voice acting for OTHER characters' dialogue.
 
     sfxLevel: "low" | "medium" | "high" | null
     - null when sfxEnabled is false
@@ -1023,7 +1029,7 @@ ${authorCatalog}
 13. negations: Object with explicit negation flags
     {
       sfxDisabled: boolean - true if "no sound effects", "without sfx", "no audio", etc.
-      multiVoiceDisabled: boolean - true if "single narrator", "no multiple voices", "one voice", etc.
+      voiceActingDisabled: boolean - true if "single narrator reads all", "no character voices", "one voice only", etc.
       anyNegationDetected: boolean - true if ANY negation phrase found
     }
 
@@ -1033,26 +1039,26 @@ ${authorCatalog}
 
 EXAMPLES:
 
-Example 1 - Atmospheric horror (NO audio features):
-Input: "An atmospheric horror story with a mysterious setting"
+Example 1 - Atmospheric horror with multiple characters:
+Input: "An atmospheric horror story with a mysterious setting where a family discovers something terrifying"
 Output: {
   "sfxEnabled": false,
-  "multiNarrator": false,
+  "voiceActed": true,
   "storyType": "horror",
   "mood": "scary"
 }
-REASON: "atmospheric" describes mood, NOT audio request
+REASON: "atmospheric" doesn't enable SFX, but family = multiple characters = voice acting enabled
 
-Example 2 - Cinematic adventure (NO audio features):
-Input: "A cinematic adventure through ancient ruins"
+Example 2 - Solo adventure (no voice acting):
+Input: "A lone explorer's journey through ancient ruins, told through their inner thoughts"
 Output: {
   "sfxEnabled": false,
-  "multiNarrator": false,
+  "voiceActed": false,
   "storyType": "adventure"
 }
-REASON: "cinematic" describes visual style, NOT audio request
+REASON: Solo character, inner thoughts = single narrator appropriate
 
-Example 3 - Surreal poetic narrative (literary, NOT mystery):
+Example 3 - Surreal poetic narrative (no voice acting):
 Input: "A surreal poetic narrative exploring dreams and consciousness"
 Output: {
   "genres": { "literary": 85, "poetry": 75, "fantasy": 30, "mystery": 0 },
@@ -1060,18 +1066,27 @@ Output: {
   "storyType": "literary",
   "styleIndicators": ["surreal", "poetic", "dreamlike"],
   "sfxEnabled": false,
-  "multiNarrator": false
+  "voiceActed": false
 }
-REASON: Surreal/poetic content = literary storyType, NOT mystery
+REASON: Poetry/literary prose without character dialogue = single narrator
 
-Example 4 - Explicit audio drama request (YES audio features):
+Example 4 - Dialogue-heavy family story (YES voice acting):
+Input: "A dark comedy about a family dinner conversation"
+Output: {
+  "sfxEnabled": false,
+  "voiceActed": true,
+  "storyType": "humor"
+}
+REASON: Family = multiple speakers, conversation = dialogue-heavy = voice acting
+
+Example 5 - Explicit audio drama request (YES both):
 Input: "An audio drama with full voice cast and sound effects"
 Output: {
   "sfxEnabled": true,
   "sfxLevel": "high",
-  "multiNarrator": true
+  "voiceActed": true
 }
-REASON: Explicit "audio drama", "voice cast", "sound effects" = enable audio
+REASON: Explicit "audio drama", "voice cast", "sound effects" = enable both
 
 Return ONLY valid JSON, no markdown, no explanation.`;
 
@@ -1130,204 +1145,159 @@ Return ONLY valid JSON, no markdown, no explanation.`;
   }
 
   /**
-   * Generate configuration from analysis results
-   * PRIORITY: AI analysis is PRIMARY for all semantic understanding
-   * Keywords are SECONDARY backup only
+   * Generate configuration from LLM analysis results
+   * LLM-ONLY: No keyword fallback - LLM returns numeric scores directly
    */
-  generateConfig(keywordAnalysis, aiAnalysis, currentConfig) {
+  generateConfig(llmAnalysis, currentConfig) {
     const config = {};
 
-    // P2 FIX: Start with EMPTY genres, not currentConfig.genres
-    // This ensures Auto-Detect fully resets genres instead of merging with old values
-    // The frontend will overlay these on its own defaults
+    // Start with EMPTY genres - LLM provides all genre scores
     config.genres = {};
 
-    // AI genres are PRIMARY source
-    if (aiAnalysis?.genres) {
-      for (const [genre, score] of Object.entries(aiAnalysis.genres)) {
-        if (typeof score === 'number') {
-          config.genres[genre] = Math.round(score);
+    // LLM genres are the ONLY source (returns numeric scores 0-100)
+    if (llmAnalysis?.genres) {
+      for (const [genre, score] of Object.entries(llmAnalysis.genres)) {
+        if (typeof score === 'number' && score > 0) {
+          config.genres[genre] = Math.max(0, Math.min(100, Math.round(score)));
         }
       }
     }
 
-    // Apply keyword-detected genres only as fallback
-    for (const [genre, score] of Object.entries(keywordAnalysis.genres)) {
-      // Only add if AI didn't detect this genre AND keyword detection found something significant
-      if (!config.genres[genre] && score > 40) {
-        config.genres[genre] = score;
-      }
-    }
+    // Set mood from LLM
+    config.mood = llmAnalysis?.mood || currentConfig.mood || 'calm';
 
-    // Set mood - AI takes precedence
-    config.mood = aiAnalysis?.mood || keywordAnalysis.mood || currentConfig.mood || 'calm';
-
-    // Set format - AI takes precedence for semantic understanding
-    // CRITICAL FIX: Always set story_type based on format (cyoa vs narrative)
-    if (aiAnalysis?.format) {
-      config.story_format = aiAnalysis.format;
-      if (aiAnalysis.format === 'cyoa') {
+    // Set format - LLM handles all format detection
+    if (llmAnalysis?.format) {
+      config.story_format = llmAnalysis.format;
+      if (llmAnalysis.format === 'cyoa') {
         config.story_type = 'cyoa';
         config.cyoa_enabled = true;
       } else {
-        // All other formats are narrative stories
-        config.story_type = 'narrative';
-        config.cyoa_enabled = false;
-      }
-    } else if (keywordAnalysis.format) {
-      config.story_format = keywordAnalysis.format;
-      if (keywordAnalysis.format === 'cyoa') {
-        config.story_type = 'cyoa';
-        config.cyoa_enabled = true;
-      } else {
-        // All other formats are narrative stories
         config.story_type = 'narrative';
         config.cyoa_enabled = false;
       }
     } else {
-      // No format detected - default to narrative
-      config.story_type = config.story_type || 'narrative';
+      config.story_type = 'narrative';
       config.cyoa_enabled = false;
     }
 
-    // Set audience - if EITHER AI or keywords detect mature, use mature (safety first)
+    // Set audience from LLM (LLM has strict rules about children vs general)
     // Also check intensity levels to auto-detect mature content
-    const aiAudience = aiAnalysis?.audience;
-    const keywordAudience = keywordAnalysis.audience;
-    const intensityViolence = config.intensity?.violence || aiAnalysis?.intensity?.violence || keywordAnalysis.intensity?.violence || 0;
-    const intensityGore = config.intensity?.gore || aiAnalysis?.intensity?.gore || keywordAnalysis.intensity?.gore || 0;
-    const intensityScary = config.intensity?.scary || aiAnalysis?.intensity?.scary || keywordAnalysis.intensity?.scary || 0;
-    const intensityRomance = config.intensity?.romance || aiAnalysis?.intensity?.romance || keywordAnalysis.intensity?.romance || 0;
-    const intensityAdultContent = config.intensity?.adultContent || aiAnalysis?.intensity?.adultContent || keywordAnalysis.intensity?.adultContent || 0;
+    const llmAudience = llmAnalysis?.audience;
+    const intensityViolence = llmAnalysis?.intensity?.violence || 0;
+    const intensityGore = llmAnalysis?.intensity?.gore || 0;
+    const intensityScary = llmAnalysis?.intensity?.scary || 0;
+    const intensityRomance = llmAnalysis?.intensity?.romance || 0;
+    const intensityAdultContent = llmAnalysis?.intensity?.adultContent || 0;
 
     // High intensity content should force mature audience
-    // Include romance and adultContent for explicit sexual content detection
     const hasMatureContent = intensityViolence >= 60 || intensityGore >= 40 || intensityScary >= 70 || intensityRomance >= 70 || intensityAdultContent >= 50;
 
-    if (aiAudience === 'mature' || keywordAudience === 'mature' || hasMatureContent) {
+    if (llmAudience === 'mature' || hasMatureContent) {
       config.audience = 'mature';
-      this.logger.info(`[SmartConfig] Setting audience=mature (AI: ${aiAudience}, Keywords: ${keywordAudience}, Violence: ${intensityViolence}, Gore: ${intensityGore}, Scary: ${intensityScary}, Romance: ${intensityRomance}, AdultContent: ${intensityAdultContent})`);
-    } else if (aiAudience === 'children' || keywordAudience === 'children') {
+      this.logger.info(`[SmartConfig] Setting audience=mature (LLM: ${llmAudience}, Violence: ${intensityViolence}, Gore: ${intensityGore}, Scary: ${intensityScary}, Romance: ${intensityRomance}, AdultContent: ${intensityAdultContent})`);
+    } else if (llmAudience === 'children') {
       config.audience = 'children';
+    } else if (llmAudience === 'young_adult') {
+      config.audience = 'young_adult';
     } else {
-      config.audience = aiAudience || keywordAudience || currentConfig.audience || 'general';
+      config.audience = llmAudience || currentConfig.audience || 'general';
     }
 
-    // Set intensity - AI takes precedence
+    // Set intensity from LLM
     config.intensity = { ...currentConfig.intensity };
 
-    const intensitySource = aiAnalysis?.intensity || keywordAnalysis.intensity;
-    if (intensitySource) {
-      for (const [type, score] of Object.entries(intensitySource)) {
+    if (llmAnalysis?.intensity) {
+      for (const [type, score] of Object.entries(llmAnalysis.intensity)) {
         if (typeof score === 'number') {
           config.intensity[type] = Math.round(score);
         }
       }
     }
 
+    // CRITICAL: Enforce audience safety caps on intensity values
+    // This ensures children's content can't have scary=18% etc.
+    config.intensity = enforceAudienceSafetyCaps(config.intensity, config.audience);
+
     // Determine narrator style
-    config.narrator_style = this.recommendNarratorStyle(
-      aiAnalysis?.storyType || this.detectStoryType(keywordAnalysis),
-      config
-    );
+    const storyType = llmAnalysis?.storyType || 'general';
+    config.narrator_style = this.recommendNarratorStyle(storyType, config);
 
     // Recommend voice based on genre, mood, audience, style, AND LLM narrator inference
-    // LLM narrator recommendations are highest priority - they understand "Conan should have a gruff masculine narrator"
     const voiceRec = this.recommendVoice(config.narrator_style, {
       genres: config.genres,
       mood: config.mood,
       audience: config.audience,
-      // LLM narrator inference from configAnalyzer
-      narratorRecommendation: aiAnalysis?.narrator || null
+      narratorRecommendation: llmAnalysis?.narrator || null
     });
     if (voiceRec) {
       config.recommended_voice = voiceRec;
     }
 
     // Recommend author writing style
-    // PRIORITY ORDER: AI-detected author > user-extracted author > style-based recommendation
-    const storyType = aiAnalysis?.storyType || this.detectStoryType(keywordAnalysis);
+    const styleIndicators = llmAnalysis?.styleIndicators || [];
+    config.detectedKeywords = [...styleIndicators];
 
-    // Pass styleIndicators from AI to author recommendation for surreal/poetic detection
-    const styleIndicators = aiAnalysis?.styleIndicators || [];
-    config.detectedKeywords = [...(keywordAnalysis.detectedKeywords || []), ...styleIndicators];
-
-    if (aiAnalysis?.authorPreference) {
-      const normalized = this.normalizeAuthorName(aiAnalysis.authorPreference);
+    if (llmAnalysis?.authorPreference) {
+      const normalized = this.normalizeAuthorName(llmAnalysis.authorPreference);
       if (normalized) {
         config.author_style = normalized;
-        this.logger.info(`[SmartConfig] Using AI-detected author style: ${normalized}`);
+        this.logger.info(`[SmartConfig] Using LLM-detected author style: ${normalized}`);
       } else {
         config.author_style = this.recommendAuthorStyle(storyType, config);
       }
-    } else if (keywordAnalysis.authorPreference) {
-      config.author_style = keywordAnalysis.authorPreference;
-      this.logger.info(`[SmartConfig] Using keyword-extracted author style: ${keywordAnalysis.authorPreference}`);
     } else {
       config.author_style = this.recommendAuthorStyle(storyType, config);
     }
 
     // =======================================================================
-    // AUDIO FEATURES - LLM-BASED DETECTION IS PRIMARY (not keywords)
-    // The AI prompt has STRICT rules about what enables audio features
+    // AUDIO FEATURES - LLM-ONLY DETECTION
     // =======================================================================
 
-    // NEGATION DETECTION: AI semantic understanding is PRIMARY
-    // Check AI negations FIRST before any enables
-    const aiNegations = aiAnalysis?.negations || {};
+    // NEGATION DETECTION from LLM
+    const llmNegations = llmAnalysis?.negations || {};
 
-    // Multi-narrator: AI negation > AI enable > keyword negation > keyword enable
-    if (aiNegations.multiVoiceDisabled === true) {
-      config.multi_narrator = false;
-      config.multi_narrator_explicitly_disabled = true;
-      this.logger.info('[SmartConfig] AI detected explicit negation: multi-voice disabled');
-    } else if (keywordAnalysis.multi_narrator_explicitly_disabled) {
-      config.multi_narrator = false;
-      config.multi_narrator_explicitly_disabled = true;
-      this.logger.info('[SmartConfig] Keywords detected multi-narrator negation');
-    } else if (aiAnalysis?.multiNarrator === true) {
-      // AI says ENABLE - trust it (it has strict rules)
-      config.multi_narrator = true;
-      this.logger.info('[SmartConfig] AI detected multi_narrator=true (explicit request found)');
-    } else if (keywordAnalysis.multi_narrator) {
-      config.multi_narrator = true;
-      this.logger.info('[SmartConfig] Keywords detected multi_narrator=true');
+    // Voice acting: LLM negation > LLM enable > default TRUE
+    // Support both new (voiceActingDisabled, voiceActed) and legacy (multiVoiceDisabled, multiNarrator) field names
+    const voiceActingDisabled = llmNegations.voiceActingDisabled ?? llmNegations.multiVoiceDisabled;
+    const voiceActedFromLLM = llmAnalysis?.voiceActed ?? llmAnalysis?.multiNarrator;
+
+    if (voiceActingDisabled === true) {
+      config.voice_acted = false;
+      config.multi_narrator = false; // Backward compatibility
+      config.voice_acted_explicitly_disabled = true;
+      config.multi_narrator_explicitly_disabled = true; // Backward compatibility
+      this.logger.info('[SmartConfig] LLM detected explicit negation: voice acting disabled');
+    } else if (voiceActedFromLLM === true) {
+      config.voice_acted = true;
+      config.multi_narrator = true; // Backward compatibility
+      this.logger.info('[SmartConfig] LLM detected voice_acted=true');
+    } else if (voiceActedFromLLM === false) {
+      config.voice_acted = false;
+      config.multi_narrator = false; // Backward compatibility
+      this.logger.info('[SmartConfig] LLM detected voice_acted=false');
     }
-    // If neither AI nor keywords found multi-narrator request, it stays undefined (false)
+    // If neither specified, keep the default (TRUE from earlier assignment)
 
-    // SFX: AI negation > AI enable > keyword negation > keyword enable
-    if (aiNegations.sfxDisabled === true) {
+    // SFX: LLM negation > LLM enable
+    if (llmNegations.sfxDisabled === true) {
       config.sfx_enabled = false;
       config.sfx_explicitly_disabled = true;
       config.sfx_level = null;
-      this.logger.info('[SmartConfig] AI detected explicit negation: SFX disabled');
-    } else if (keywordAnalysis.sfx_explicitly_disabled) {
-      config.sfx_enabled = false;
-      config.sfx_explicitly_disabled = true;
-      config.sfx_level = null;
-      this.logger.info('[SmartConfig] Keywords detected SFX negation');
-    } else if (aiAnalysis?.sfxEnabled === true) {
-      // AI says ENABLE - trust it (it has strict rules that filter out "atmospheric", "cinematic", etc.)
+      this.logger.info('[SmartConfig] LLM detected explicit negation: SFX disabled');
+    } else if (llmAnalysis?.sfxEnabled === true) {
       config.sfx_enabled = true;
-      config.sfx_level = aiAnalysis.sfxLevel || 'low';
-      this.logger.info(`[SmartConfig] AI detected sfx_enabled=true, level=${config.sfx_level} (explicit request found)`);
-    } else if (keywordAnalysis.sfx_enabled) {
-      config.sfx_enabled = true;
-      config.sfx_level = keywordAnalysis.sfx_level || 'low';
-      this.logger.info(`[SmartConfig] Keywords detected sfx_enabled=true, level=${config.sfx_level}`);
-    }
-    // If neither AI nor keywords found SFX request, it stays undefined (false)
-
-    // Story length: AI analysis takes precedence
-    if (aiAnalysis?.storyLength) {
-      config.story_length = aiAnalysis.storyLength;
-      this.logger.info(`[SmartConfig] AI inferred story_length=${aiAnalysis.storyLength} from context`);
-    } else if (keywordAnalysis.story_length) {
-      config.story_length = keywordAnalysis.story_length;
-      this.logger.info(`[SmartConfig] Keywords detected story_length=${keywordAnalysis.story_length}`);
+      config.sfx_level = llmAnalysis.sfxLevel || 'low';
+      this.logger.info(`[SmartConfig] LLM detected sfx_enabled=true, level=${config.sfx_level}`);
     }
 
-    // P2: Story length fallback - infer from format if not explicitly set
+    // Story length from LLM
+    if (llmAnalysis?.storyLength) {
+      config.story_length = llmAnalysis.storyLength;
+      this.logger.info(`[SmartConfig] LLM inferred story_length=${llmAnalysis.storyLength}`);
+    }
+
+    // Story length fallback - infer from format if not explicitly set
     if (!config.story_length) {
       const formatLengthMap = {
         'picture_book': 'short',
@@ -1340,10 +1310,9 @@ Return ONLY valid JSON, no markdown, no explanation.`;
       this.logger.info(`[SmartConfig] Inferred story_length=${config.story_length} from format or default`);
     }
 
-    // Pass through bedtime mode if detected
-    if (keywordAnalysis.bedtime_mode) {
+    // Bedtime mode from LLM
+    if (llmAnalysis?.bedtimeMode) {
       config.bedtime_mode = true;
-      // Bedtime mode implies calm settings
       config.mood = 'calm';
       config.intensity = config.intensity || {};
       config.intensity.scary = Math.min(config.intensity.scary || 0, 20);
@@ -1351,13 +1320,53 @@ Return ONLY valid JSON, no markdown, no explanation.`;
       this.logger.info('[SmartConfig] Setting bedtime_mode=true with reduced intensity');
     }
 
-    // Pass through character count estimation if detected
-    if (keywordAnalysis.character_count) {
-      config.character_count = keywordAnalysis.character_count;
-      this.logger.info(`[SmartConfig] Setting character_count: ${keywordAnalysis.character_count.min}-${keywordAnalysis.character_count.max}`);
+    // Character count from LLM
+    if (llmAnalysis?.characterCount) {
+      config.character_count = llmAnalysis.characterCount;
+      this.logger.info(`[SmartConfig] Setting character_count: ${llmAnalysis.characterCount.min}-${llmAnalysis.characterCount.max}`);
+    }
+
+    // CRITICAL: Derive cover art style from genre scores
+    // This ensures cover art matches the dominant genre
+    config.cover_art_style = deriveArtStyleFromGenres(config.genres);
+    this.logger.info(`[SmartConfig] Derived cover_art_style=${config.cover_art_style} from genres`);
+
+    // Narrator Archetype Detection (single-pass)
+    // Determines prosody, pacing, and emotional delivery based on genre/tone/audience
+    const dominantGenre = this.getDominantGenre(config.genres);
+    const archetype = getArchetypeForGenre(dominantGenre);
+
+    if (archetype) {
+      config.narrator_archetype = archetype.id;
+      config.archetype_confidence = 0.75; // Genre-only mapping has medium confidence
+      config.archetype_detection_method = 'genre_mapping';
+      this.logger.info(`[SmartConfig] Narrator archetype detected: ${config.narrator_archetype} (genre: ${dominantGenre})`);
     }
 
     return config;
+  }
+
+  /**
+   * Get the dominant genre from genre scores
+   * @param {Object} genres - Genre scores object
+   * @returns {string} The genre with the highest score, or 'drama' as default
+   */
+  getDominantGenre(genres) {
+    if (!genres || typeof genres !== 'object') {
+      return 'drama';
+    }
+
+    let dominant = 'drama';
+    let highestScore = 0;
+
+    for (const [genre, score] of Object.entries(genres)) {
+      if (typeof score === 'number' && score > highestScore) {
+        highestScore = score;
+        dominant = genre;
+      }
+    }
+
+    return dominant;
   }
 
   /**
@@ -1451,80 +1460,10 @@ Return ONLY valid JSON, no markdown, no explanation.`;
     return recommendations[0] || 'none';
   }
 
-  /**
-   * Estimate character count from premise text
-   * Returns { min, max, estimated } or null if can't determine
-   */
-  estimateCharacterCount(text) {
-    let explicitSum = 0;  // Sum of explicit numbers like "5 men and 5 women"
-    let explicitCount = 0;
-    const estimates = [];  // For vague indicators
-
-    // Check for explicit numeric patterns: "5 men and 5 women" or "10 characters"
-    // These should be SUMMED (5 men + 5 women = 10 characters)
-    const numericMatches = text.matchAll(/(\d+)\s*(?:men|women|characters?|people|heroes?|protagonists?|adventurers?|friends?|companions?|warriors?|members?|players?|astronauts?|scientists?|soldiers?|sailors?|survivors?|strangers?|travelers?|explorers?|knights?|wizards?|crew\s*members?|kids|children|teens|students|agents?|detectives?|officers?|victims?)/gi);
-    for (const match of numericMatches) {
-      explicitSum += parseInt(match[1]);
-      explicitCount++;
-    }
-
-    // Check for word number patterns: "five friends", "three heroes"
-    // Word must be followed by a character-related noun (required, not optional)
-    for (const [word, num] of Object.entries(CHARACTER_COUNT_PATTERNS.wordNumbers)) {
-      const regex = new RegExp(`${word}\\s+(?:men|women|characters?|people|heroes?|protagonists?|adventurers?|friends?|companions?|warriors?|members?|players?|astronauts?|scientists?|soldiers?|sailors?|survivors?|strangers?|travelers?|explorers?|knights?|wizards?|crew\\s*members?|kids|children|teens|students|agents?|detectives?|officers?|victims?)\\b`, 'gi');
-      if (text.match(regex)) {
-        explicitSum += num;
-        explicitCount++;
-      }
-    }
-
-    // If we found explicit counts, use those
-    if (explicitCount > 0) {
-      return {
-        min: explicitSum,
-        max: explicitSum,
-        estimated: explicitSum,
-        confidence: explicitCount > 1 ? 'high' : 'medium'
-      };
-    }
-
-    // Otherwise, check cast size indicators for estimates
-    if (CHARACTER_COUNT_PATTERNS.solo.some(kw => text.includes(kw))) {
-      estimates.push({ min: 1, max: 1 });
-    }
-    if (CHARACTER_COUNT_PATTERNS.duo.some(kw => text.includes(kw))) {
-      estimates.push({ min: 2, max: 2 });
-    }
-    if (CHARACTER_COUNT_PATTERNS.small.some(kw => text.includes(kw))) {
-      estimates.push({ min: 3, max: 4 });
-    }
-    if (CHARACTER_COUNT_PATTERNS.medium.some(kw => text.includes(kw))) {
-      estimates.push({ min: 4, max: 6 });
-    }
-    if (CHARACTER_COUNT_PATTERNS.large.some(kw => text.includes(kw))) {
-      estimates.push({ min: 8, max: 15 });
-    }
-
-    // If no estimates detected, return null
-    if (estimates.length === 0) {
-      return null;
-    }
-
-    // Calculate ranges from estimates
-    const minVal = Math.min(...estimates.map(e => e.min));
-    const maxVal = Math.max(...estimates.map(e => e.max));
-    const estimated = Math.round((minVal + maxVal) / 2);
-
-    return {
-      min: minVal,
-      max: maxVal,
-      estimated,
-      confidence: estimates.length > 1 ? 'high' : 'medium'
-    };
-  }
+  // NOTE: estimateCharacterCount() has been removed - LLM handles character count estimation
 
   /**
-   * Detect primary story type from keyword analysis
+   * Detect primary story type from genre analysis (works with LLM output)
    */
   detectStoryType(analysis) {
     const genres = analysis.genres || {};
@@ -1878,44 +1817,7 @@ Return ONLY valid JSON, no markdown, no explanation.`;
     return null;
   }
 
-  /**
-   * Generate human-readable reasoning for the configuration choices
-   */
-  generateReasoning(keywordAnalysis, aiAnalysis) {
-    const reasons = [];
-
-    // Detected keywords
-    if (keywordAnalysis.detectedKeywords.length > 0) {
-      const uniqueKeywords = [...new Set(keywordAnalysis.detectedKeywords)].slice(0, 5);
-      reasons.push(`Detected keywords: ${uniqueKeywords.join(', ')}`);
-    }
-
-    // Genre reasoning
-    const topGenres = Object.entries(keywordAnalysis.genres)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 3)
-      .map(([g]) => g);
-    if (topGenres.length > 0) {
-      reasons.push(`Primary genres: ${topGenres.join(', ')}`);
-    }
-
-    // Mood reasoning
-    if (keywordAnalysis.mood) {
-      reasons.push(`Story mood: ${keywordAnalysis.mood}`);
-    }
-
-    // Audience reasoning
-    if (keywordAnalysis.audience !== 'general') {
-      reasons.push(`Audience level: ${keywordAnalysis.audience}`);
-    }
-
-    // AI insights
-    if (aiAnalysis?.themes) {
-      reasons.push(`Themes: ${aiAnalysis.themes.join(', ')}`);
-    }
-
-    return reasons;
-  }
+  // NOTE: generateReasoning() has been removed - we now use generateReasoningFromLLM from configAnalyzer.js
 
   /**
    * Process RTC (realtime conversation) input and generate config updates
@@ -2109,14 +2011,14 @@ Return ONLY valid JSON, no markdown, no explanation.`;
       });
     }
 
-    // Multi-narrator without multiple characters
-    if (config.multi_voice || config.multi_narrator) {
+    // Voice acting without multiple characters
+    if (config.multi_voice || config.voice_acted) {
       const charCount = analysis.character_count;
       if (!charCount || charCount.estimated < 2) {
         suggestions.push({
           type: 'suggestion',
-          code: 'MULTI_VOICE_FEW_CHARS',
-          message: 'Multi-voice narration works best with multiple characters. Consider describing more characters.',
+          code: 'VOICE_ACTING_FEW_CHARS',
+          message: 'Voice acting works best with multiple characters. Consider describing more characters.',
           icon: '🎭'
         });
       }

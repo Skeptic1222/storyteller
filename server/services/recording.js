@@ -156,7 +156,7 @@ export class RecordingService {
         await writeFile(filePath, audioBuffer);
         fileChecksum = crypto.createHash('sha256').update(audioBuffer).digest('hex');
         fileSizeBytes = audioBuffer.length;
-        finalAudioUrl = `/audio/recordings/${recording.story_session_id}/${filename}`;
+        finalAudioUrl = `/storyteller/audio/recordings/${recording.story_session_id}/${filename}`;
       }
 
       // Insert segment
@@ -247,7 +247,7 @@ export class RecordingService {
         await writeFile(filePath, audioBuffer);
         fileChecksum = crypto.createHash('sha256').update(audioBuffer).digest('hex');
         fileSizeBytes = audioBuffer.length;
-        audioUrl = `/audio/recordings/${recording.story_session_id}/${filename}`;
+        audioUrl = `/storyteller/audio/recordings/${recording.story_session_id}/${filename}`;
       }
 
       // Calculate duration if not provided

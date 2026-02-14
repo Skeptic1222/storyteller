@@ -28,6 +28,9 @@ import QAChecksPanel, { useQAChecks } from './QAChecksPanel';
 import DetailedProgressPanel from './DetailedProgressPanel';
 import { StageIndicator } from './launch';
 
+// CIRCULAR PROGRESS (2026-01-31): New circular progress design
+import CircularProgress from './CircularProgress';
+
 // Import constants from centralized location
 import { STAGES, STATUS, COUNTDOWN_PHASE, STAGE_CONFIG } from '../constants/launchStages';
 
@@ -302,12 +305,15 @@ const ReadyToPlaySection = memo(function ReadyToPlaySection({
   const [detailsExpanded, setDetailsExpanded] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
 
-  const handleStartClick = () => {
+  const handleStartClick = async () => {
     if (isStarting) return; // Prevent double-click
     setIsStarting(true);
-    onStartPlayback();
-    // Reset after 5 seconds if playback doesn't start (safety fallback)
-    setTimeout(() => setIsStarting(false), 5000);
+    try {
+      await Promise.resolve(onStartPlayback?.());
+    } finally {
+      // Re-enable button even if playback fails so mobile users can retry
+      setIsStarting(false);
+    }
   };
 
   return (
@@ -515,7 +521,9 @@ const LaunchScreen = memo(function LaunchScreen({
   // Initial generation phase props (before launch sequence starts)
   isGenerating = false,
   generationProgress = { step: 0, percent: 0, message: '' },
-  launchProgress = { percent: 0, message: '', stage: null }
+  launchProgress = { percent: 0, message: '', stage: null, startTime: null },
+  // CIRCULAR PROGRESS (2026-01-31): Enable new circular progress design
+  useCircularProgress = true
 }) {
   // State for detailed progress panel expansion
   const [progressLogExpanded, setProgressLogExpanded] = useState(true);
@@ -539,7 +547,7 @@ const LaunchScreen = memo(function LaunchScreen({
       return;
     }
 
-    // Start local timer as fallback when generation begins (server time may not be available yet)
+    // Start local timer as optimistic timer when generation begins (server time may not be available yet)
     if ((isGenerating || !allStagesPendingForTimer) && !localStartTimeRef.current) {
       localStartTimeRef.current = Date.now();
     }
@@ -679,8 +687,44 @@ const LaunchScreen = memo(function LaunchScreen({
 
   return (
     <div className="max-w-3xl mx-auto w-full animate-fade-in px-4 flex flex-col" style={{ maxHeight: 'calc(100vh - 120px)' }}>
+      {/* CIRCULAR PROGRESS (2026-02-01): Full-screen centered circular progress with Narrimo design */}
+      {useCircularProgress && ((showHUD && (!isReadyToPlay || isPlaybackPreparing)) || isGenerating) && (
+        <div className="flex-1 flex flex-col items-center justify-center py-4 sm:py-8">
+          {/* Title with Narrimo gradient styling */}
+          <h2 className="text-xl sm:text-2xl md:text-3xl font-bold mb-4 sm:mb-6 text-center">
+            <span className="bg-gradient-to-r from-golden-400 via-amber-400 to-golden-500 bg-clip-text text-transparent">
+              {isPlaybackPreparing ? 'Preparing Narration' : 'Creating Your Story'}
+            </span>
+          </h2>
+
+          {/* Circular progress - responsive sizing */}
+          {/* Mobile: 90% viewport width (max 350px) */}
+          {/* Tablet: 450px */}
+          {/* Desktop: 500px (max 600px) */}
+          <CircularProgress
+            percent={effectiveDisplayPercent}
+            currentStage={launchProgress.stage}
+            stageStatuses={stageStatuses}
+            stageMessage={isPlaybackPreparing ? playbackMessage : latestFallback}
+            startTime={launchProgress.startTime || generationProgress?.startTime}
+            activityLog={detailedProgressLog.map(log => ({
+              timestamp: log.timestamp || Date.now(),
+              category: log.category || 'default',
+              message: log.message || ''
+            }))}
+            size={typeof window !== 'undefined' && window.innerWidth < 640 ? Math.min(350, window.innerWidth * 0.85) :
+                  typeof window !== 'undefined' && window.innerWidth < 1024 ? 420 : 480}
+            ringStrokeWidth={typeof window !== 'undefined' && window.innerWidth < 640 ? 12 : 16}
+            showActivityFeed={true}
+            showMilestones={true}
+            showTimeDisplay={false}
+            enableBadgeGating={!allStagesPending}
+          />
+        </div>
+      )}
+
       {/* ENHANCED FULL-WIDTH PROGRESS SECTION - Shows during generation, launch, and deferred audio */}
-      {((showHUD && (!isReadyToPlay || isPlaybackPreparing)) || isGenerating) && (
+      {!useCircularProgress && ((showHUD && (!isReadyToPlay || isPlaybackPreparing)) || isGenerating) && (
         <div className="mb-6 -mx-4 px-4 md:-mx-8 md:px-8 lg:-mx-12 lg:px-12">
           {/* Main Progress Container - Full Width */}
           <div className="bg-gradient-to-b from-slate-800/95 to-slate-900/95 rounded-2xl border border-slate-600 overflow-hidden shadow-2xl">
@@ -1487,7 +1531,7 @@ const LaunchScreen = memo(function LaunchScreen({
             </div>
           </div>
 
-          {/* Stats Summary with badges (fallback display for narrator/SFX info) */}
+          {/* Stats Summary with badges */}
           {stats && (stats.narratorCount > 0 || stats.sfxCount > 0) && (
             <StatsSummary stats={stats} />
           )}
@@ -1603,7 +1647,8 @@ const LaunchScreen = memo(function LaunchScreen({
       )}
 
       {/* Audio Generation Status - shown when Begin Chapter was clicked and audio is generating */}
-      {isReadyToPlay && (isGeneratingAudio || isAudioQueued) && (
+      {/* FIX: isAudioQueued alone should show spinner (isReadyToPlay becomes false when audio-ready fires) */}
+      {((isReadyToPlay && isGeneratingAudio) || isAudioQueued) && (
         <div className="fixed bottom-4 sm:bottom-6 left-1/2 transform -translate-x-1/2 z-50 w-full max-w-2xl px-3 sm:px-4">
           <div className="bg-slate-900/95 backdrop-blur-sm rounded-2xl p-3 sm:p-4 border border-slate-700 shadow-2xl">
             <div className="flex items-center justify-center gap-3 text-slate-200">

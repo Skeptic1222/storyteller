@@ -114,6 +114,50 @@ async function refreshCaches(forceRefresh = false) {
 }
 
 /**
+ * Get voice preferences based on story format/type
+ * Used to filter and score voices appropriately for different story types
+ *
+ * @param {string} storyFormat - The story format (picture_book, standard, etc.)
+ * @param {string} storyType - The story type (standard, cyoa, etc.)
+ * @returns {Object} Voice preferences with style preferences and exclusions
+ */
+export function getStoryFormatVoicePreferences(storyFormat, storyType = 'standard') {
+  if (storyFormat === 'picture_book') {
+    return {
+      narrator: {
+        preferredStyle: 'warm',
+        preferredAge: 'adult', // Not too young, not too old - middle age works best
+        preferredTags: ['warm', 'friendly', 'gentle', 'soothing', 'storytelling'],
+        excludeTags: ['deep', 'gravelly', 'intense', 'dark', 'menacing', 'raspy'],
+        excludeDescriptionKeywords: ['deep', 'gravelly', 'intense', 'dramatic', 'powerful', 'booming'],
+        energyRange: [30, 60] // Medium energy - engaging but not overwhelming
+      }
+    };
+  }
+
+  if (storyType === 'cyoa') {
+    return {
+      narrator: {
+        preferredStyle: 'engaging',
+        preferredTags: ['clear', 'dynamic', 'expressive'],
+        excludeTags: [],
+        energyRange: [40, 70]
+      }
+    };
+  }
+
+  // Default preferences for standard stories
+  return {
+    narrator: {
+      preferredStyle: null,
+      preferredTags: [],
+      excludeTags: [],
+      energyRange: null
+    }
+  };
+}
+
+/**
  * Get narrator voice based on story configuration
  *
  * @param {Object} config - Story configuration
@@ -123,6 +167,8 @@ async function refreshCaches(forceRefresh = false) {
  * @param {string} config.preferredGender - User preference for narrator gender
  * @param {string} config.preferredVoiceId - Specific voice ID if user selected one
  * @param {string} config.qualityTier - Quality tier (premium, standard, economy, fast)
+ * @param {string} config.storyFormat - Story format (picture_book, standard, etc.)
+ * @param {string} config.storyType - Story type (standard, cyoa, etc.)
  * @returns {Object} Selected voice with settings
  */
 export async function getNarratorVoice(config = {}) {
@@ -134,8 +180,13 @@ export async function getNarratorVoice(config = {}) {
     language = 'en',
     preferredGender = null,
     preferredVoiceId = null,
-    qualityTier = 'standard'
+    qualityTier = 'standard',
+    storyFormat = 'standard',
+    storyType = 'standard'
   } = config;
+
+  // Get format-specific voice preferences
+  const formatPrefs = getStoryFormatVoicePreferences(storyFormat, storyType);
 
   // If user specified a voice, use it
   if (preferredVoiceId) {
@@ -169,6 +220,54 @@ export async function getNarratorVoice(config = {}) {
     }
   }
 
+  // Apply format-specific filtering (e.g., picture book voice preferences)
+  const narratorPrefs = formatPrefs.narrator;
+  if (narratorPrefs.excludeTags?.length > 0 || narratorPrefs.excludeDescriptionKeywords?.length > 0) {
+    const formatFiltered = candidates.filter(voice => {
+      const voiceTags = (voice.tags || []).map(t => t.toLowerCase());
+      const voiceDesc = (voice.description || '').toLowerCase();
+
+      // Check for excluded tags
+      if (narratorPrefs.excludeTags?.length > 0) {
+        for (const excludeTag of narratorPrefs.excludeTags) {
+          if (voiceTags.some(t => t.includes(excludeTag.toLowerCase()))) {
+            return false;
+          }
+        }
+      }
+
+      // Check for excluded description keywords
+      if (narratorPrefs.excludeDescriptionKeywords?.length > 0) {
+        for (const keyword of narratorPrefs.excludeDescriptionKeywords) {
+          if (voiceDesc.includes(keyword.toLowerCase())) {
+            return false;
+          }
+        }
+      }
+
+      return true;
+    });
+
+    // Only apply if we still have candidates (don't leave with empty list)
+    if (formatFiltered.length > 0) {
+      candidates = formatFiltered;
+      console.log(`[VoiceSelection] Format filter (${storyFormat}): ${formatFiltered.length} candidates after excluding ${narratorPrefs.excludeTags?.join(', ')}`);
+    }
+  }
+
+  // Apply energy range filter for format-specific preferences
+  if (narratorPrefs.energyRange) {
+    const [minEnergy, maxEnergy] = narratorPrefs.energyRange;
+    const energyFiltered = candidates.filter(voice => {
+      const energy = voice.energy_level || 50;
+      return energy >= minEnergy && energy <= maxEnergy;
+    });
+    if (energyFiltered.length > 0) {
+      candidates = energyFiltered;
+      console.log(`[VoiceSelection] Energy filter (${minEnergy}-${maxEnergy}): ${energyFiltered.length} candidates`);
+    }
+  }
+
   // Score candidates based on mood/genre match
   const scoredCandidates = candidates.map(voice => {
     let score = voice.quality_score || 50;
@@ -184,6 +283,16 @@ export async function getNarratorVoice(config = {}) {
     // Quality tier adjustment
     score += getQualityTierBonus(voice, qualityTier);
 
+    // Format-specific scoring (preferred tags for picture book, etc.)
+    if (narratorPrefs.preferredTags?.length > 0) {
+      const voiceTags = (voice.tags || []).map(t => t.toLowerCase());
+      for (const prefTag of narratorPrefs.preferredTags) {
+        if (voiceTags.some(t => t.includes(prefTag.toLowerCase()))) {
+          score += 12; // Significant bonus for matching preferred tags
+        }
+      }
+    }
+
     return { voice, score };
   });
 
@@ -191,8 +300,7 @@ export async function getNarratorVoice(config = {}) {
   scoredCandidates.sort((a, b) => b.score - a.score);
 
   if (scoredCandidates.length === 0) {
-    console.warn('[VoiceSelection] No narrator candidates found, using fallback');
-    return getFallbackNarratorVoice();
+    throw new Error('[VoiceSelection] No narrator candidates found (fail-loud)');
   }
 
   const selected = scoredCandidates[0].voice;
@@ -228,12 +336,16 @@ export async function getCharacterVoice(descriptor, options = {}) {
   const {
     name = 'Unknown',
     gender = null,
-    age = 'adult',
+    age = null,
+    age_group = null,  // Database field - takes priority over age
     archetype = null,
     personality = null,
     role = 'support',
     species = 'human'
   } = descriptor;
+
+  // age_group from DB takes priority, fallback to age param, then 'adult'
+  const resolvedAge = age_group || age || 'adult';
 
   const {
     sessionId = null,
@@ -275,8 +387,6 @@ export async function getCharacterVoice(descriptor, options = {}) {
     const availableCandidates = candidates.filter(v => !assignedVoices.has(v.voice_id));
     if (availableCandidates.length > 0) {
       candidates = availableCandidates;
-    } else {
-      console.warn(`[VoiceSelection] All suitable voices assigned, allowing reuse for ${name}`);
     }
   }
 
@@ -284,8 +394,8 @@ export async function getCharacterVoice(descriptor, options = {}) {
   const scoredCandidates = candidates.map(voice => {
     let score = voice.quality_score || 50;
 
-    // Age matching
-    score += getAgeMatchScore(voice, age);
+    // Age matching - uses resolvedAge which prioritizes age_group from DB
+    score += getAgeMatchScore(voice, resolvedAge);
 
     // Personality/energy matching
     score += getPersonalityMatchScore(voice, personality, archetypeConfig);
@@ -311,8 +421,7 @@ export async function getCharacterVoice(descriptor, options = {}) {
   scoredCandidates.sort((a, b) => b.score - a.score);
 
   if (scoredCandidates.length === 0) {
-    console.warn(`[VoiceSelection] No candidates for ${name}, using fallback`);
-    return getFallbackCharacterVoice(inferredGender);
+    throw new Error(`[VoiceSelection] No voice candidates for ${name} (fail-loud)`);
   }
 
   const selected = scoredCandidates[0].voice;
@@ -383,15 +492,18 @@ export async function getVoiceCast(characters, config = {}) {
  * Infer character archetype from descriptor
  */
 export function inferCharacterArchetype(descriptor) {
-  const { gender, age, role, personality, species } = descriptor;
+  const { gender, age, age_group, role, personality, species } = descriptor;
+
+  // Resolve age - age_group from DB takes priority
+  const resolvedAge = age_group || age || 'adult';
 
   // Non-human species
   if (species && species !== 'human') {
     return 'creature';
   }
 
-  // Children
-  if (age === 'child' || age === 'young' && parseInt(age) < 13) {
+  // Children - check both age_group values and legacy age values
+  if (resolvedAge === 'child' || resolvedAge === 'young' || resolvedAge === 'teen') {
     return 'child';
   }
 
@@ -507,7 +619,7 @@ export function inferGenderFromName(name) {
     return 'male';
   }
 
-  // Check name endings as fallback
+  // Check name endings as heuristic (not a fallback)
   if (firstName.endsWith('a') || firstName.endsWith('ia') || firstName.endsWith('ie') ||
       firstName.endsWith('ette') || firstName.endsWith('elle') || firstName.endsWith('ina')) {
     return 'female';
@@ -792,7 +904,11 @@ function getSpeciesScore(voice, species) {
 /**
  * Format voice response with settings
  */
-function formatVoiceResponse(voice, selectionMethod, metadata = {}) {
+function formatVoiceResponse(voice, selectionMethod, metadata = {}, characterProfile = null) {
+  // Use character profile base_settings if available, otherwise voice defaults, then fallbacks
+  // Character profile allows per-character voice personality (e.g., an excitable character = lower stability)
+  const profileSettings = characterProfile?.base_settings || {};
+
   return {
     voiceId: voice.voice_id,
     name: voice.name,
@@ -802,68 +918,11 @@ function formatVoiceResponse(voice, selectionMethod, metadata = {}) {
     selectionMethod,
     metadata,
     settings: {
-      stability: voice.default_stability || 0.5,
-      similarity_boost: voice.default_similarity_boost || 0.75,
-      style: voice.default_style || 0,
-      speed: voice.default_speed || 1.0,
+      stability: profileSettings.stability ?? voice.default_stability ?? 0.5,
+      similarity_boost: voice.default_similarity_boost ?? 0.75,
+      style: profileSettings.style ?? voice.default_style ?? 0.3, // Better default: 0.3 not 0
+      speed: profileSettings.speed_modifier ?? voice.default_speed ?? 1.0,
       use_speaker_boost: voice.use_speaker_boost ?? true
-    }
-  };
-}
-
-/**
- * Get fallback narrator voice
- */
-function getFallbackNarratorVoice() {
-  // Return a hardcoded default if no voices available
-  return {
-    voiceId: 'EXAVITQu4vr4xnSDxMaL', // Sarah
-    name: 'Sarah (Fallback)',
-    gender: 'female',
-    selectionMethod: 'fallback',
-    settings: {
-      stability: 0.5,
-      similarity_boost: 0.75,
-      style: 0,
-      speed: 1.0,
-      use_speaker_boost: true
-    }
-  };
-}
-
-/**
- * Get fallback character voice
- */
-function getFallbackCharacterVoice(gender) {
-  const fallbacks = {
-    female: {
-      voiceId: 'EXAVITQu4vr4xnSDxMaL', // Sarah
-      name: 'Sarah (Fallback)',
-      gender: 'female'
-    },
-    male: {
-      voiceId: 'IKne3meq5aSn9XLyUdCD', // Charlie
-      name: 'Charlie (Fallback)',
-      gender: 'male'
-    },
-    neutral: {
-      voiceId: 'EXAVITQu4vr4xnSDxMaL', // Sarah
-      name: 'Sarah (Fallback)',
-      gender: 'female'
-    }
-  };
-
-  const fallback = fallbacks[gender] || fallbacks.neutral;
-
-  return {
-    ...fallback,
-    selectionMethod: 'fallback',
-    settings: {
-      stability: 0.5,
-      similarity_boost: 0.75,
-      style: 0,
-      speed: 1.0,
-      use_speaker_boost: true
     }
   };
 }
@@ -912,7 +971,9 @@ async function saveVoiceAssignments(sessionId, voiceCast) {
       client.release();
     }
   } catch (error) {
+    // FAIL-LOUD: Voice assignment save failures must not be silently ignored
     console.error('[VoiceSelection] Failed to save voice assignments:', error);
+    throw error;
   }
 }
 
@@ -981,8 +1042,9 @@ export async function loadVoiceAssignments(sessionId) {
 
     return assignments;
   } catch (error) {
+    // FAIL-LOUD: Silent empty Map causes all voice assignments to be lost
     console.error('[VoiceSelection] Failed to load voice assignments:', error);
-    return new Map();
+    throw error;
   }
 }
 
@@ -1165,15 +1227,9 @@ Respond with JSON:
     }
     throw new Error('No JSON in response');
   } catch (error) {
+    // FAIL-LOUD: Returning isValid:true on validation failure hides problems
     console.error('[VoiceCastTeacher] Validation failed:', error.message);
-    return {
-      isValid: true, // Default to valid on error
-      criticalIssues: [],
-      warnings: [{ character: 'system', issue: 'Validation failed: ' + error.message }],
-      overallScore: 0.5,
-      grade: 'C',
-      feedback: 'Automatic validation failed, manual review recommended'
-    };
+    throw new Error(`Voice cast validation failed: ${error.message}`);
   }
 }
 
@@ -1388,6 +1444,7 @@ export default {
   getArchetypes,
   getVoicesByArchetype,
   refreshVoiceCaches,
+  getStoryFormatVoicePreferences,
   // Teacher agent exports
   teacherValidateVoiceCast,
   teacherSuggestVoiceFixes,

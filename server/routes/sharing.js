@@ -186,8 +186,8 @@ router.get('/discover', async (req, res) => {
     } = req.query;
 
     const stories = await getPublicStories({
-      limit: parseInt(limit),
-      offset: parseInt(offset),
+      limit: Math.min(Math.max(parseInt(limit) || 20, 1), 100),
+      offset: Math.max(parseInt(offset) || 0, 0),
       genre,
       sortBy
     });

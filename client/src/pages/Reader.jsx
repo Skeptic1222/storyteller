@@ -5,27 +5,35 @@
  * Uses ThemeContext for unified theme management across pages
  */
 
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import {
   ArrowLeft,
   Bookmark,
   BookmarkPlus,
   ChevronUp,
+  Columns,
   Download,
+  FileText,
   List,
   Maximize2,
   Minimize2,
+  Minus,
+  Plus,
+  Rows,
   Settings,
   Volume2,
   VolumeX
 } from 'lucide-react';
+import ViewSelector, { VIEW_PRESETS } from '../components/story/ViewSelector';
 import SFXPlayer from '../components/SFXPlayer';
 import { API_BASE, apiCall } from '../config';
 import { getStoredToken } from '../utils/authToken';
 import { stripAllTags } from '../utils/textUtils';
 import { useKaraokeHighlight } from '../hooks/useKaraokeHighlight';
 import { useReadingTheme, useTypography } from '../context/ThemeContext';
+import { useSocket } from '../context/SocketContext';
+import PictureBookImageDisplay from '../components/PictureBookImageDisplay';
 
 // Extended font families (some not in ThemeContext)
 const FONT_FAMILIES = {
@@ -55,12 +63,17 @@ export default function Reader() {
   } = useTypography();
   const themeId = colors?.id || 'dark';
 
+  // Socket for picture book images
+  const { socket, connected } = useSocket();
+
   // Story data
   const [story, setStory] = useState(null);
   const [scenes, setScenes] = useState([]);
   const [characters, setCharacters] = useState([]);
   const [bookmarks, setBookmarks] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [sceneImages, setSceneImages] = useState([]);
+  const [pictureBookImagesRequested, setPictureBookImagesRequested] = useState(false);
 
   // Reader state
   const [currentSceneIndex, setCurrentSceneIndex] = useState(0);
@@ -78,11 +91,21 @@ export default function Reader() {
   const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
   const [autoPlayNext, setAutoPlayNext] = useState(true);
   const [syncHighlight, setSyncHighlight] = useState(true);
+  const [currentViewPreset, setCurrentViewPreset] = useState('default');
+  const [textLayout, setTextLayout] = useState('vertical'); // vertical, horizontal, modal
   const [audioCurrentTime, setAudioCurrentTime] = useState(0);
+  const [audioDuration, setAudioDuration] = useState(0);
+  const [isSeeking, setIsSeeking] = useState(false);
   const [audioLoading, setAudioLoading] = useState(false);
   const [audioBuffering, setAudioBuffering] = useState(false);
   const [showScrollTop, setShowScrollTop] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isNarrowViewport, setIsNarrowViewport] = useState(
+    typeof window !== 'undefined' ? window.innerWidth < 900 : false
+  );
+  const [isCoarsePointer, setIsCoarsePointer] = useState(
+    typeof window !== 'undefined' ? window.matchMedia?.('(pointer: coarse)')?.matches ?? false : false
+  );
   const [sfxEnabled, setSfxEnabled] = useState(true);
 
   // Line-level karaoke highlighting
@@ -96,6 +119,9 @@ export default function Reader() {
   const wordRefs = useRef(new Map());
   const exportModalTriggeredRef = useRef(false);
   const autoPlayTimeoutRef = useRef(null);  // Track autoplay timeout for cleanup
+  const progressBarRef = useRef(null);  // For seekable progress bar
+  const isPlayingRef = useRef(false);
+  const saveProgressRef = useRef(() => {});
   const currentScene = scenes[currentSceneIndex];
 
   // Fix audio URL path - prepend /storyteller if needed for IIS routing
@@ -255,6 +281,40 @@ export default function Reader() {
     setCurrentLineEnd(-1);
   }, [currentSceneIndex]);
 
+  useEffect(() => {
+    isPlayingRef.current = isPlaying;
+  }, [isPlaying]);
+
+  useEffect(() => {
+    if (textLayout === 'ticker' && currentViewPreset !== 'ticker') {
+      setCurrentViewPreset('ticker');
+    }
+    if (textLayout !== 'ticker' && currentViewPreset === 'ticker') {
+      setCurrentViewPreset('default');
+    }
+  }, [textLayout, currentViewPreset]);
+
+  useEffect(() => {
+    const onResize = () => setIsNarrowViewport(window.innerWidth < 900);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+    const coarsePointerQuery = window.matchMedia('(pointer: coarse)');
+    const updateCoarsePointer = (event) => setIsCoarsePointer(event.matches);
+    setIsCoarsePointer(coarsePointerQuery.matches);
+
+    if (coarsePointerQuery.addEventListener) {
+      coarsePointerQuery.addEventListener('change', updateCoarsePointer);
+      return () => coarsePointerQuery.removeEventListener('change', updateCoarsePointer);
+    }
+
+    coarsePointerQuery.addListener(updateCoarsePointer);
+    return () => coarsePointerQuery.removeListener(updateCoarsePointer);
+  }, []);
+
   // Fetch story data
   useEffect(() => {
     fetchStory();
@@ -262,7 +322,7 @@ export default function Reader() {
 
     return () => {
       // Save progress on unmount
-      saveProgress();
+      saveProgressRef.current?.();
       // Clear autoplay timeout to prevent memory leak
       if (autoPlayTimeoutRef.current) {
         clearTimeout(autoPlayTimeoutRef.current);
@@ -304,7 +364,50 @@ export default function Reader() {
     }
   }, [loading, story, location.state?.openExport]);
 
-  const saveProgress = async () => {
+  // Picture book images socket listener
+  useEffect(() => {
+    if (!socket || !connected) return;
+
+    const handleSceneImagesReady = (data) => {
+      console.log('[Reader] Received scene-images-ready:', data);
+      if (data.sceneImages && data.sceneImages.length > 0) {
+        setSceneImages(data.sceneImages);
+      }
+    };
+
+    socket.on('scene-images-ready', handleSceneImagesReady);
+
+    return () => {
+      socket.off('scene-images-ready', handleSceneImagesReady);
+    };
+  }, [socket, connected]);
+
+  // Request picture book images when playback starts
+  useEffect(() => {
+    // Only for picture book stories
+    if (story?.config_json?.story_format !== 'picture_book') return;
+    // Only request once per scene
+    if (pictureBookImagesRequested) return;
+    // Only when we have a scene and playback starts
+    if (!currentScene?.id || !isPlaying) return;
+    // Need socket connection
+    if (!socket || !connected) return;
+
+    console.log('[Reader] Requesting picture book images for scene:', currentScene.id);
+    socket.emit('request-picture-book-images', {
+      session_id: storyId,
+      scene_id: currentScene.id
+    });
+    setPictureBookImagesRequested(true);
+  }, [story?.config_json?.story_format, currentScene?.id, isPlaying, socket, connected, pictureBookImagesRequested, storyId]);
+
+  // Reset picture book images requested flag when scene changes
+  useEffect(() => {
+    setPictureBookImagesRequested(false);
+    setSceneImages([]);
+  }, [currentSceneIndex]);
+
+  const saveProgress = useCallback(async () => {
     if (!currentScene) return;
 
     const readingTime = Math.floor((Date.now() - (readingStartRef.current || Date.now())) / 1000);
@@ -325,7 +428,11 @@ export default function Reader() {
     }
 
     readingStartRef.current = Date.now();
-  };
+  }, [currentScene, currentSceneIndex, isPlaying, storyId]);
+
+  useEffect(() => {
+    saveProgressRef.current = saveProgress;
+  }, [saveProgress]);
 
   // Navigation
   const goToScene = useCallback((index) => {
@@ -336,7 +443,7 @@ export default function Reader() {
       audioRef.current.pause();
       audioRef.current.currentTime = 0;
     }
-  }, [scenes.length]);
+  }, [saveProgress, scenes.length]);
 
   const nextScene = useCallback(() => {
     if (currentSceneIndex < scenes.length - 1) {
@@ -351,16 +458,50 @@ export default function Reader() {
   }, [currentSceneIndex, goToScene]);
 
   // Audio controls
-  const togglePlayPause = useCallback(() => {
+  const togglePlayPause = useCallback(async () => {
     if (!audioRef.current || !fixedAudioUrl) return;
 
-    if (isPlaying) {
-      audioRef.current.pause();
-    } else {
-      audioRef.current.play();
+    try {
+      if (isPlaying) {
+        audioRef.current.pause();
+        return;
+      }
+      await audioRef.current.play();
+    } catch (error) {
+      console.error('Audio playback failed:', error);
+      setIsPlaying(false);
     }
-    setIsPlaying(!isPlaying);
   }, [isPlaying, fixedAudioUrl]);
+
+  // Seek to position in audio - used by progress bar
+  const handleSeek = useCallback((seekTime) => {
+    if (!audioRef.current || !audioDuration) return;
+    const clampedTime = Math.max(0, Math.min(seekTime, audioDuration));
+    audioRef.current.currentTime = clampedTime;
+    setAudioCurrentTime(clampedTime);
+  }, [audioDuration]);
+
+  // Handle progress bar interactions (click, drag)
+  const handleProgressBarInteraction = useCallback((e, isTouch = false) => {
+    if (!progressBarRef.current || !audioDuration) return;
+    if (isTouch && e.cancelable) e.preventDefault();
+
+    const rect = progressBarRef.current.getBoundingClientRect();
+    const clientX = isTouch ? e.touches[0].clientX : e.clientX;
+    const offsetX = clientX - rect.left;
+    const percentage = Math.max(0, Math.min(1, offsetX / rect.width));
+    const seekTime = percentage * audioDuration;
+
+    handleSeek(seekTime);
+  }, [audioDuration, handleSeek]);
+
+  // Format time as mm:ss
+  const formatTime = useCallback((seconds) => {
+    if (!seconds || !Number.isFinite(seconds)) return '0:00';
+    const mins = Math.floor(seconds / 60);
+    const secs = String(Math.floor(seconds % 60)).padStart(2, '0');
+    return `${mins}:${secs}`;
+  }, []);
 
   const handleAudioEnded = useCallback(() => {
     setIsPlaying(false);
@@ -373,8 +514,10 @@ export default function Reader() {
       nextScene();
       autoPlayTimeoutRef.current = setTimeout(() => {
         if (audioRef.current) {
-          audioRef.current.play();
-          setIsPlaying(true);
+          audioRef.current.play().catch((error) => {
+            console.error('Autoplay failed:', error);
+            setIsPlaying(false);
+          });
         }
         autoPlayTimeoutRef.current = null;
       }, 500);
@@ -393,7 +536,7 @@ export default function Reader() {
         })
       });
       const data = await res.json();
-      setBookmarks([...bookmarks, data.bookmark]);
+      setBookmarks(prev => [...prev, data.bookmark]);
     } catch (error) {
       console.error('Failed to add bookmark:', error);
     }
@@ -404,7 +547,7 @@ export default function Reader() {
       await apiCall(`/library/${storyId}/bookmark/${bookmarkId}`, {
         method: 'DELETE'
       });
-      setBookmarks(bookmarks.filter(b => b.id !== bookmarkId));
+      setBookmarks(prev => prev.filter(b => b.id !== bookmarkId));
     } catch (error) {
       console.error('Failed to delete bookmark:', error);
     }
@@ -426,7 +569,7 @@ export default function Reader() {
     setShowControls(true);
     clearTimeout(controlsTimeoutRef.current);
     controlsTimeoutRef.current = setTimeout(() => {
-      if (isPlaying) setShowControls(false);
+      if (isPlayingRef.current) setShowControls(false);
     }, 3000);
   };
 
@@ -455,7 +598,7 @@ export default function Reader() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [togglePlayPause, nextScene, prevScene]);
+  }, [togglePlayPause, nextScene, prevScene, addBookmark, navigate]);
 
   // Scroll-to-top button visibility
   useEffect(() => {
@@ -607,6 +750,13 @@ export default function Reader() {
   }
 
   const progress = scenes.length > 0 ? ((currentSceneIndex + 1) / scenes.length) * 100 : 0;
+  const safeAreaTop = 'env(safe-area-inset-top, 0px)';
+  const safeAreaBottom = 'env(safe-area-inset-bottom, 0px)';
+  const safeAreaLeft = 'env(safe-area-inset-left, 0px)';
+  const safeAreaRight = 'env(safe-area-inset-right, 0px)';
+  const scrubberTrackHeight = isCoarsePointer ? 12 : 8;
+  const scrubberThumbSize = isCoarsePointer ? 24 : 16;
+  const scrubberHitAreaHeight = isCoarsePointer ? 44 : 24;
 
   return (
     <div
@@ -638,7 +788,9 @@ export default function Reader() {
           onEnded={handleAudioEnded}
           onPlay={() => { setIsPlaying(true); setAudioBuffering(false); }}
           onPause={() => setIsPlaying(false)}
-          onTimeUpdate={(e) => setAudioCurrentTime(e.target.currentTime)}
+          onTimeUpdate={(e) => !isSeeking && setAudioCurrentTime(e.target.currentTime)}
+          onLoadedMetadata={(e) => setAudioDuration(e.target.duration || 0)}
+          onDurationChange={(e) => setAudioDuration(e.target.duration || 0)}
           onLoadStart={() => setAudioLoading(true)}
           onCanPlay={() => setAudioLoading(false)}
           onWaiting={() => setAudioBuffering(true)}
@@ -664,7 +816,10 @@ export default function Reader() {
         top: 0,
         left: 0,
         right: 0,
-        padding: '15px 20px',
+        paddingTop: `calc(${safeAreaTop} + 15px)`,
+        paddingBottom: '15px',
+        paddingLeft: `calc(${safeAreaLeft} + 20px)`,
+        paddingRight: `calc(${safeAreaRight} + 20px)`,
         display: 'flex',
         justifyContent: 'space-between',
         alignItems: 'center',
@@ -677,7 +832,8 @@ export default function Reader() {
         zIndex: 100,
         borderRadius: isFullscreen ? '0 0 8px 8px' : 0
       }}>
-                  <button
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <button
             onClick={() => { saveProgress(); navigate('/library'); }}
             style={{
               background: 'none',
@@ -694,50 +850,152 @@ export default function Reader() {
             <span>Library</span>
           </button>
 
-        <div style={{ display: 'flex', gap: '12px' }}>
-                    <button
+          {/* Cover Art Thumbnail */}
+          {story?.cover_image_url && (
+            <div style={{
+              width: '40px',
+              height: '56px',
+              borderRadius: '4px',
+              overflow: 'hidden',
+              border: `1px solid ${colors.textMuted}44`,
+              flexShrink: 0
+            }}>
+              <img
+                src={story.cover_image_url.startsWith('/') && !story.cover_image_url.startsWith('/storyteller')
+                  ? `/storyteller${story.cover_image_url}`
+                  : story.cover_image_url}
+                alt={story.title}
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'cover'
+                }}
+              />
+            </div>
+          )}
+        </div>
+
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          {/* View Presets - compact icon buttons */}
+          <ViewSelector
+            currentPreset={currentViewPreset}
+            onPresetChange={(presetId) => {
+              setCurrentViewPreset(presetId);
+              const preset = VIEW_PRESETS[presetId];
+              if (preset?.settings?.textLayout) {
+                setTextLayout(preset.settings.textLayout);
+              }
+              if (preset?.settings?.fontSize) {
+                setFontSize(preset.settings.fontSize);
+              }
+            }}
+            compact={true}
+          />
+
+          {/* Font Size Controls */}
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '2px',
+            background: 'rgba(0,0,0,0.3)',
+            borderRadius: '6px',
+            padding: '2px 4px'
+          }}>
+            <button
+              onClick={() => setFontSize(Math.max(12, fontSize - 2))}
+              disabled={fontSize <= 12}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: fontSize <= 12 ? colors.textMuted : colors.text,
+                cursor: fontSize <= 12 ? 'not-allowed' : 'pointer',
+                padding: '4px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}
+              title="Decrease font size"
+            >
+              <Minus size={14} />
+            </button>
+            <span style={{
+              fontSize: '11px',
+              color: colors.text,
+              minWidth: '24px',
+              textAlign: 'center',
+              fontFamily: 'monospace'
+            }}>
+              {fontSize}
+            </span>
+            <button
+              onClick={() => setFontSize(Math.min(32, fontSize + 2))}
+              disabled={fontSize >= 32}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: fontSize >= 32 ? colors.textMuted : colors.text,
+                cursor: fontSize >= 32 ? 'not-allowed' : 'pointer',
+                padding: '4px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}
+              title="Increase font size"
+            >
+              <Plus size={14} />
+            </button>
+          </div>
+
+          {/* Divider */}
+          <div style={{ width: '1px', height: '20px', background: colors.textMuted + '44' }} />
+
+          <button
             onClick={() => setShowToc(true)}
             style={{
               background: 'none',
               border: 'none',
               color: colors.text,
-              cursor: 'pointer'
+              cursor: 'pointer',
+              padding: '4px'
             }}
             title="Table of Contents"
           >
             <List size={18} />
           </button>
-                    <button
+          <button
             onClick={() => setShowBookmarks(true)}
             style={{
               background: 'none',
               border: 'none',
               color: colors.text,
-              cursor: 'pointer'
+              cursor: 'pointer',
+              padding: '4px'
             }}
             title="Bookmarks"
           >
             <Bookmark size={18} />
           </button>
-                    <button
+          <button
             onClick={addBookmark}
             style={{
               background: 'none',
               border: 'none',
               color: colors.text,
-              cursor: 'pointer'
+              cursor: 'pointer',
+              padding: '4px'
             }}
             title="Add Bookmark"
           >
             <BookmarkPlus size={18} />
           </button>
-                    <button
+          <button
             onClick={() => setShowSettings(true)}
             style={{
               background: 'none',
               border: 'none',
               color: colors.text,
-              cursor: 'pointer'
+              cursor: 'pointer',
+              padding: '4px'
             }}
             title="Settings"
           >
@@ -773,9 +1031,9 @@ export default function Reader() {
       {/* Progress bar */}
       <div style={{
         position: 'fixed',
-        top: 0,
-        left: 0,
-        right: 0,
+        top: safeAreaTop,
+        left: safeAreaLeft,
+        right: safeAreaRight,
         height: '3px',
         background: colors.textMuted + '33',
         zIndex: 101
@@ -792,7 +1050,18 @@ export default function Reader() {
       <div style={{
         maxWidth: isFullscreen ? '900px' : '800px',
         margin: '0 auto',
-        padding: isFullscreen ? '40px 40px 120px' : '80px 30px 150px',
+        paddingTop: isFullscreen
+          ? `calc(${safeAreaTop} + ${isNarrowViewport ? '28px' : '40px'})`
+          : `calc(${safeAreaTop} + ${isNarrowViewport ? '70px' : '80px'})`,
+        paddingBottom: isFullscreen
+          ? `calc(${safeAreaBottom} + 120px)`
+          : `calc(${safeAreaBottom} + ${isNarrowViewport ? '140px' : '150px'})`,
+        paddingLeft: isNarrowViewport
+          ? `calc(${safeAreaLeft} + 16px)`
+          : `calc(${safeAreaLeft} + ${isFullscreen ? '40px' : '30px'})`,
+        paddingRight: isNarrowViewport
+          ? `calc(${safeAreaRight} + 16px)`
+          : `calc(${safeAreaRight} + ${isFullscreen ? '40px' : '30px'})`,
         minHeight: '100vh',
         transition: 'padding 0.3s, max-width 0.3s'
       }}>
@@ -811,12 +1080,38 @@ export default function Reader() {
           </p>
         </div>
 
+        {/* Picture book images */}
+        {story?.config_json?.story_format === 'picture_book' && sceneImages.length > 0 && (
+          <PictureBookImageDisplay
+            images={sceneImages}
+            currentWordIndex={currentWordIndex}
+            currentTime={audioCurrentTime}
+            isPlaying={isPlaying}
+            enableKenBurns={true}
+            className="mb-6"
+          />
+        )}
+
         {/* Scene content */}
         <div style={{
           fontFamily: FONT_FAMILIES[fontFamily],
           fontSize: `${fontSize}px`,
           lineHeight: lineHeight,
-          textAlign: 'justify'
+          textAlign: isNarrowViewport ? 'left' : 'justify',
+          // Layout-specific styles
+          ...(textLayout === 'horizontal' && {
+            columnCount: isNarrowViewport ? 1 : 2,
+            columnGap: isNarrowViewport ? '0px' : '40px',
+            columnRule: `1px solid ${colors.textMuted}33`
+          }),
+          ...(textLayout === 'modal' && {
+            background: colors.highlight,
+            padding: '30px',
+            borderRadius: '12px',
+            boxShadow: '0 4px 20px rgba(0,0,0,0.3)',
+            maxWidth: '600px',
+            margin: '0 auto'
+          })
         }}>
           {syncHighlight && currentScene?.word_timings?.words ? (
             <div style={{ marginBottom: '1.5em' }}>
@@ -825,32 +1120,33 @@ export default function Reader() {
                 const isOnCurrentLine = i >= currentLineStart && i <= currentLineEnd && currentLineStart >= 0;
 
                 return (
-                  <span
-                    key={i}
-                    ref={(el) => {
-                      if (el) wordRefs.current.set(i, el);
-                      else wordRefs.current.delete(i);
-                    }}
-                    style={{
-                      backgroundColor: isCurrentWord
-                        ? colors.accent
-                        : isOnCurrentLine
-                          ? colors.highlight
-                          : 'transparent',
-                      color: isCurrentWord ? '#fff' : colors.text,
-                      padding: isCurrentWord
-                        ? `${Math.round(fontSize * 0.1)}px ${Math.round(fontSize * 0.2)}px`
-                        : isOnCurrentLine
-                          ? `${Math.round(fontSize * 0.05)}px 0`
-                          : '0',
-                      borderRadius: `${Math.round(fontSize * 0.15)}px`,
-                      transition: 'background-color 0.15s, color 0.15s',
-                      display: 'inline'
-                    }}
-                  >
-                    {word.text}
+                  <React.Fragment key={i}>
+                    <span
+                      ref={(el) => {
+                        if (el) wordRefs.current.set(i, el);
+                        else wordRefs.current.delete(i);
+                      }}
+                      style={{
+                        backgroundColor: isCurrentWord
+                          ? colors.accent
+                          : isOnCurrentLine
+                            ? colors.highlight
+                            : 'transparent',
+                        color: isCurrentWord ? '#fff' : colors.text,
+                        padding: isCurrentWord
+                          ? `${Math.round(fontSize * 0.1)}px ${Math.round(fontSize * 0.2)}px`
+                          : isOnCurrentLine
+                            ? `${Math.round(fontSize * 0.05)}px 0`
+                            : '0',
+                        borderRadius: `${Math.round(fontSize * 0.15)}px`,
+                        transition: 'background-color 0.15s, color 0.15s',
+                        display: 'inline'
+                      }}
+                    >
+                      {word.text}
+                    </span>
                     {i < currentScene.word_timings.words.length - 1 ? ' ' : ''}
-                  </span>
+                  </React.Fragment>
                 );
               })}
             </div>
@@ -968,19 +1264,132 @@ export default function Reader() {
         bottom: 0,
         left: 0,
         right: 0,
-        padding: '20px',
+        paddingTop: '15px',
+        paddingBottom: `calc(${safeAreaBottom} + 20px)`,
+        paddingLeft: `calc(${safeAreaLeft} + 20px)`,
+        paddingRight: `calc(${safeAreaRight} + 20px)`,
         background: `linear-gradient(transparent, ${colors.bg})`,
         opacity: showControls ? 1 : 0,
         transition: 'opacity 0.3s',
         zIndex: 100
       }}>
+        {/* Seekable Audio Progress Bar */}
+        {fixedAudioUrl && audioDuration > 0 && (
+          <div style={{
+            maxWidth: '600px',
+            margin: '0 auto 15px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px'
+          }}>
+            <span style={{
+              fontSize: '11px',
+              color: colors.textMuted,
+              fontFamily: 'monospace',
+              minWidth: '40px',
+              textAlign: 'right'
+            }}>
+              {formatTime(audioCurrentTime)}
+            </span>
+
+            {/* Progress bar track */}
+            <div
+              ref={progressBarRef}
+              style={{
+                flex: 1,
+                height: `${scrubberHitAreaHeight}px`,
+                cursor: 'pointer',
+                position: 'relative',
+                overflow: 'visible',
+                touchAction: 'none'
+              }}
+              onClick={(e) => handleProgressBarInteraction(e)}
+              onMouseDown={(e) => {
+                setIsSeeking(true);
+                handleProgressBarInteraction(e);
+
+                const handleMouseMove = (moveE) => {
+                  handleProgressBarInteraction(moveE);
+                };
+                const handleMouseUp = () => {
+                  setIsSeeking(false);
+                  document.removeEventListener('mousemove', handleMouseMove);
+                  document.removeEventListener('mouseup', handleMouseUp);
+                };
+                document.addEventListener('mousemove', handleMouseMove);
+                document.addEventListener('mouseup', handleMouseUp);
+              }}
+              onTouchStart={(e) => {
+                if (e.cancelable) e.preventDefault();
+                setIsSeeking(true);
+                handleProgressBarInteraction(e, true);
+              }}
+              onTouchMove={(e) => {
+                if (e.cancelable) e.preventDefault();
+                if (isSeeking) handleProgressBarInteraction(e, true);
+              }}
+              onTouchEnd={() => setIsSeeking(false)}
+            >
+              {/* Track background */}
+              <div style={{
+                position: 'absolute',
+                left: 0,
+                right: 0,
+                top: '50%',
+                height: `${scrubberTrackHeight}px`,
+                background: colors.highlight,
+                borderRadius: `${Math.round(scrubberTrackHeight / 2)}px`,
+                transform: 'translateY(-50%)'
+              }} />
+
+              {/* Filled portion */}
+              <div style={{
+                position: 'absolute',
+                left: 0,
+                top: '50%',
+                height: `${scrubberTrackHeight}px`,
+                width: `${audioDuration > 0 ? (audioCurrentTime / audioDuration) * 100 : 0}%`,
+                background: colors.accent,
+                borderRadius: `${Math.round(scrubberTrackHeight / 2)}px`,
+                transform: 'translateY(-50%)',
+                transition: isSeeking ? 'none' : 'width 0.1s linear'
+              }} />
+
+              {/* Draggable thumb */}
+              <div style={{
+                position: 'absolute',
+                top: '50%',
+                left: `${audioDuration > 0 ? (audioCurrentTime / audioDuration) * 100 : 0}%`,
+                transform: 'translate(-50%, -50%)',
+                width: `${scrubberThumbSize}px`,
+                height: `${scrubberThumbSize}px`,
+                background: colors.accent,
+                borderRadius: '50%',
+                boxShadow: '0 2px 6px rgba(0,0,0,0.3)',
+                cursor: 'grab',
+                transition: isSeeking ? 'none' : 'left 0.1s linear'
+              }} />
+            </div>
+
+            <span style={{
+              fontSize: '11px',
+              color: colors.textMuted,
+              fontFamily: 'monospace',
+              minWidth: '40px'
+            }}>
+              {formatTime(audioDuration)}
+            </span>
+          </div>
+        )}
+
         <div style={{
           maxWidth: '600px',
           margin: '0 auto',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          gap: '20px'
+          gap: '20px',
+          flexWrap: 'wrap'
         }}>
           {/* Previous */}
           <button
@@ -1056,26 +1465,133 @@ export default function Reader() {
             ▶
           </button>
 
-          {/* SFX Toggle - only show if scene has SFX data */}
-          {sfxData.length > 0 && (
+          {/* SFX Toggle - always visible, disabled when no SFX data */}
+          <button
+            onClick={() => sfxData.length > 0 && setSfxEnabled(!sfxEnabled)}
+            disabled={sfxData.length === 0}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: sfxData.length === 0
+                ? colors.textMuted + '66'
+                : sfxEnabled ? colors.accent : colors.textMuted,
+              cursor: sfxData.length === 0 ? 'not-allowed' : 'pointer',
+              padding: '10px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px',
+              opacity: sfxData.length === 0 ? 0.5 : 1
+            }}
+            title={sfxData.length === 0
+              ? 'No sound effects for this scene'
+              : sfxEnabled ? 'Disable sound effects' : 'Enable sound effects'}
+          >
+            {sfxEnabled && sfxData.length > 0 ? <Volume2 size={20} /> : <VolumeX size={20} />}
+            <span style={{ fontSize: '12px' }}>SFX</span>
+          </button>
+
+          {/* Text Layout Toggles */}
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '4px',
+            marginLeft: '8px',
+            padding: '4px',
+            background: colors.highlight,
+            borderRadius: '8px'
+          }}>
             <button
-              onClick={() => setSfxEnabled(!sfxEnabled)}
+              onClick={() => setTextLayout('vertical')}
               style={{
-                background: 'none',
-                border: 'none',
-                color: sfxEnabled ? colors.accent : colors.textMuted,
+                background: textLayout === 'vertical' ? colors.accent + '33' : 'transparent',
+                border: textLayout === 'vertical' ? `1px solid ${colors.accent}` : '1px solid transparent',
+                color: textLayout === 'vertical' ? colors.accent : colors.textMuted,
                 cursor: 'pointer',
-                padding: '10px',
+                padding: '6px',
+                borderRadius: '6px',
                 display: 'flex',
                 alignItems: 'center',
-                gap: '4px'
+                justifyContent: 'center'
               }}
-              title={sfxEnabled ? 'Disable sound effects' : 'Enable sound effects'}
+              title="Vertical flow layout"
             >
-              {sfxEnabled ? <Volume2 size={20} /> : <VolumeX size={20} />}
-              <span style={{ fontSize: '12px' }}>SFX</span>
+              <Rows size={16} />
             </button>
-          )}
+            <button
+              onClick={() => setTextLayout('horizontal')}
+              style={{
+                background: textLayout === 'horizontal' ? colors.accent + '33' : 'transparent',
+                border: textLayout === 'horizontal' ? `1px solid ${colors.accent}` : '1px solid transparent',
+                color: textLayout === 'horizontal' ? colors.accent : colors.textMuted,
+                cursor: 'pointer',
+                padding: '6px',
+                borderRadius: '6px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}
+              title="Two column layout"
+            >
+              <Columns size={16} />
+            </button>
+            <button
+              onClick={() => setTextLayout('modal')}
+              style={{
+                background: textLayout === 'modal' ? colors.accent + '33' : 'transparent',
+                border: textLayout === 'modal' ? `1px solid ${colors.accent}` : '1px solid transparent',
+                color: textLayout === 'modal' ? colors.accent : colors.textMuted,
+                cursor: 'pointer',
+                padding: '6px',
+                borderRadius: '6px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}
+              title="Modal (one paragraph) layout"
+            >
+              <FileText size={16} />
+            </button>
+          </div>
+
+          {/* Playback Speed */}
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '4px',
+            marginLeft: '8px'
+          }}>
+            <select
+              value={playbackSpeed}
+              onChange={(e) => {
+                const speed = parseFloat(e.target.value);
+                setPlaybackSpeed(speed);
+                if (audioRef.current) {
+                  audioRef.current.playbackRate = speed;
+                }
+              }}
+              style={{
+                background: '#1a1a2e',
+                color: '#e0e0e0',
+                border: '1px solid #555',
+                borderRadius: '6px',
+                padding: '6px 8px',
+                fontSize: '12px',
+                cursor: 'pointer',
+                outline: 'none'
+              }}
+              title="Playback speed"
+            >
+              <option value="0.5" style={{ background: '#1a1a2e', color: '#e0e0e0' }}>0.5x</option>
+              <option value="0.75" style={{ background: '#1a1a2e', color: '#e0e0e0' }}>0.75x</option>
+              <option value="1" style={{ background: '#1a1a2e', color: '#e0e0e0' }}>1x</option>
+              <option value="1.25" style={{ background: '#1a1a2e', color: '#e0e0e0' }}>1.25x</option>
+              <option value="1.5" style={{ background: '#1a1a2e', color: '#e0e0e0' }}>1.5x</option>
+              <option value="1.75" style={{ background: '#1a1a2e', color: '#e0e0e0' }}>1.75x</option>
+              <option value="2" style={{ background: '#1a1a2e', color: '#e0e0e0' }}>2x</option>
+              <option value="2.5" style={{ background: '#1a1a2e', color: '#e0e0e0' }}>2.5x</option>
+              <option value="3" style={{ background: '#1a1a2e', color: '#e0e0e0' }}>3x</option>
+            </select>
+          </div>
         </div>
 
         {/* Scene indicator */}
@@ -1101,6 +1617,9 @@ export default function Reader() {
           zIndex: 200
         }} onClick={() => setShowSettings(false)}>
           <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="settings-modal-title"
             style={{
               background: colors.bg,
               padding: '30px',
@@ -1112,7 +1631,7 @@ export default function Reader() {
             }}
             onClick={(e) => e.stopPropagation()}
           >
-            <h3 style={{ margin: '0 0 20px', color: colors.text }}>Reading Settings</h3>
+            <h3 id="settings-modal-title" style={{ margin: '0 0 20px', color: colors.text }}>Reading Settings</h3>
 
             {/* Theme - uses ThemeContext for persistence across pages */}
             <div style={{ marginBottom: '20px' }}>
@@ -1312,6 +1831,9 @@ export default function Reader() {
           zIndex: 200
         }} onClick={() => setShowBookmarks(false)}>
           <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="bookmarks-modal-title"
             style={{
               background: colors.bg,
               padding: '30px',
@@ -1323,7 +1845,7 @@ export default function Reader() {
             }}
             onClick={(e) => e.stopPropagation()}
           >
-            <h3 style={{ margin: '0 0 20px', color: colors.text }}>Bookmarks</h3>
+            <h3 id="bookmarks-modal-title" style={{ margin: '0 0 20px', color: colors.text }}>Bookmarks</h3>
 
             {bookmarks.filter(b => !b.is_auto_bookmark).length === 0 ? (
               <p style={{ color: colors.textMuted, textAlign: 'center', padding: '20px' }}>
@@ -1402,6 +1924,9 @@ export default function Reader() {
           zIndex: 200
         }} onClick={() => setShowToc(false)}>
           <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="toc-modal-title"
             style={{
               background: colors.bg,
               padding: '30px',
@@ -1413,7 +1938,7 @@ export default function Reader() {
             }}
             onClick={(e) => e.stopPropagation()}
           >
-            <h3 style={{ margin: '0 0 20px', color: colors.text }}>Scenes</h3>
+            <h3 id="toc-modal-title" style={{ margin: '0 0 20px', color: colors.text }}>Scenes</h3>
 
             {scenes.map((scene, i) => (
               <div
@@ -1490,6 +2015,9 @@ export default function Reader() {
           zIndex: 200
         }} onClick={() => setShowExportModal(false)}>
           <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="export-modal-title"
             style={{
               background: colors.bg,
               padding: '30px',
@@ -1500,7 +2028,7 @@ export default function Reader() {
             }}
             onClick={(e) => e.stopPropagation()}
           >
-            <h3 style={{ margin: '0 0 20px', color: colors.text }}>Download Story</h3>
+            <h3 id="export-modal-title" style={{ margin: '0 0 20px', color: colors.text }}>Download Story</h3>
 
             {!exportInfo && (
               <div style={{ textAlign: 'center', padding: '20px', color: colors.textMuted }}>
@@ -1642,8 +2170,8 @@ export default function Reader() {
                   <button
             style={{
               position: 'fixed',
-              bottom: '30px',
-              right: '30px',
+              bottom: `calc(${safeAreaBottom} + 24px)`,
+              right: `calc(${safeAreaRight} + 20px)`,
               width: '50px',
               height: '50px',
               borderRadius: '50%',
@@ -1675,8 +2203,8 @@ export default function Reader() {
             onClick={toggleFullscreen}
             style={{
               position: 'fixed',
-              top: '10px',
-              right: '10px',
+              top: `calc(${safeAreaTop} + 10px)`,
+              right: `calc(${safeAreaRight} + 10px)`,
               width: '40px',
               height: '40px',
               borderRadius: '8px',

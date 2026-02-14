@@ -32,16 +32,24 @@ export function getEffectiveVoiceId({ voiceId, config }) {
 }
 
 /**
- * Check if hide_speech_tags is enabled (handles both boolean and string values)
+ * Check if hide_speech_tags is enabled (handles various boolean representations)
  *
  * @param {object} config - Session config_json
  * @returns {boolean} Whether speech tags should be hidden
  */
 export function shouldHideSpeechTags(config) {
   const raw = config?.hide_speech_tags;
-  const enabled = raw === true || raw === 'true';
 
-  logger.info(`[VoiceHelpers] hide_speech_tags: ${enabled} (raw: ${raw}, type: ${typeof raw})`);
+  // Handle various truthy representations
+  const enabled = raw === true ||
+                  raw === 'true' ||
+                  raw === 'TRUE' ||
+                  raw === 1 ||
+                  raw === '1' ||
+                  raw === 'yes' ||
+                  raw === 'YES';
+
+  logger.info(`[VoiceHelpers] hide_speech_tags: ${enabled} (raw: ${JSON.stringify(raw)}, type: ${typeof raw})`);
 
   return enabled;
 }

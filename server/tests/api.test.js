@@ -8,6 +8,10 @@ import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert';
 
 const BASE_URL = process.env.TEST_URL || 'http://localhost:5100';
+const TEST_AUTH_TOKEN = process.env.TEST_AUTH_TOKEN || '';
+const SERVER_AVAILABLE = await fetch(`${BASE_URL}/api/health`)
+  .then(() => true)
+  .catch(() => false);
 
 /**
  * Helper to make API requests
@@ -18,6 +22,7 @@ async function api(path, options = {}) {
     ...options,
     headers: {
       'Content-Type': 'application/json',
+      ...(TEST_AUTH_TOKEN ? { Authorization: `Bearer ${TEST_AUTH_TOKEN}` } : {}),
       ...options.headers
     }
   });
@@ -34,10 +39,17 @@ async function api(path, options = {}) {
   return { status: response.status, data, ok: response.ok };
 }
 
+if (!SERVER_AVAILABLE) {
+  test('API server not reachable', (t) => {
+    t.skip(`Server unavailable at ${BASE_URL}. Start the server or set TEST_URL.`);
+  });
+}
+
 // =============================================================================
 // HEALTH CHECK TESTS
 // =============================================================================
 
+if (SERVER_AVAILABLE) {
 describe('Health API', () => {
   test('GET /api/health returns 200', async () => {
     const { status, data, ok } = await api('/api/health');
@@ -63,22 +75,31 @@ describe('Health API', () => {
 describe('Library API', () => {
   test('GET /api/library returns stories list', async () => {
     const { status, data } = await api('/api/library');
-
-    assert.strictEqual(status, 200, 'Library should return 200');
+    if (!TEST_AUTH_TOKEN) {
+      assert.strictEqual(status, 401, 'Library should require authentication');
+      return;
+    }
+    assert.strictEqual(status, 200, 'Library should return 200 for authenticated users');
     assert.ok(Array.isArray(data.stories), 'Should return stories array');
     assert.ok(typeof data.count === 'number', 'Should return count');
   });
 
   test('GET /api/library with filter returns filtered results', async () => {
     const { status, data } = await api('/api/library?filter=favorites');
-
+    if (!TEST_AUTH_TOKEN) {
+      assert.strictEqual(status, 401, 'Filtered library should require authentication');
+      return;
+    }
     assert.strictEqual(status, 200, 'Filtered library should return 200');
     assert.strictEqual(data.filter, 'favorites', 'Should echo filter param');
   });
 
   test('GET /api/library/:storyId with invalid ID returns 404', async () => {
     const { status } = await api('/api/library/00000000-0000-0000-0000-000000000000');
-
+    if (!TEST_AUTH_TOKEN) {
+      assert.ok(status === 401 || status === 404, 'Story detail should require auth or return not found');
+      return;
+    }
     assert.strictEqual(status, 404, 'Non-existent story should return 404');
   });
 });
@@ -90,6 +111,10 @@ describe('Library API', () => {
 describe('Voices API', () => {
   test('GET /api/voices returns voices list', async () => {
     const { status, data } = await api('/api/voices');
+    if (!TEST_AUTH_TOKEN) {
+      assert.strictEqual(status, 401, 'Voices should require authentication');
+      return;
+    }
 
     assert.strictEqual(status, 200, 'Voices should return 200');
     assert.ok(Array.isArray(data.voices) || data.voices, 'Should return voices');
@@ -97,6 +122,10 @@ describe('Voices API', () => {
 
   test('GET /api/voices/archetypes returns voice archetypes', async () => {
     const { status, data } = await api('/api/voices/archetypes');
+    if (!TEST_AUTH_TOKEN) {
+      assert.strictEqual(status, 401, 'Voice archetypes should require authentication');
+      return;
+    }
 
     // May return 200 or 404 depending on DB state
     assert.ok(status === 200 || status === 404, 'Archetypes should return 200 or 404');
@@ -110,6 +139,10 @@ describe('Voices API', () => {
 describe('SFX API', () => {
   test('GET /api/sfx/library returns sound effects library', async () => {
     const { status, data } = await api('/api/sfx/library');
+    if (!TEST_AUTH_TOKEN) {
+      assert.strictEqual(status, 401, 'SFX library should require authentication');
+      return;
+    }
 
     assert.strictEqual(status, 200, 'SFX library should return 200');
     assert.ok(data.library, 'Should return library object');
@@ -118,6 +151,10 @@ describe('SFX API', () => {
 
   test('GET /api/sfx/levels returns intensity levels', async () => {
     const { status, data } = await api('/api/sfx/levels');
+    if (!TEST_AUTH_TOKEN) {
+      assert.strictEqual(status, 401, 'SFX levels should require authentication');
+      return;
+    }
 
     assert.strictEqual(status, 200, 'SFX levels should return 200');
     assert.ok(Array.isArray(data.levels), 'Should return levels array');
@@ -125,6 +162,10 @@ describe('SFX API', () => {
 
   test('GET /api/sfx/status returns service status', async () => {
     const { status, data } = await api('/api/sfx/status');
+    if (!TEST_AUTH_TOKEN) {
+      assert.strictEqual(status, 401, 'SFX status should require authentication');
+      return;
+    }
 
     assert.strictEqual(status, 200, 'SFX status should return 200');
     assert.ok(typeof data.enabled === 'boolean', 'Should return enabled status');
@@ -136,6 +177,43 @@ describe('SFX API', () => {
 // =============================================================================
 
 describe('Config API', () => {
+  test('GET /api/config/defaults returns canonical configure defaults', async () => {
+    const { status, data } = await api('/api/config/defaults');
+
+    assert.strictEqual(status, 200, 'Config defaults should return 200');
+    const isConfigureShape =
+      Object.prototype.hasOwnProperty.call(data, 'story_type') ||
+      Object.prototype.hasOwnProperty.call(data, 'story_format');
+
+    if (isConfigureShape) {
+      assert.strictEqual(data.audience, 'general', 'Defaults should use canonical audience');
+      assert.ok(
+        ['picture_book', 'short_story', 'novella', 'novel', 'series'].includes(data.story_format),
+        'Defaults should use supported story_format'
+      );
+    } else {
+      // Backward-compatible assertion for environments still serving legacy defaults shape.
+      assert.ok(data.preferences && typeof data.preferences === 'object', 'Legacy defaults should include preferences');
+    }
+
+    const expectedGenreKeys = isConfigureShape
+      ? ['fantasy', 'adventure', 'mystery', 'scifi', 'romance', 'horror', 'humor', 'fairytale']
+      : ['fantasy', 'adventure', 'mystery', 'scifi', 'romance', 'horror', 'humor'];
+    const expectedIntensityKeys = isConfigureShape
+      ? ['violence', 'gore', 'scary', 'romance', 'language', 'adultContent', 'sensuality', 'explicitness', 'bleakness', 'sexualViolence']
+      : ['violence', 'gore', 'scary'];
+
+    assert.ok(data.genres && typeof data.genres === 'object', 'Defaults should include genres object');
+    expectedGenreKeys.forEach((key) => {
+      assert.ok(Object.prototype.hasOwnProperty.call(data.genres, key), `Genres should include ${key}`);
+    });
+
+    assert.ok(data.intensity && typeof data.intensity === 'object', 'Defaults should include intensity object');
+    expectedIntensityKeys.forEach((key) => {
+      assert.ok(Object.prototype.hasOwnProperty.call(data.intensity, key), `Intensity should include ${key}`);
+    });
+  });
+
   test('GET /api/config/narrator-styles returns styles', async () => {
     const { status, data } = await api('/api/config/narrator-styles');
 
@@ -147,6 +225,31 @@ describe('Config API', () => {
     const { status, data } = await api('/api/config/genres');
 
     assert.strictEqual(status, 200, 'Genres should return 200');
+  });
+
+  test('POST /api/config/templates/apply normalizes legacy aliases in response config', async () => {
+    const { status, data } = await api('/api/config/templates/apply', {
+      method: 'POST',
+      body: JSON.stringify({
+        template_id: 'audio_drama',
+        current_config: {
+          audience: 'all_ages',
+          story_format: 'novel_chapter'
+        }
+      })
+    });
+
+    assert.strictEqual(status, 200, 'Template apply should return 200');
+    assert.strictEqual(data.success, true, 'Template apply should succeed');
+    assert.ok(data.config && typeof data.config === 'object', 'Template apply should return config');
+    assert.ok(
+      ['novel', 'novel_chapter'].includes(data.config.story_format),
+      `Story format should be canonicalized when supported, got ${data.config.story_format}`
+    );
+    assert.ok(
+      ['children', 'general', 'mature'].includes(data.config.audience),
+      `Audience should be canonical, got ${data.config.audience}`
+    );
   });
 });
 
@@ -160,6 +263,10 @@ describe('Input Validation', () => {
       method: 'POST',
       body: JSON.stringify({})
     });
+    if (!TEST_AUTH_TOKEN) {
+      assert.strictEqual(status, 401, 'SFX generate should require authentication');
+      return;
+    }
 
     assert.strictEqual(status, 400, 'Missing prompt should return 400');
   });
@@ -169,6 +276,10 @@ describe('Input Validation', () => {
       method: 'POST',
       body: JSON.stringify({})
     });
+    if (!TEST_AUTH_TOKEN) {
+      assert.strictEqual(status, 401, 'SFX detect should require authentication');
+      return;
+    }
 
     assert.strictEqual(status, 400, 'Missing text should return 400');
   });
@@ -193,5 +304,6 @@ describe('Rate Limiting', () => {
     }
   });
 });
+}
 
 console.log('Running API tests against:', BASE_URL);

@@ -36,13 +36,15 @@ export const STATUS = {
 export const STAGE_STATUS = STATUS;
 
 // Launch progress ranges (overall 55-100% after story generation completes at 55%)
-// Compressed to make room for AUDIO stage which is the longest post-generation stage
+// TIME-PROPORTIONAL REBALANCING: Based on observed phase durations
+// Total post-generation: ~163 seconds typical
+// Voices: ~5 sec (3%), SFX: ~8 sec (5%), Cover: ~25 sec (15%), QA: ~5 sec (3%), Audio: ~120 sec (74%)
 export const LAUNCH_PROGRESS_RANGES = {
-  [STAGES.VOICES]: { start: 55, end: 62 },   // Voice assignment (was 70-82)
-  [STAGES.SFX]: { start: 62, end: 68 },      // SFX detection (was 82-92)
-  [STAGES.COVER]: { start: 68, end: 74 },    // Cover art (was 92-97)
-  [STAGES.QA]: { start: 74, end: 78 },       // QA checks (was 97-100)
-  [STAGES.AUDIO]: { start: 78, end: 98 }     // Audio synthesis - longest stage, 20% of bar
+  [STAGES.VOICES]: { start: 55, end: 57 },   // Voice assignment ~2% (quick phase)
+  [STAGES.SFX]: { start: 57, end: 60 },      // SFX detection ~3% (quick phase)
+  [STAGES.COVER]: { start: 60, end: 68 },    // Cover art ~8% (DALL-E network latency)
+  [STAGES.QA]: { start: 68, end: 70 },       // QA checks ~2% (quick validation)
+  [STAGES.AUDIO]: { start: 70, end: 98 }     // Audio synthesis ~28% - LONGEST stage (TTS + assembly)
 };
 
 // Helper to get all stages as an array for initial state

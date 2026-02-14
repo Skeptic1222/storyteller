@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiCall } from '../config';
 import { setStoredToken } from '../utils/authToken';
@@ -27,8 +27,23 @@ function Landing() {
   const [devTokenInput, setDevTokenInput] = useState('');
   const [requiresSecureContext, setRequiresSecureContext] = useState(false);
   const [secureContextUrl, setSecureContextUrl] = useState('');
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
   const featuresRef = useRef(null);
   const pricingRef = useRef(null);
+  const heroParticles = useMemo(() => (
+    [...Array(20)].map((_, i) => ({
+      id: i,
+      left: `${Math.random() * 100}%`,
+      top: `${Math.random() * 100}%`,
+      animationDelay: `${Math.random() * 5}s`,
+      animationDuration: `${3 + Math.random() * 4}s`,
+      color: i % 3 === 0
+        ? 'rgba(255, 111, 97, 0.4)'
+        : i % 3 === 1
+          ? 'rgba(106, 138, 130, 0.35)'
+          : 'rgba(247, 244, 233, 0.25)'
+    }))
+  ), []);
 
   // Redirect if already authenticated
   useEffect(() => {
@@ -50,9 +65,26 @@ function Landing() {
     }
   }, []);
 
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+    const reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const handleReducedMotionChange = (event) => setPrefersReducedMotion(event.matches);
+    setPrefersReducedMotion(reducedMotionQuery.matches);
+
+    if (reducedMotionQuery.addEventListener) {
+      reducedMotionQuery.addEventListener('change', handleReducedMotionChange);
+      return () => reducedMotionQuery.removeEventListener('change', handleReducedMotionChange);
+    }
+
+    reducedMotionQuery.addListener(handleReducedMotionChange);
+    return () => reducedMotionQuery.removeListener(handleReducedMotionChange);
+  }, []);
+
   // Track Google API ready state
   const [googleReady, setGoogleReady] = useState(false);
+  const [showGoogleButton, setShowGoogleButton] = useState(false);
   const googleInitialized = useRef(false);
+  const googleButtonRef = useRef(null);
 
   // Load Google Sign-In
   useEffect(() => {
@@ -190,21 +222,12 @@ function Landing() {
     });
   };
 
-  // Fallback OAuth popup for browsers that block One Tap
+  // Fallback when One Tap is blocked - show Google's official button instead
   const triggerOAuthPopup = () => {
-    const width = 500;
-    const height = 600;
-    const left = window.screenX + (window.outerWidth - width) / 2;
-    const top = window.screenY + (window.outerHeight - height) / 2;
-
-    const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
-      `client_id=${encodeURIComponent(GOOGLE_CLIENT_ID)}` +
-      `&redirect_uri=${encodeURIComponent(window.location.origin + '/storyteller/auth/google/callback')}` +
-      `&response_type=code` +
-      `&scope=${encodeURIComponent('openid email profile')}` +
-      `&prompt=select_account`;
-
-    window.open(authUrl, 'Google Sign In', `width=${width},height=${height},left=${left},top=${top}`);
+    // Show the Google-rendered button as fallback (works when One Tap is blocked)
+    console.log('[GoogleAuth] One Tap blocked, showing Google button as fallback');
+    setLoginLoading(false);
+    setShowGoogleButton(true);
   };
 
   const handleDevLogin = async () => {
@@ -245,6 +268,26 @@ function Landing() {
       setDevLoginLoading(false);
     }
   };
+
+  // Render Google button when fallback is needed (One Tap blocked)
+  useEffect(() => {
+    if (showGoogleButton && googleReady && googleButtonRef.current && window.google?.accounts?.id) {
+      console.log('[GoogleAuth] Rendering Google button as fallback');
+      googleButtonRef.current.innerHTML = '';
+      window.google.accounts.id.renderButton(
+        googleButtonRef.current,
+        {
+          type: 'standard',
+          theme: 'filled_blue',
+          size: 'large',
+          text: 'signin_with',
+          shape: 'rectangular',
+          logo_alignment: 'left',
+          width: 280
+        }
+      );
+    }
+  }, [showGoogleButton, googleReady]);
 
   const scrollToSection = (ref) => {
     ref.current?.scrollIntoView({ behavior: 'smooth' });
@@ -404,16 +447,16 @@ function Landing() {
 
         {/* Floating particles with gradient colors */}
         <div className="absolute inset-0 overflow-hidden pointer-events-none">
-          {[...Array(20)].map((_, i) => (
+          {heroParticles.map((particle) => (
             <div
-              key={i}
-              className="absolute w-1 h-1 rounded-full animate-float"
+              key={particle.id}
+              className={`absolute w-1 h-1 rounded-full landing-hero-particle ${prefersReducedMotion ? '' : 'animate-float'}`}
               style={{
-                left: `${Math.random() * 100}%`,
-                top: `${Math.random() * 100}%`,
-                animationDelay: `${Math.random() * 5}s`,
-                animationDuration: `${3 + Math.random() * 4}s`,
-                backgroundColor: i % 3 === 0 ? 'rgba(255, 111, 97, 0.4)' : i % 3 === 1 ? 'rgba(106, 138, 130, 0.35)' : 'rgba(247, 244, 233, 0.25)'
+                left: particle.left,
+                top: particle.top,
+                animationDelay: particle.animationDelay,
+                animationDuration: particle.animationDuration,
+                backgroundColor: particle.color
               }}
             />
           ))}
@@ -421,7 +464,7 @@ function Landing() {
 
         {/* Logo and headline */}
         <div className="relative z-10 text-center max-w-4xl mx-auto">
-          <div className="mb-8 animate-float">
+          <div className={`mb-8 landing-decorative-motion ${prefersReducedMotion ? '' : 'animate-float'}`}>
             <div className="relative inline-block">
               <img
                 src={`${BASE_URL}assets/images/newlogo.png`}
@@ -486,12 +529,19 @@ function Landing() {
               className="flex items-center gap-2 px-6 py-3 text-slate-300 hover:text-narrimo-coral transition-colors"
             >
               <span>Learn more</span>
-              <ChevronDown className="w-5 h-5 animate-bounce" />
+              <ChevronDown className={`w-5 h-5 landing-decorative-motion ${prefersReducedMotion ? '' : 'animate-bounce'}`} />
             </button>
           </div>
 
+          {/* Fallback Google Sign-In button (rendered by Google API when One Tap is blocked) */}
+          {showGoogleButton && (
+            <div className="flex justify-center mb-4">
+              <div ref={googleButtonRef} className="google-signin-button" />
+            </div>
+          )}
+
           {loginError && (
-            <p className="text-red-400 text-sm mb-4">{loginError}</p>
+            <p className="text-red-400 text-sm mb-4 whitespace-pre-line">{loginError}</p>
           )}
           {requiresSecureContext && (
             <div className="text-amber-300 text-sm mb-4">
@@ -549,7 +599,7 @@ function Landing() {
         </div>
 
         {/* Scroll indicator */}
-        <div className="absolute bottom-8 left-1/2 -translate-x-1/2 animate-bounce">
+        <div className={`absolute bottom-8 left-1/2 -translate-x-1/2 landing-decorative-motion ${prefersReducedMotion ? '' : 'animate-bounce'}`}>
           <ChevronDown className="w-8 h-8 text-slate-500" />
         </div>
       </section>
@@ -697,8 +747,8 @@ function Landing() {
               <div className="flex-shrink-0">
                 <div className="w-48 h-48 bg-slate-800 rounded-full flex items-center justify-center
                               border-4 border-narrimo-coral/30 relative">
-                  <BookOpen className="w-20 h-20 text-narrimo-coral animate-pulse" />
-                  <div className="absolute inset-0 rounded-full border-4 border-narrimo-coral/20 animate-ping" />
+                  <BookOpen className={`w-20 h-20 text-narrimo-coral landing-decorative-motion ${prefersReducedMotion ? '' : 'animate-pulse'}`} />
+                  <div className={`absolute inset-0 rounded-full border-4 border-narrimo-coral/20 landing-decorative-motion ${prefersReducedMotion ? '' : 'animate-ping'}`} />
                 </div>
               </div>
             </div>
@@ -831,7 +881,7 @@ function Landing() {
                <img
                  src={`${BASE_URL}assets/images/newlogo.png`}
                  alt="Narrimo logo"
-                 className="h-12 md:h-14 w-auto object-contain"
+                 className="h-16 md:h-20 w-auto object-contain"
                />
                <span className="font-bold text-white">Narrimo</span>
              </div>

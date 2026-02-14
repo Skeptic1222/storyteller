@@ -7,6 +7,11 @@
 
 import { pool } from '../../database/pool.js';
 import { logger } from '../../utils/logger.js';
+import {
+  CONTEXT_LIMITS,
+  SCENE_STORAGE,
+  CONTENT_VALIDATION
+} from '../../constants/sceneGeneration.js';
 
 // ============ Content Validation ============
 
@@ -47,10 +52,11 @@ const GARBAGE_PATTERNS = [
 /**
  * Minimum content length thresholds
  * Content below these limits is considered garbage/incomplete
+ * MEDIUM-9: Now imported from centralized constants
  */
 const MIN_CONTENT_LENGTH = {
-  displayText: 100,  // Minimum characters for readable content
-  rawText: 50        // Minimum for raw (may have tags stripped)
+  displayText: CONTENT_VALIDATION.MIN_DISPLAY_TEXT_LENGTH,
+  rawText: CONTENT_VALIDATION.MIN_RAW_TEXT_LENGTH
 };
 
 /**
@@ -59,10 +65,13 @@ const MIN_CONTENT_LENGTH = {
  *
  * @param {string} rawText - Raw scene text
  * @param {string} displayText - Display-ready text (tags stripped)
+ * @param {object} [options={}] - Validation options
+ * @param {boolean} [options.multiVoice=true] - Whether multi-voice mode is enabled (dialogue check skipped for single-voice)
  * @throws {Error} If content is garbage/invalid
  * @returns {object} Validation result with details
  */
-export function validateSceneContent(rawText, displayText) {
+export function validateSceneContent(rawText, displayText, options = {}) {
+  const { multiVoice = true } = options;
   const issues = [];
 
   // Check minimum lengths
@@ -98,6 +107,49 @@ export function validateSceneContent(rawText, displayText) {
     if (maxFreq / words.length > 0.3) {
       const mostCommon = Object.entries(wordFreq).find(([, v]) => v === maxFreq)?.[0];
       issues.push(`Excessive repetition: "${mostCommon}" appears ${maxFreq}/${words.length} times`);
+    }
+  }
+
+  // Repetition guard: detect duplicated sentences/paragraphs and high-frequency 5-grams
+  const sentences = textToCheck.split(/(?<=[\\.\\?!])\s+/).map(s => s.trim()).filter(s => s.length > 20);
+  const sentenceCounts = sentences.reduce((m, s) => (m[s] = (m[s] || 0) + 1, m), {});
+  const repeatedSentences = Object.entries(sentenceCounts).filter(([, c]) => c >= 3);
+  if (repeatedSentences.length > 0) {
+    const top = repeatedSentences[0][0];
+    issues.push(`Repeated sentences detected (>=3x): "${top.substring(0,80)}..."`);
+  }
+
+  const paragraphs = textToCheck.split(/\n\s*\n/).map(p => p.trim()).filter(p => p.length > 40);
+  const paragraphCounts = paragraphs.reduce((m, p) => (m[p] = (m[p] || 0) + 1, m), {});
+  const repeatedParas = Object.entries(paragraphCounts).filter(([, c]) => c >= 2);
+  if (repeatedParas.length > 0) {
+    const top = repeatedParas[0][0];
+    issues.push(`Repeated paragraphs detected (>=2x): "${top.substring(0,80)}..."`);
+  }
+
+  // 5-gram repetition
+  const tokens = textToCheck.toLowerCase().split(/\s+/).filter(Boolean);
+  const n = 5;
+  const ngramCounts = {};
+  for (let i = 0; i <= tokens.length - n; i++) {
+    const key = tokens.slice(i, i + n).join(' ');
+    ngramCounts[key] = (ngramCounts[key] || 0) + 1;
+  }
+  const maxNgram = Math.max(0, ...Object.values(ngramCounts));
+  if (maxNgram >= 4) {
+    const worst = Object.entries(ngramCounts).find(([, c]) => c === maxNgram)?.[0];
+    issues.push(`High n-gram repetition: "${worst?.substring(0,80)}..." occurs ${maxNgram} times`);
+  }
+
+  // Dialogue density: require some quoted speech in long scenes
+  // For tag-based multi-voice, also count speaker tags [SPEAKER: ...] as dialogue
+  // SKIP for single-voice mode: narrator agent converts dialogue to prose, so speaker tags are removed
+  if (multiVoice) {
+    const quotedDialogue = (textToCheck.match(/"[^"]+"/g) || []).length;
+    const speakerTags = (rawText.match(/\[[A-Z][^:\]]+:/g) || []).length;
+    const dialogueCount = Math.max(quotedDialogue, speakerTags);
+    if (wordCount > 300 && dialogueCount < 3) {
+      issues.push(`Dialogue too sparse for length (${dialogueCount} dialogue entries over ${wordCount} words)`);
     }
   }
 
@@ -145,10 +197,12 @@ export async function getPreviousScene(sessionId) {
     const fullText = result.rows[0].polished_text || '';
     const summary = result.rows[0].summary || '';
 
-    // P0 FIX: Return last 1500 chars (includes scene ending/climax) for better continuity
+    // P0 FIX: Return last N chars (includes scene ending/climax) for better continuity
     // Previously only returned 200-300 chars which caused Chapter 2 to redo Chapter 1
+    // MEDIUM-9: Now uses centralized constant
+    const contextLength = CONTEXT_LIMITS.PREVIOUS_SCENE_CONTEXT_LENGTH;
     if (fullText.length > 0) {
-      return fullText.length > 1500 ? fullText.slice(-1500) : fullText;
+      return fullText.length > contextLength ? fullText.slice(-contextLength) : fullText;
     }
     return summary;
   }
@@ -222,14 +276,15 @@ export function determineMood(text) {
  * @param {string} options.displayText - Text with tags stripped
  * @param {string} options.mood
  * @param {boolean} [options.skipValidation=false] - Skip content validation (use with caution)
+ * @param {boolean} [options.multiVoice=true] - Whether multi-voice mode is enabled
  * @returns {object} Scene record
  * @throws {Error} If content validation fails (unless skipValidation=true)
  */
-export async function saveScene({ sessionId, sceneIndex, rawText, displayText, mood, skipValidation = false }) {
+export async function saveScene({ sessionId, sceneIndex, rawText, displayText, mood, skipValidation = false, multiVoice = true }) {
   // CRITICAL: Validate content before saving to prevent garbage responses
   if (!skipValidation) {
     try {
-      const validation = validateSceneContent(rawText, displayText);
+      const validation = validateSceneContent(rawText, displayText, { multiVoice });
       logger.info(`[SceneHelpers] Content validated: ${validation.wordCount} words, ${validation.charCount} chars`);
     } catch (validationError) {
       logger.error(`[SceneHelpers] Content validation FAILED for session ${sessionId}, scene ${sceneIndex}:`, {
@@ -252,10 +307,10 @@ export async function saveScene({ sessionId, sceneIndex, rawText, displayText, m
   `, [
     sessionId,
     sceneIndex,
-    'main',
+    SCENE_STORAGE.DEFAULT_BRANCH_KEY,
     rawText,
     displayText,
-    displayText.substring(0, 200),
+    displayText.substring(0, SCENE_STORAGE.SUMMARY_MAX_LENGTH),  // MEDIUM-9: Use constant
     mood,
     displayText.split(/\s+/).length
   ]);
@@ -442,7 +497,10 @@ export function buildScenePreferences({ config, isFinal, sceneIndex, targetScene
     violence: intensity.violence || 0,
     romance: intensity.romance || 0,
     scary: intensity.scary || 0,
-    adultContent: intensity.adultContent || 0
+    adultContent: intensity.adultContent || 0,
+    // VAD settings - FOUNDATIONAL: These change HOW stories are written, not just post-processed
+    multi_voice: config?.multi_voice === true,
+    hide_speech_tags: config?.hide_speech_tags === true
   };
 }
 

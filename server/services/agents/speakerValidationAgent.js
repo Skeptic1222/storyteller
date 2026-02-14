@@ -198,7 +198,9 @@ export async function validateAndReconcileSpeakers(
       if (dbError.code === '23505') { // unique_violation
         logger.warn(`[SpeakerValidation] Character ${charData.name} already exists - using existing`);
         const existing = await pool.query(
-          'SELECT * FROM characters WHERE story_session_id = $1 AND LOWER(name) = LOWER($2)',
+          `SELECT id, name, role, description, traits_json, gender, age_group,
+                  voice_description, appearance, portrait_url
+           FROM characters WHERE story_session_id = $1 AND LOWER(name) = LOWER($2)`,
           [sessionId, charData.name]
         );
         if (existing.rows.length > 0) {
@@ -210,9 +212,11 @@ export async function validateAndReconcileSpeakers(
     }
   }
 
-  // Get updated character list
+  // Get updated character list (explicit columns for performance)
   const allCharactersResult = await pool.query(
-    'SELECT * FROM characters WHERE story_session_id = $1',
+    `SELECT id, name, role, description, traits_json, gender, age_group,
+            voice_description, appearance, portrait_url
+     FROM characters WHERE story_session_id = $1`,
     [sessionId]
   );
   const allCharacters = allCharactersResult.rows;
@@ -252,7 +256,20 @@ export async function validateAndReconcileSpeakers(
 
     // Save new voice assignments to database
     for (const char of charactersNeedingVoices) {
-      const voiceId = newVoiceAssignments[char.name.toLowerCase()];
+      let voiceId = newVoiceAssignments[char.name.toLowerCase()];
+      // Fuzzy lookup: LLM may have returned shortened name as key
+      if (!voiceId) {
+        const charLower = char.name.toLowerCase();
+        for (const [key, vid] of Object.entries(newVoiceAssignments)) {
+          if (charLower.startsWith(key + ' ') || charLower.startsWith(key + '(') ||
+              charLower.split('(')[0].trim() === key || charLower.split(' (')[0].trim() === key ||
+              key.startsWith(charLower.split(' ')[0])) {
+            voiceId = vid;
+            logger.info(`[SpeakerValidation] Fuzzy-matched voice key "${key}" to character "${char.name}"`);
+            break;
+          }
+        }
+      }
       if (voiceId) {
         await pool.query(`
           INSERT INTO character_voice_assignments (story_session_id, character_id, elevenlabs_voice_id)

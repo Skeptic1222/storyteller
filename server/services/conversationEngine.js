@@ -278,8 +278,12 @@ export class ConversationEngine {
   }
 
   async loadSession() {
+    // Explicit columns for performance instead of SELECT *
     const result = await pool.query(
-      'SELECT * FROM story_sessions WHERE id = $1',
+      `SELECT id, user_id, mode, cyoa_enabled, bedtime_mode, config_json,
+              current_status, title, total_scenes, current_scene_index,
+              started_at, ended_at, last_activity_at
+       FROM story_sessions WHERE id = $1`,
       [this.sessionId]
     );
     this.session = result.rows[0];
@@ -322,7 +326,7 @@ export class ConversationEngine {
         };
       }
 
-      // Use SmartConfig to detect additional settings the AI might miss (sfx_level, multi_narrator, etc.)
+      // Use SmartConfig to detect additional settings the AI might miss (sfx_level, voice_acted, etc.)
       try {
         const smartAnalysis = smartConfig.analyzeKeywords(input.toLowerCase());
 
@@ -337,10 +341,12 @@ export class ConversationEngine {
           result.config_updates = result.config_updates || {};
           result.config_updates.sfx_enabled = true;
         }
-        if (smartAnalysis.multi_narrator) {
+        // Voice acting (support both new and legacy field names)
+        if (smartAnalysis.voice_acted || smartAnalysis.multi_narrator) {
           result.config_updates = result.config_updates || {};
-          result.config_updates.multi_narrator = true;
-          logger.info('[ConversationEngine] SmartConfig detected multi_narrator request');
+          result.config_updates.voice_acted = true;
+          result.config_updates.multi_narrator = true; // Backward compatibility
+          logger.info('[ConversationEngine] SmartConfig detected voice acting request');
         }
         if (smartAnalysis.story_length && !result.config_updates?.story_length) {
           result.config_updates = result.config_updates || {};

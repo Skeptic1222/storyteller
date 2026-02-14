@@ -8,10 +8,11 @@
 import { pool } from '../../database/pool.js';
 import { logger } from '../../utils/logger.js';
 import { countTokens, summarizeContext } from '../openai.js';
+import { CONTEXT_LIMITS } from '../../constants/sceneGeneration.js';
 
-// Token budget for context management
-const MAX_CONTEXT_TOKENS = 120000;
-const CONTEXT_SUMMARY_THRESHOLD = 0.8;
+// MEDIUM-9: Token budget now from centralized constants
+const MAX_CONTEXT_TOKENS = CONTEXT_LIMITS.MAX_CONTEXT_TOKENS;
+const CONTEXT_SUMMARY_THRESHOLD = CONTEXT_LIMITS.CONTEXT_SUMMARY_THRESHOLD;
 
 /**
  * Load session data from database
@@ -19,8 +20,12 @@ const CONTEXT_SUMMARY_THRESHOLD = 0.8;
  * @returns {object} Session row
  */
 export async function loadSessionData(sessionId) {
+  // Explicit columns instead of SELECT * for performance
   const result = await pool.query(
-    'SELECT * FROM story_sessions WHERE id = $1',
+    `SELECT id, user_id, mode, cyoa_enabled, bedtime_mode, config_json,
+            current_status, title, total_scenes, current_scene_index,
+            started_at, ended_at, last_activity_at, context_summary
+     FROM story_sessions WHERE id = $1`,
     [sessionId]
   );
 
@@ -38,8 +43,11 @@ export async function loadSessionData(sessionId) {
  * @returns {object|null} Outline with merged JSON
  */
 export async function loadOutline(sessionId) {
+  // Explicit columns instead of SELECT * for performance
   const result = await pool.query(
-    'SELECT * FROM story_outlines WHERE story_session_id = $1 ORDER BY version DESC LIMIT 1',
+    `SELECT id, story_session_id, outline_json, themes, target_duration_minutes,
+            notes, version, created_at, bible_json
+     FROM story_outlines WHERE story_session_id = $1 ORDER BY version DESC LIMIT 1`,
     [sessionId]
   );
 
@@ -78,8 +86,12 @@ export async function loadCharacters(sessionId, storyBibleContext = null) {
   }
 
   // DB LIMIT PROTECTION: Limit characters to 100 max per session
+  // Explicit columns for performance
   const result = await pool.query(
-    'SELECT * FROM characters WHERE story_session_id = $1 LIMIT 100',
+    `SELECT id, story_session_id, name, role, description, personality,
+            traits_json, backstory, voice_description, appearance, appearance_json,
+            portrait_url, gender, age_group, relationships_json, is_recurring, created_at
+     FROM characters WHERE story_session_id = $1 LIMIT 100`,
     [sessionId]
   );
   return result.rows;
@@ -106,8 +118,11 @@ export async function loadLore(sessionId, storyBibleContext = null) {
   }
 
   // DB LIMIT PROTECTION: Limit lore entries to 200 max per session
+  // Explicit columns for performance
   const result = await pool.query(
-    'SELECT * FROM lore_entries WHERE story_session_id = $1 ORDER BY importance DESC LIMIT 200',
+    `SELECT id, story_session_id, entry_type, title, content, tags, importance,
+            parent_location_id, created_at
+     FROM lore_entries WHERE story_session_id = $1 ORDER BY importance DESC LIMIT 200`,
     [sessionId]
   );
   return result.rows;
@@ -120,8 +135,9 @@ export async function loadLore(sessionId, storyBibleContext = null) {
  */
 export async function loadStoryBibleSession(sessionId) {
   try {
+    // Only select the columns we need (full_context contains all the data)
     const result = await pool.query(
-      'SELECT * FROM story_bible_sessions WHERE story_session_id = $1',
+      'SELECT id, story_session_id, library_id, full_context, created_at FROM story_bible_sessions WHERE story_session_id = $1',
       [sessionId]
     );
 

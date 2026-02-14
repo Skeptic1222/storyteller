@@ -7,24 +7,47 @@
  * Features:
  * - Automatic image transitions synced to word timing
  * - Smooth crossfade animations
+ * - Ken Burns effects for cinematic feel
  * - Manual navigation when paused
  * - Progress indicator dots
+ * - Fullscreen mode
  */
 
-import { useState, useEffect, useRef, useMemo } from 'react';
-import { Image, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { Image, ChevronLeft, ChevronRight, Loader2, Maximize2, Minimize2 } from 'lucide-react';
+
+// Ken Burns effect variations - cycled through for visual variety
+const KEN_BURNS_EFFECTS = [
+  'ken-burns-zoom-in',
+  'ken-burns-pan-left',
+  'ken-burns-zoom-out',
+  'ken-burns-pan-right',
+  'ken-burns-zoom-pan-ne',
+  'ken-burns-pan-up',
+  'ken-burns-zoom-pan-sw',
+  'ken-burns-pan-down'
+];
 
 function PictureBookImageDisplay({
-  images = [],           // Array of {image_url, trigger_word_index, trigger_time_ms}
+  images = [],           // Array of {image_url, trigger_word_index, trigger_time_ms, ken_burns_effect?}
   currentWordIndex = -1, // From karaoke word tracking
   currentTime = 0,       // Current audio time in seconds
   isPlaying = false,
+  enableKenBurns = true, // Enable Ken Burns animations
   className = ''
 }) {
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [imageLoaded, setImageLoaded] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const prevImageRef = useRef(null);
+  const containerRef = useRef(null);
+  const isTouchDevice = useMemo(() => (
+    typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches
+  ), []);
+  const supportsHover = useMemo(() => (
+    typeof window !== 'undefined' && window.matchMedia?.('(hover: hover) and (pointer: fine)').matches
+  ), []);
 
   // Sort images by trigger time
   const sortedImages = useMemo(() => {
@@ -32,6 +55,29 @@ function PictureBookImageDisplay({
       (a.trigger_time_ms || 0) - (b.trigger_time_ms || 0)
     );
   }, [images]);
+
+  // Calculate duration for Ken Burns based on time until next image
+  const getKenBurnsDuration = useCallback((imageIndex) => {
+    if (imageIndex >= sortedImages.length - 1) {
+      return 15; // Default 15s for last image
+    }
+    const currentTrigger = sortedImages[imageIndex]?.trigger_time_ms || 0;
+    const nextTrigger = sortedImages[imageIndex + 1]?.trigger_time_ms || currentTrigger + 15000;
+    const durationMs = nextTrigger - currentTrigger;
+    // Clamp between 5s and 30s
+    return Math.max(5, Math.min(30, durationMs / 1000));
+  }, [sortedImages]);
+
+  // Get Ken Burns effect for an image
+  const getKenBurnsEffect = useCallback((imageIndex) => {
+    if (!enableKenBurns) return '';
+    // Use specified effect or cycle through available effects
+    const image = sortedImages[imageIndex];
+    if (image?.ken_burns_effect) {
+      return `ken-burns-${image.ken_burns_effect.replace('_', '-')}`;
+    }
+    return KEN_BURNS_EFFECTS[imageIndex % KEN_BURNS_EFFECTS.length];
+  }, [sortedImages, enableKenBurns]);
 
   // Reset to first image when images change
   useEffect(() => {
@@ -103,6 +149,22 @@ function PictureBookImageDisplay({
     }
   };
 
+  // Toggle fullscreen
+  const toggleFullscreen = () => {
+    setIsFullscreen(!isFullscreen);
+  };
+
+  // Handle escape key to exit fullscreen
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape' && isFullscreen) {
+        setIsFullscreen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isFullscreen]);
+
   if (sortedImages.length === 0) {
     return (
       <div className={`picture-book-placeholder ${className}`}>
@@ -117,15 +179,20 @@ function PictureBookImageDisplay({
   }
 
   const currentImage = sortedImages[currentImageIndex];
+  const kbDuration = getKenBurnsDuration(currentImageIndex);
+  const kbEffect = getKenBurnsEffect(currentImageIndex);
 
   return (
-    <div className={`picture-book-display relative ${className}`}>
-      {/* Image container with crossfade */}
-      <div className="relative overflow-hidden rounded-xl aspect-square bg-slate-900 shadow-xl">
+    <div
+      ref={containerRef}
+      className={`picture-book-display relative ${className} ${isFullscreen ? 'picture-book-fullscreen' : ''}`}
+    >
+      {/* Image container with crossfade and Ken Burns */}
+      <div className="ken-burns-container relative overflow-hidden rounded-xl aspect-video bg-slate-900 shadow-xl">
         {/* Loading state */}
         {!imageLoaded && (
-          <div className="absolute inset-0 flex items-center justify-center bg-slate-800">
-            <Loader2 className="w-8 h-8 text-golden-400 animate-spin" />
+          <div className="absolute inset-0 flex items-center justify-center bg-slate-800 z-10">
+            <Loader2 className="w-8 h-8 text-amber-400 animate-spin" />
           </div>
         )}
 
@@ -138,36 +205,48 @@ function PictureBookImageDisplay({
           />
         )}
 
-        {/* Current image */}
+        {/* Current image with Ken Burns effect */}
         <img
           src={currentImage.image_url}
           alt={`Scene illustration ${currentImageIndex + 1}`}
           onLoad={() => setImageLoaded(true)}
+          style={{
+            '--kb-duration': `${kbDuration}s`
+          }}
           className={`
             w-full h-full object-cover
             transition-opacity duration-500
             ${isTransitioning ? 'opacity-0' : 'opacity-100'}
             ${!imageLoaded ? 'opacity-0' : ''}
+            ${enableKenBurns && imageLoaded ? kbEffect : ''}
+            ${!isPlaying && enableKenBurns ? 'ken-burns-paused' : ''}
           `}
         />
 
         {/* Image progress indicator dots */}
-        <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 flex gap-2 bg-slate-900/60 px-3 py-2 rounded-full">
+        <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 flex gap-2 bg-slate-900/60 px-3 py-2 rounded-full z-20">
           {sortedImages.map((_, idx) => (
             <button
               key={idx}
               onClick={() => goToImage(idx)}
               className={`
-                w-2 h-2 rounded-full transition-all duration-200
-                ${idx === currentImageIndex
-                  ? 'bg-golden-400 scale-125 shadow-md shadow-golden-400/50'
-                  : idx < currentImageIndex
-                    ? 'bg-golden-400/50'
-                    : 'bg-slate-500 hover:bg-slate-400'
-                }
+                ${isTouchDevice ? 'w-11 h-11' : 'w-6 h-6'} rounded-full transition-all duration-200 flex items-center justify-center
+                ${idx === currentImageIndex ? 'bg-slate-800/60' : supportsHover ? 'hover:bg-slate-700/50' : ''}
               `}
               aria-label={`Go to image ${idx + 1}`}
-            />
+            >
+              <span
+                className={`
+                  w-2.5 h-2.5 rounded-full transition-all duration-200
+                  ${idx === currentImageIndex
+                    ? 'bg-amber-400 scale-125 shadow-md shadow-amber-400/50'
+                    : idx < currentImageIndex
+                      ? 'bg-amber-400/50'
+                      : `bg-slate-500 ${supportsHover ? 'hover:bg-slate-400' : ''}`
+                  }
+                `}
+              />
+            </button>
           ))}
         </div>
 
@@ -178,59 +257,79 @@ function PictureBookImageDisplay({
               onClick={() => goToImage(currentImageIndex - 1)}
               disabled={currentImageIndex === 0}
               className={`
-                absolute left-2 top-1/2 transform -translate-y-1/2
-                p-2 rounded-full bg-slate-900/80
-                text-slate-300 hover:text-white hover:bg-slate-800
+                absolute left-2 top-1/2 transform -translate-y-1/2 z-20
+                w-11 h-11 rounded-full bg-slate-900/80
+                flex items-center justify-center
+                text-slate-300 ${supportsHover ? 'hover:text-white hover:bg-slate-800' : ''}
                 disabled:opacity-30 disabled:cursor-not-allowed
                 transition-opacity duration-200
-                ${isPlaying ? 'opacity-0 hover:opacity-100' : 'opacity-100'}
+                ${isPlaying && supportsHover ? 'opacity-0 hover:opacity-100' : 'opacity-100'}
               `}
               aria-label="Previous image"
             >
-              <ChevronLeft className="w-6 h-6" />
+              <ChevronLeft className="w-5 h-5" />
             </button>
             <button
               onClick={() => goToImage(currentImageIndex + 1)}
               disabled={currentImageIndex === sortedImages.length - 1}
               className={`
-                absolute right-2 top-1/2 transform -translate-y-1/2
-                p-2 rounded-full bg-slate-900/80
-                text-slate-300 hover:text-white hover:bg-slate-800
+                absolute right-2 top-1/2 transform -translate-y-1/2 z-20
+                w-11 h-11 rounded-full bg-slate-900/80
+                flex items-center justify-center
+                text-slate-300 ${supportsHover ? 'hover:text-white hover:bg-slate-800' : ''}
                 disabled:opacity-30 disabled:cursor-not-allowed
                 transition-opacity duration-200
-                ${isPlaying ? 'opacity-0 hover:opacity-100' : 'opacity-100'}
+                ${isPlaying && supportsHover ? 'opacity-0 hover:opacity-100' : 'opacity-100'}
               `}
               aria-label="Next image"
             >
-              <ChevronRight className="w-6 h-6" />
+              <ChevronRight className="w-5 h-5" />
             </button>
           </>
         )}
 
+        {/* Fullscreen toggle button */}
+        <button
+          onClick={toggleFullscreen}
+          className={`
+            absolute top-3 left-3 z-20
+            w-11 h-11 rounded-full bg-slate-900/70
+            flex items-center justify-center
+            text-slate-300 ${supportsHover ? 'hover:text-white hover:bg-slate-800' : ''}
+            transition-opacity duration-200
+            ${isPlaying && supportsHover ? 'opacity-0 hover:opacity-100' : 'opacity-100'}
+          `}
+          aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+        >
+          {isFullscreen ? (
+            <Minimize2 className="w-5 h-5" />
+          ) : (
+            <Maximize2 className="w-5 h-5" />
+          )}
+        </button>
+
         {/* Playing indicator */}
         {isPlaying && (
-          <div className="absolute top-3 right-3 flex items-center gap-1.5 px-2 py-1 bg-slate-900/70 rounded-full">
+          <div className="absolute top-3 right-3 flex items-center gap-1.5 px-2 py-1 bg-slate-900/70 rounded-full z-20">
             <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
             <span className="text-xs text-slate-300">Auto</span>
+          </div>
+        )}
+
+        {/* Ken Burns indicator (debug, can be removed) */}
+        {enableKenBurns && isPlaying && (
+          <div className="absolute bottom-14 right-3 px-2 py-1 bg-slate-900/50 rounded text-xs text-slate-400 z-20">
+            {kbEffect.replace('ken-burns-', '')} · {kbDuration}s
           </div>
         )}
       </div>
 
       {/* Image counter */}
-      <div className="text-center mt-2 text-slate-500 text-sm">
-        {currentImageIndex + 1} / {sortedImages.length} illustrations
-      </div>
-
-      {/* CSS for animations */}
-      <style>{`
-        .picture-book-display img {
-          transition: opacity 0.5s ease-in-out, transform 0.3s ease-out;
-        }
-
-        .picture-book-display img:hover {
-          transform: scale(1.01);
-        }
-      `}</style>
+      {!isFullscreen && (
+        <div className="text-center mt-2 text-slate-500 text-sm">
+          {currentImageIndex + 1} / {sortedImages.length} illustrations
+        </div>
+      )}
     </div>
   );
 }

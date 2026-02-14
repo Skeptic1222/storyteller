@@ -13,6 +13,67 @@ import logger from '../utils/logger.js';
 import { AUTHOR_STYLES } from './authorStyles.js';
 
 /**
+ * Sensible defaults for when LLM analysis fails
+ * These provide a reasonable starting point for story generation
+ */
+const SENSIBLE_DEFAULTS = {
+  genres: {
+    horror: 0, fantasy: 30, scifi: 0, mystery: 0, romance: 0,
+    erotica: 0, adventure: 50, humor: 20, fairytale: 0,
+    literary: 0, poetry: 0, ya: 0, thriller: 0
+  },
+  intensity: {
+    violence: 20, gore: 0, scary: 10, romance: 10,
+    adultContent: 0, sensuality: 0, explicitness: 0,
+    language: 10, bleakness: 20, sexualViolence: 0
+  },
+  mood: 'exciting',
+  format: 'short_story',
+  story_length: 'medium',
+  audience: 'general',
+  character_count: { estimated: 3, solo_duo_small_medium_large: 'small' },
+  voice_acted: false, // Whether dialogue should have different character voices (voice acting)
+  multi_narrator: false, // DEPRECATED: Use voice_acted - kept for backward compatibility
+  sfx_enabled: false,
+  sfx_level: null,
+  author_style: null,
+  bedtime_mode: false,
+  narrator: {
+    preferred_gender: 'neutral',
+    voice_style: 'dramatic',
+    characteristics: [],
+    tone_descriptors: '',
+    reasoning: 'Default narrator for general storytelling'
+  }
+};
+
+/**
+ * Validate that LLM response has required numeric genre scores
+ * @param {object} analysis - Parsed LLM response
+ * @returns {boolean} - True if valid
+ */
+function validateLLMResponse(analysis) {
+  if (!analysis) return false;
+
+  // Must have genres object with numeric scores
+  if (!analysis.genres || typeof analysis.genres !== 'object') return false;
+
+  // Check that at least some genre values are numbers
+  const genreValues = Object.values(analysis.genres);
+  const hasNumericGenres = genreValues.some(v => typeof v === 'number');
+  if (!hasNumericGenres) {
+    // Check if using old format (primary/secondary strings)
+    if (analysis.genres.primary && typeof analysis.genres.primary === 'string') {
+      logger.warn('[ConfigAnalyzer] LLM returned old format (primary/secondary), converting...');
+      return false; // Will trigger conversion or defaults
+    }
+    return false;
+  }
+
+  return true;
+}
+
+/**
  * Analyze story premise using LLM instead of keyword matching
  * Returns structured analysis with reasoning for all configuration choices
  */
@@ -34,10 +95,21 @@ Analyze the premise and return JSON with the following structure (be precise and
 
 {
   "genres": {
-    "primary": "genre_name (horror|fantasy|scifi|mystery|romance|erotica|adventure|humor|fairytale|literary|poetry|ya|thriller)",
-    "secondary": "optional_secondary_genre or null",
-    "reasoning": "Why these genres fit the premise"
+    "horror": 0-100,
+    "fantasy": 0-100,
+    "scifi": 0-100,
+    "mystery": 0-100,
+    "romance": 0-100,
+    "erotica": 0-100,
+    "adventure": 0-100,
+    "humor": 0-100,
+    "fairytale": 0-100,
+    "literary": 0-100,
+    "poetry": 0-100,
+    "ya": 0-100,
+    "thriller": 0-100
   },
+  "genres_reasoning": "Explain why each non-zero genre was assigned its score",
   "intensity": {
     "violence": 0-100,
     "gore": 0-100,
@@ -63,8 +135,8 @@ Analyze the premise and return JSON with the following structure (be precise and
     "solo_duo_small_medium_large": "solo|duo|small|medium|large",
     "reasoning": "How many distinct characters are suggested"
   },
-  "multi_narrator": true|false,
-  "multi_narrator_reasoning": "Is this dialogue-heavy, ensemble cast, or single POV?",
+  "voice_acted": true|false,
+  "voice_acted_reasoning": "Should dialogue have distinct character voices, or single narrator reads all?",
   "sfx_enabled": true|false,
   "sfx_level": "low|medium|high",
   "sfx_reasoning": "Should sound effects be included and at what intensity?",
@@ -119,9 +191,26 @@ CRITICAL INSTRUCTIONS:
    - DO NOT confuse "between" with "tween" - "between 2 women" means two women, NOT young adult/teen content
 5. Intensity: If premise is detailed about violent/sexual content, rate intensity high. If vague, rate lower.
 6. Format detection: "choices" → CYOA, "episodes" → episodic, "for kids" → picture_book, explicit chapter count → novel/novella
-7. Audience: "for kids" → children, "teen protagonist" → young_adult, ANY sexual content → mature (MANDATORY)
+7. AUDIENCE DETECTION (CRITICAL - READ CAREFULLY):
+   - "children" - ONLY for explicitly child-targeted content. Look for: "bedtime story for kids", "picture book for toddlers", "children's story", "for young children", "preschool"
+   - "general" - DEFAULT for most content including:
+     * "choose your own adventure" (this is a FORMAT, NOT an audience indicator!)
+     * "fairy tale" without explicit child targeting
+     * Standard fantasy/adventure without explicit age indicators
+     * Most stories that don't explicitly target children or contain mature content
+   - "young_adult" - Teen-focused content with: coming-of-age themes, high school setting, teen protagonists without mature content
+   - "mature" - REQUIRED when ANY of these are true:
+     * violence > 60 (graphic violence)
+     * gore > 40 (body horror, dismemberment)
+     * scary > 70 (intense horror)
+     * ANY sexual content or explicit romance
+   - IMPORTANT: Do NOT default to "children" just because a story has whimsical elements, magic, or adventure themes
 8. Character count: Count distinct named characters, estimate if not explicit
-9. Multi-narrator: True if "different voices", "ensemble cast", "dialogue heavy", "full cast recording"; False if "single narrator", "first person", "one perspective"
+9. Voice Acting (voice_acted): SEPARATE FROM NARRATIVE POV! This is about whether dialogue should have different character voices.
+   - TRUE (voice acted): Multiple speaking characters with distinct dialogue, conversation-driven scenes, ensemble stories, any story where hearing different voices enhances the experience
+   - MOST STORIES WITH 3+ CHARACTERS AND DIALOGUE SHOULD BE TRUE - this is standard audiobook practice
+   - FALSE (single narrator reads all): Explicitly requested "single narrator", internal monologue-heavy, primarily narration with minimal dialogue, poetry/prose without characters
+   - NOTE: "first person" and "one POV" refer to NARRATIVE PERSPECTIVE, NOT voice acting - a first-person story CAN still have voice-acted dialogue for other characters
 10. SFX: Enable if mentioned explicitly or implied by format (audio drama → high, quiet fairy tale → low/false)
 11. Author matching: Look for author names, genre keywords that match author specialties, writing style descriptors
 12. Never guess: If unclear, say "low" for any intensity, pick format that fits best, explain reasoning
@@ -279,15 +368,31 @@ Return ONLY valid JSON, no markdown, no explanations outside JSON.`;
       model: 'gpt-5.2',
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.7,
-      max_tokens: 1500,
+      max_tokens: 6000, // Increased from 3000 - extremely long custom prompts (3500+ chars) need very large analysis responses
       agent_name: 'ConfigAnalyzer'
     });
 
     const analysis = parseJsonResponse(response.content);
 
     if (!analysis) {
-      logger.warn('[ConfigAnalyzer] Failed to parse LLM response');
-      return null;
+      logger.warn('[ConfigAnalyzer] Failed to parse LLM response, using sensible defaults');
+      return { ...SENSIBLE_DEFAULTS, llm_failed: true, llm_error: 'parse_failed' };
+    }
+
+    // Validate that LLM returned numeric genre scores
+    if (!validateLLMResponse(analysis)) {
+      logger.warn('[ConfigAnalyzer] Invalid LLM response format, using sensible defaults');
+      // Try to salvage what we can from the response
+      const salvaged = { ...SENSIBLE_DEFAULTS, llm_failed: true, llm_error: 'invalid_format' };
+      // Copy over any valid fields
+      if (analysis.intensity && typeof analysis.intensity === 'object') {
+        salvaged.intensity = { ...salvaged.intensity, ...analysis.intensity };
+      }
+      if (analysis.mood) salvaged.mood = analysis.mood;
+      if (analysis.format) salvaged.format = analysis.format;
+      if (analysis.audience) salvaged.audience = analysis.audience;
+      if (analysis.narrator) salvaged.narrator = analysis.narrator;
+      return salvaged;
     }
 
     logger.info('[ConfigAnalyzer] LLM analysis complete', {
@@ -295,13 +400,14 @@ Return ONLY valid JSON, no markdown, no explanations outside JSON.`;
       genres: analysis.genres,
       intensities: analysis.intensity,
       format: analysis.format,
+      audience: analysis.audience,
       author: analysis.author_style
     });
 
     return analysis;
   } catch (error) {
     logger.error('[ConfigAnalyzer] LLM analysis failed:', error.message);
-    return null;
+    return { ...SENSIBLE_DEFAULTS, llm_failed: true, llm_error: error.message };
   }
 }
 
@@ -328,70 +434,29 @@ function buildAuthorStyleCatalog() {
 }
 
 /**
- * Convert LLM analysis to smartConfig format
- * Bridges gap between new LLM analysis and existing config generation logic
- */
-export function convertLLMAnalysisToKeywordFormat(llmAnalysis) {
-  if (!llmAnalysis) return null;
-
-  return {
-    genres: llmAnalysis.genres?.primary
-      ? { [llmAnalysis.genres.primary]: 85, ...(llmAnalysis.genres.secondary ? { [llmAnalysis.genres.secondary]: 50 } : {}) }
-      : {},
-    intensity: {
-      violence: llmAnalysis.intensity?.violence || 0,
-      gore: llmAnalysis.intensity?.gore || 0,
-      scary: llmAnalysis.intensity?.scary || 0,
-      romance: llmAnalysis.intensity?.romance || 0,
-      adultContent: llmAnalysis.intensity?.adultContent || 0,
-      sensuality: llmAnalysis.intensity?.sensuality || 0,
-      explicitness: llmAnalysis.intensity?.explicitness || 0,
-      language: llmAnalysis.intensity?.language || 0,
-      bleakness: llmAnalysis.intensity?.bleakness || 0,
-      sexualViolence: llmAnalysis.intensity?.sexualViolence || 0
-    },
-    mood: llmAnalysis.mood || null,
-    format: llmAnalysis.format || null,
-    story_length: llmAnalysis.story_length || null,
-    bedtime_mode: llmAnalysis.bedtime_mode || false,
-    audience: llmAnalysis.audience || 'general',
-    multi_narrator: llmAnalysis.multi_narrator || false,
-    sfx_enabled: llmAnalysis.sfx_enabled || false,
-    sfx_level: llmAnalysis.sfx_level || null,
-    character_count: llmAnalysis.character_count ? {
-      estimated: llmAnalysis.character_count.estimated || 3,
-      category: llmAnalysis.character_count.solo_duo_small_medium_large || 'small'
-    } : null,
-    author_style: llmAnalysis.author_style || null,
-    // LLM-based narrator voice recommendation
-    narrator: llmAnalysis.narrator ? {
-      preferred_gender: llmAnalysis.narrator.preferred_gender || 'neutral',
-      voice_style: llmAnalysis.narrator.voice_style || 'dramatic',
-      characteristics: llmAnalysis.narrator.characteristics || [],
-      tone_descriptors: llmAnalysis.narrator.tone_descriptors || '',
-      reasoning: llmAnalysis.narrator.reasoning || ''
-    } : null,
-    detectedKeywords: [
-      llmAnalysis.genres?.primary,
-      llmAnalysis.format,
-      llmAnalysis.mood,
-      llmAnalysis.audience
-    ].filter(Boolean)
-  };
-}
-
-/**
  * Generate reasoning explanation for user
- * Combines keyword and AI reasoning into readable summary
+ * Works with the new numeric genre format
  */
 export function generateReasoningFromLLM(llmAnalysis) {
   if (!llmAnalysis) return 'Unable to analyze premise';
 
   const lines = [];
 
-  if (llmAnalysis.genres) {
-    lines.push(`📚 **Genres**: ${llmAnalysis.genres.primary}${llmAnalysis.genres.secondary ? ` + ${llmAnalysis.genres.secondary}` : ''}`);
-    lines.push(`   ${llmAnalysis.genres.reasoning}`);
+  // Extract top genres from numeric scores
+  if (llmAnalysis.genres && typeof llmAnalysis.genres === 'object') {
+    const topGenres = Object.entries(llmAnalysis.genres)
+      .filter(([key, score]) => typeof score === 'number' && score > 30)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([genre, score]) => `${genre} (${score}%)`)
+      .join(', ');
+
+    if (topGenres) {
+      lines.push(`📚 **Genres**: ${topGenres}`);
+      if (llmAnalysis.genres_reasoning) {
+        lines.push(`   ${llmAnalysis.genres_reasoning}`);
+      }
+    }
   }
 
   if (llmAnalysis.intensity) {
@@ -409,9 +474,14 @@ export function generateReasoningFromLLM(llmAnalysis) {
     lines.push(`   ${llmAnalysis.character_count.reasoning}`);
   }
 
-  if (llmAnalysis.multi_narrator !== undefined) {
-    lines.push(`🎙️ **Narration**: ${llmAnalysis.multi_narrator ? 'Multiple voices' : 'Single narrator'}`);
-    lines.push(`   ${llmAnalysis.multi_narrator_reasoning}`);
+  // Voice acting (check both new and legacy field names)
+  const voiceActed = llmAnalysis.voice_acted ?? llmAnalysis.multi_narrator;
+  const voiceActedReasoning = llmAnalysis.voice_acted_reasoning || llmAnalysis.multi_narrator_reasoning;
+  if (voiceActed !== undefined) {
+    lines.push(`🎭 **Voice Acting**: ${voiceActed ? 'Character voices (dialogue voiced by different speakers)' : 'Single narrator (one voice reads all)'}`);
+    if (voiceActedReasoning) {
+      lines.push(`   ${voiceActedReasoning}`);
+    }
   }
 
   if (llmAnalysis.author_style) {
@@ -426,8 +496,11 @@ export function generateReasoningFromLLM(llmAnalysis) {
   return lines.join('\n');
 }
 
+// Export sensible defaults for external use
+export { SENSIBLE_DEFAULTS };
+
 export default {
   analyzePremiseLLM,
-  convertLLMAnalysisToKeywordFormat,
-  generateReasoningFromLLM
+  generateReasoningFromLLM,
+  SENSIBLE_DEFAULTS
 };

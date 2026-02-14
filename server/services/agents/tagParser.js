@@ -57,7 +57,7 @@ export function parseTaggedProse(prose) {
   logger.info(`[TagParser] ========== TAG PARSING START ==========`);
   logger.info(`[TagParser] INPUT | proseLength: ${prose.length} chars`);
 
-  // Reset regex lastIndex
+// Reset regex lastIndex
   FULL_TAG_PATTERN.lastIndex = 0;
 
   let match;
@@ -224,6 +224,112 @@ export function extractSpeakers(prose) {
 }
 
 /**
+ * MEDIUM-13 FIX: Validate dialogue speakers against character list
+ * Ensures all speakers in dialogue tags correspond to known characters
+ *
+ * @param {string} prose - Prose with [CHAR:Name] tags
+ * @param {Array<Object|string>} characters - Character list (objects with .name or strings)
+ * @param {Object} options - Validation options
+ * @param {boolean} options.strict - If true, return errors; if false, return warnings
+ * @param {boolean} options.allowNarrator - Allow "narrator" as valid speaker
+ * @returns {Object} { valid, speakers, unknownSpeakers, suggestions }
+ */
+export function validateSpeakersAgainstCharacters(prose, characters = [], options = {}) {
+  const { strict = false, allowNarrator = true } = options;
+
+  // Extract speakers from prose
+  const speakers = extractSpeakers(prose);
+
+  if (speakers.length === 0) {
+    return { valid: true, speakers: [], unknownSpeakers: [], suggestions: [] };
+  }
+
+  // Normalize character names to lowercase for comparison
+  const characterNames = characters.map(c => {
+    const name = typeof c === 'string' ? c : (c.name || c.character_name || '');
+    return name.toLowerCase().trim();
+  }).filter(n => n);
+
+  // Build a map for fuzzy matching
+  const characterNameMap = new Map();
+  characters.forEach(c => {
+    const name = typeof c === 'string' ? c : (c.name || c.character_name || '');
+    if (name) {
+      characterNameMap.set(name.toLowerCase().trim(), name);
+    }
+  });
+
+  const unknownSpeakers = [];
+  const suggestions = [];
+
+  for (const speaker of speakers) {
+    const speakerLower = speaker.toLowerCase().trim();
+
+    // Skip narrator if allowed
+    if (allowNarrator && speakerLower === 'narrator') {
+      continue;
+    }
+
+    // Check exact match
+    if (characterNames.includes(speakerLower)) {
+      continue;
+    }
+
+    // Check partial match (first name, nickname, etc.)
+    let foundMatch = false;
+    for (const [charNameLower, charNameOriginal] of characterNameMap) {
+      // Check if speaker is part of character name or vice versa
+      if (charNameLower.includes(speakerLower) || speakerLower.includes(charNameLower)) {
+        foundMatch = true;
+        suggestions.push({
+          speaker,
+          suggestion: charNameOriginal,
+          confidence: 'partial_match',
+          reason: `"${speaker}" may be a variant of "${charNameOriginal}"`
+        });
+        break;
+      }
+
+      // Check Levenshtein-like similarity (simple version)
+      if (speakerLower.length > 3 && charNameLower.length > 3) {
+        const shorter = speakerLower.length < charNameLower.length ? speakerLower : charNameLower;
+        const longer = speakerLower.length >= charNameLower.length ? speakerLower : charNameLower;
+        if (longer.includes(shorter.substring(0, Math.ceil(shorter.length * 0.7)))) {
+          foundMatch = true;
+          suggestions.push({
+            speaker,
+            suggestion: charNameOriginal,
+            confidence: 'fuzzy_match',
+            reason: `"${speaker}" is similar to "${charNameOriginal}"`
+          });
+          break;
+        }
+      }
+    }
+
+    if (!foundMatch) {
+      unknownSpeakers.push(speaker);
+      logger.warn(`[TagParser] UNKNOWN_SPEAKER | speaker: "${speaker}" | knownCharacters: ${characterNames.slice(0, 5).join(', ')}${characterNames.length > 5 ? '...' : ''}`);
+    }
+  }
+
+  const isValid = strict ? unknownSpeakers.length === 0 : true;
+
+  if (unknownSpeakers.length > 0) {
+    const logFn = strict ? logger.error.bind(logger) : logger.warn.bind(logger);
+    logFn(`[TagParser] SPEAKER_VALIDATION | unknown: ${unknownSpeakers.length} | speakers: ${unknownSpeakers.join(', ')}`);
+  }
+
+  return {
+    valid: isValid,
+    speakers,
+    unknownSpeakers,
+    suggestions,
+    characterCount: characterNames.length
+  };
+}
+
+/**
  * Check if prose contains any [CHAR] tags
  *
  * @param {string} prose - Prose to check
@@ -290,9 +396,10 @@ export function stripTags(prose, options = {}) {
         if (/^[""\u201C]/.test(trimmedDialogue)) return trimmedDialogue; // Already has opening quote
         return `"${trimmedDialogue}"`;
       })
-      // Also strip ElevenLabs audio/prosody tags: [whispers], [softly], [dramatically], etc.
+      // Also strip ElevenLabs audio/prosody tags: [whispers], [softly], [dramatically], [pause:1s], etc.
       // Pattern matches [word] or [multiple words] - lowercase letters, spaces, hyphens, apostrophes
-      .replace(/\[[a-z][a-z\s\-']*\]/gi, '')
+      // FIXED: Include colons, numbers, and decimals for pause tags like [pause:1s] or [pause:0.5s]
+      .replace(/\[[a-z][a-z\s\-':0-9.]*\]/gi, '')
       .replace(/\s+/g, ' ')
       .trim();
   } else {
@@ -300,8 +407,8 @@ export function stripTags(prose, options = {}) {
     result = prose
       .replace(/\[CHAR:[^\]]+\]/g, '')
       .replace(/\[\/CHAR\]/g, '')
-      // Also strip ElevenLabs audio/prosody tags
-      .replace(/\[[a-z][a-z\s\-']*\]/gi, '')
+      // Also strip ElevenLabs audio/prosody tags (including pause tags like [pause:1s])
+      .replace(/\[[a-z][a-z\s\-':0-9.]*\]/gi, '')
       .replace(/\s+/g, ' ')
       .trim();
   }
@@ -318,8 +425,8 @@ export function stripTags(prose, options = {}) {
  * Add [CHAR] tags around quoted dialogue in plain prose
  * This is a helper for migration from position-based to tag-based format
  *
- * NOTE: This is a simple regex-based approach for migration only.
- * New content should be generated with tags directly from the LLM.
+ * NOTE: This regex-based migration is deprecated for premium flows.
+ * Fail loud if used in premium (LLM must emit tags directly).
  *
  * @param {string} prose - Plain prose with quoted dialogue
  * @param {Array} dialogueMap - Position-based dialogue_map
@@ -329,6 +436,9 @@ export function addTagsFromDialogueMap(prose, dialogueMap) {
   if (!prose || !dialogueMap || dialogueMap.length === 0) {
     return prose;
   }
+
+  // Premium policy: do not rely on regex migration
+  throw new Error('[TagParser] addTagsFromDialogueMap is disabled in premium mode; generate tags via LLM');
 
   logger.info(`[TagParser] MIGRATION | adding tags from ${dialogueMap.length} dialogue_map entries`);
 
@@ -521,6 +631,7 @@ export default {
   parseTaggedProse,
   validateTagBalance,
   validateAndRepairTags,
+  validateSpeakersAgainstCharacters,  // MEDIUM-13: Speaker validation
   repairTags,
   extractSpeakers,
   hasCharacterTags,

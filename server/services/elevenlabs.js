@@ -6,18 +6,19 @@
 import axios from 'axios';
 import crypto from 'crypto';
 import { existsSync, mkdirSync } from 'fs';
-import { writeFile, readFile } from 'fs/promises';
+import { writeFile, readFile, readdir, stat, unlink } from 'fs/promises';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import { pool } from '../database/pool.js';
-import { logger } from '../utils/logger.js';
+import { logger, logAlert } from '../utils/logger.js';
 import { withRetry } from '../utils/apiRetry.js';
 import * as usageTracker from './usageTracker.js';
 import * as ttsGating from './ttsGating.js';
 import { detectEmotionsForSegments } from './agents/emotionValidatorAgent.js';
 import { getNarratorDeliveryDirectives } from './agents/narratorDeliveryAgent.js';
 import { directVoiceActing } from './agents/voiceDirectorAgent.js';
+import { getArchetype } from './narratorArchetypes.js';
 import { assembleMultiVoiceAudio, ASSEMBLY_PRESETS, checkFFmpegAvailable } from './audioAssembler.js';
 import { DEFAULT_NARRATOR_VOICE_ID } from '../constants/voices.js';
 import { cache } from './cache.js';
@@ -36,38 +37,42 @@ const AUDIO_CACHE_DIR = process.env.AUDIO_CACHE_DIR || join(__dirname, '..', '..
 
 // Curated list of recommended storytelling voices (ElevenLabs free + premium defaults)
 // These are organized by style and gender for the UI
+// VOICE AGE METADATA (2026-01-31):
+//   - age_group: What age the voice sounds like (child, teen, young_adult, adult, middle_aged, elderly)
+//   - can_be_child: Whether suitable for voicing child characters (under 13)
+//   - suitable_ages: Array of character age groups this voice works well for
 export const RECOMMENDED_VOICES = {
   male_narrators: [
-    { voice_id: 'JBFqnCBsd6RMkjVDRZzb', name: 'George', style: 'warm', gender: 'male', description: 'Warm British narrator, perfect for classic tales' },
-    { voice_id: 'onwK4e9ZLuTAKqWW03F9', name: 'Daniel', style: 'authoritative', gender: 'male', description: 'Deep authoritative British accent' },
-    { voice_id: 'N2lVS1w4EtoT3dr4eOWO', name: 'Callum', style: 'gravelly', gender: 'male', description: 'Gravelly Transatlantic, great for D&D' },
-    { voice_id: 'TxGEqnHWrfWFTfGW9XjX', name: 'Josh', style: 'deep', gender: 'male', description: 'Deep American male' },
-    { voice_id: 'VR6AewLTigWG4xSOukaG', name: 'Arnold', style: 'crisp', gender: 'male', description: 'Crisp American narrator' },
-    { voice_id: 'pNInz6obpgDQGcFmaJgB', name: 'Adam', style: 'middle', gender: 'male', description: 'Deep middle-aged American' },
-    { voice_id: 'yoZ06aMxZJJ28mfd3POQ', name: 'Sam', style: 'raspy', gender: 'male', description: 'Raspy American, great for mystery' }
+    { voice_id: 'JBFqnCBsd6RMkjVDRZzb', name: 'George', style: 'warm', gender: 'male', description: 'Warm British narrator, perfect for classic tales', age_group: 'middle_aged', can_be_child: false, suitable_ages: ['adult', 'middle_aged', 'elderly'] },
+    { voice_id: 'onwK4e9ZLuTAKqWW03F9', name: 'Daniel', style: 'authoritative', gender: 'male', description: 'Deep authoritative British accent', age_group: 'adult', can_be_child: false, suitable_ages: ['adult', 'middle_aged', 'elderly'] },
+    { voice_id: 'N2lVS1w4EtoT3dr4eOWO', name: 'Callum', style: 'gravelly', gender: 'male', description: 'Gravelly Transatlantic, great for D&D', age_group: 'adult', can_be_child: false, suitable_ages: ['adult', 'middle_aged'] },
+    { voice_id: 'TxGEqnHWrfWFTfGW9XjX', name: 'Josh', style: 'deep', gender: 'male', description: 'Deep American male', age_group: 'adult', can_be_child: false, suitable_ages: ['adult', 'middle_aged'] },
+    { voice_id: 'VR6AewLTigWG4xSOukaG', name: 'Arnold', style: 'crisp', gender: 'male', description: 'Crisp American narrator', age_group: 'adult', can_be_child: false, suitable_ages: ['young_adult', 'adult', 'middle_aged'] },
+    { voice_id: 'pNInz6obpgDQGcFmaJgB', name: 'Adam', style: 'middle', gender: 'male', description: 'Deep middle-aged American', age_group: 'middle_aged', can_be_child: false, suitable_ages: ['adult', 'middle_aged', 'elderly'] },
+    { voice_id: 'yoZ06aMxZJJ28mfd3POQ', name: 'Sam', style: 'raspy', gender: 'male', description: 'Raspy American, great for mystery', age_group: 'adult', can_be_child: false, suitable_ages: ['adult', 'middle_aged', 'elderly'] }
   ],
   female_narrators: [
-    { voice_id: 'EXAVITQu4vr4xnSDxMaL', name: 'Bella', style: 'soft', gender: 'female', description: 'Soft American female, ideal for calm stories' },
-    { voice_id: 'XB0fDUnXU5powFXDhCwa', name: 'Charlotte', style: 'seductive', gender: 'female', description: 'Swedish seductive voice' },
-    { voice_id: 'pFZP5JQG7iQjIQuC4Bku', name: 'Lily', style: 'British', gender: 'female', description: 'British warm narrator' },
-    { voice_id: 'jBpfuIE2acCO8z3wKNLl', name: 'Gigi', style: 'young', gender: 'female', description: 'Young American female, great for YA' },
-    { voice_id: 'ThT5KcBeYPX3keUQqHPh', name: 'Dorothy', style: 'pleasant', gender: 'female', description: 'Pleasant British storyteller' },
-    { voice_id: 'MF3mGyEYCl7XYWbV9V6O', name: 'Elli', style: 'emotional', gender: 'female', description: 'Emotional American female' },
-    { voice_id: 'oWAxZDx7w5VEj9dCyTzz', name: 'Grace', style: 'gentle', gender: 'female', description: 'Gentle Southern American' }
+    { voice_id: 'EXAVITQu4vr4xnSDxMaL', name: 'Bella', style: 'soft', gender: 'female', description: 'Soft American female, ideal for calm stories', age_group: 'adult', can_be_child: false, suitable_ages: ['young_adult', 'adult', 'middle_aged'] },
+    { voice_id: 'XB0fDUnXU5powFXDhCwa', name: 'Charlotte', style: 'seductive', gender: 'female', description: 'Swedish seductive voice', age_group: 'adult', can_be_child: false, suitable_ages: ['young_adult', 'adult'] },
+    { voice_id: 'pFZP5JQG7iQjIQuC4Bku', name: 'Lily', style: 'British', gender: 'female', description: 'British warm narrator', age_group: 'adult', can_be_child: false, suitable_ages: ['young_adult', 'adult', 'middle_aged'] },
+    { voice_id: 'jBpfuIE2acCO8z3wKNLl', name: 'Gigi', style: 'young', gender: 'female', description: 'Young American female, great for YA', age_group: 'young', can_be_child: true, suitable_ages: ['child', 'teen', 'young_adult'] },
+    { voice_id: 'ThT5KcBeYPX3keUQqHPh', name: 'Dorothy', style: 'pleasant', gender: 'female', description: 'Pleasant British storyteller', age_group: 'middle_aged', can_be_child: false, suitable_ages: ['adult', 'middle_aged', 'elderly'] },
+    { voice_id: 'MF3mGyEYCl7XYWbV9V6O', name: 'Elli', style: 'emotional', gender: 'female', description: 'Emotional American female', age_group: 'young_adult', can_be_child: false, suitable_ages: ['teen', 'young_adult', 'adult'] },
+    { voice_id: 'oWAxZDx7w5VEj9dCyTzz', name: 'Grace', style: 'gentle', gender: 'female', description: 'Gentle Southern American', age_group: 'adult', can_be_child: false, suitable_ages: ['adult', 'middle_aged', 'elderly'] }
   ],
   character_voices: [
-    { voice_id: 'IKne3meq5aSn9XLyUdCD', name: 'Charlie', style: 'Australian', gender: 'male', description: 'Friendly Australian male' },
-    { voice_id: 'g5CIjZEefAph4nQFvHAz', name: 'Ethan', style: 'young', gender: 'male', description: 'Young American male' },
-    { voice_id: 'cjVigY5qzO86Huf0OWal', name: 'Eric', style: 'friendly', gender: 'male', description: 'Friendly middle-aged American' },
-    { voice_id: 'ODq5zmih8GrVes37Dizd', name: 'Patrick', style: 'shouty', gender: 'male', description: 'Shouty American, great for action' },
-    { voice_id: 'SOYHLrjzK2X1ezoPC6cr', name: 'Harry', style: 'anxious', gender: 'male', description: 'Anxious young British male' },
-    { voice_id: 'GBv7mTt0atIp3Br8iCZE', name: 'Thomas', style: 'calm', gender: 'male', description: 'Calm American male' }
+    { voice_id: 'IKne3meq5aSn9XLyUdCD', name: 'Charlie', style: 'Australian', gender: 'male', description: 'Friendly Australian male', age_group: 'young_adult', can_be_child: false, suitable_ages: ['teen', 'young_adult', 'adult'] },
+    { voice_id: 'g5CIjZEefAph4nQFvHAz', name: 'Ethan', style: 'young', gender: 'male', description: 'Young American male', age_group: 'young', can_be_child: true, suitable_ages: ['child', 'teen', 'young_adult'] },
+    { voice_id: 'cjVigY5qzO86Huf0OWal', name: 'Eric', style: 'friendly', gender: 'male', description: 'Friendly middle-aged American', age_group: 'middle_aged', can_be_child: false, suitable_ages: ['adult', 'middle_aged'] },
+    { voice_id: 'ODq5zmih8GrVes37Dizd', name: 'Patrick', style: 'shouty', gender: 'male', description: 'Shouty American, great for action', age_group: 'adult', can_be_child: false, suitable_ages: ['adult', 'middle_aged'] },
+    { voice_id: 'SOYHLrjzK2X1ezoPC6cr', name: 'Harry', style: 'anxious', gender: 'male', description: 'Anxious young British male', age_group: 'young', can_be_child: true, suitable_ages: ['child', 'teen', 'young_adult'] },
+    { voice_id: 'GBv7mTt0atIp3Br8iCZE', name: 'Thomas', style: 'calm', gender: 'male', description: 'Calm American male', age_group: 'adult', can_be_child: false, suitable_ages: ['young_adult', 'adult', 'middle_aged'] }
   ],
   expressive_voices: [
-    { voice_id: 'XrExE9yKIg1WjnnlVkGX', name: 'Matilda', style: 'warm', gender: 'female', description: 'Warm American, great for children\'s stories' },
-    { voice_id: 'CYw3kZ02Hs0563khs1Fj', name: 'Dave', style: 'conversational', gender: 'male', description: 'Conversational British-Essex' },
-    { voice_id: 'FGY2WhTYpPnrIDTdsKH5', name: 'Laura', style: 'upbeat', gender: 'female', description: 'Upbeat American female' },
-    { voice_id: 'TX3LPaxmHKxFdv7VOQHJ', name: 'Liam', style: 'articulate', gender: 'male', description: 'Articulate American male' }
+    { voice_id: 'XrExE9yKIg1WjnnlVkGX', name: 'Matilda', style: 'warm', gender: 'female', description: 'Warm American, great for children\'s stories', age_group: 'young', can_be_child: true, suitable_ages: ['child', 'teen', 'young_adult'] },
+    { voice_id: 'CYw3kZ02Hs0563khs1Fj', name: 'Dave', style: 'conversational', gender: 'male', description: 'Conversational British-Essex', age_group: 'adult', can_be_child: false, suitable_ages: ['young_adult', 'adult'] },
+    { voice_id: 'FGY2WhTYpPnrIDTdsKH5', name: 'Laura', style: 'upbeat', gender: 'female', description: 'Upbeat American female', age_group: 'young_adult', can_be_child: true, suitable_ages: ['child', 'teen', 'young_adult', 'adult'] },
+    { voice_id: 'TX3LPaxmHKxFdv7VOQHJ', name: 'Liam', style: 'articulate', gender: 'male', description: 'Articulate American male', age_group: 'adult', can_be_child: false, suitable_ages: ['young_adult', 'adult', 'middle_aged'] }
   ]
 };
 
@@ -176,103 +181,372 @@ export const VOICE_PRESETS = {
 };
 
 // =============================================================================
-// AUDIO TAGS MAPPING - For eleven_v3 model (2025-12-09)
+// V3 AUDIO TAGS - OFFICIAL ElevenLabs V3 Tags (2025-01-27)
 // =============================================================================
-// Maps emotions to v3 Audio Tags. These produce 300% better quality than
-// using v2 voice_settings parameters.
-// See VOICE_PROSODY_SYSTEM.md for full documentation.
+// CRITICAL: ElevenLabs V3 model ONLY supports these 8 official tags.
+// Any other tags are SILENTLY IGNORED by the API.
+// See: https://elevenlabs.io/docs/speech-synthesis/audio-tags
 // =============================================================================
-export const EMOTION_TO_AUDIO_TAGS = {
-  // Volume/Delivery
-  whispered: '[whispers]',
-  hushed: '[whispers][urgently]',
-  murmured: '[softly][quietly]',
-  shouted: '[shouts]',
-  yelled: '[shouts][intensely]',
-  bellowed: '[shouts][deeply]',
+export const V3_OFFICIAL_TAGS = ['excited', 'sad', 'angry', 'calm', 'fearful', 'surprised', 'whisper', 'shouting'];
 
-  // Fear spectrum
-  fearful: '[fearfully]',
-  terrified: '[terrified][panicking]',
-  nervous: '[nervously]',
+/**
+ * V3-Compliant emotion mapping - maps emotions to ONLY official V3 tags
+ * Non-official tags were being silently ignored by the API
+ */
+export const EMOTION_TO_V3_TAG = {
+  // Direct V3 tags (1:1 mapping)
+  excited: '[excited]',
+  sad: '[sad]',
+  angry: '[angry]',
+  calm: '[calm]',
+  fearful: '[fearful]',
+  surprised: '[surprised]',
+  whisper: '[whisper]',
+  shouting: '[shouting]',
 
-  // Anger spectrum
-  angry: '[angrily]',
-  furious: '[angrily][with barely contained rage]',
+  // Volume/Delivery → V3 equivalents
+  whispered: '[whisper]',
+  hushed: '[whisper]',
+  murmured: '[whisper]',
+  shouted: '[shouting]',
+  yelled: '[shouting]',
+  bellowed: '[shouting]',
 
-  // Sadness spectrum
-  sad: '[sadly]',
-  grieving: '[grief-stricken][voice breaking]',
-  melancholy: '[sadly][wistfully]',
+  // Fear spectrum → fearful
+  terrified: '[fearful]',
+  nervous: '[fearful]',
+  anxious: '[fearful]',
+  panicked: '[fearful]',
 
-  // Joy spectrum
-  excited: '[excitedly]',
-  joyful: '[joyfully][laughing]',
-  triumphant: '[triumphantly]',
+  // Anger spectrum → angry
+  furious: '[angry]',
+  enraged: '[angry]',
+  irritated: '[angry]',
 
-  // Tenderness spectrum
-  tender: '[tenderly]',
-  loving: '[lovingly][softly]',
-  comforting: '[gently][reassuringly]',
+  // Sadness spectrum → sad
+  grieving: '[sad]',
+  melancholy: '[sad]',
+  mournful: '[sad]',
+  devastated: '[sad]',
 
-  // Menace spectrum
-  threatening: '[menacingly]',
-  menacing: '[coldly][with quiet menace]',
-  sinister: '[darkly][ominously]',
+  // Joy spectrum → excited
+  joyful: '[excited]',
+  triumphant: '[excited]',
+  happy: '[excited]',
+  elated: '[excited]',
+  ecstatic: '[excited]',
 
-  // Horror/Violence intensity (for mature content)
-  brutal: '[savagely][with deadly intensity]',
-  bloodthirsty: '[with cold fury][snarling]',
-  agonized: '[in agony][screaming]',
-  tormented: '[voice breaking][through gritted teeth]',
-  predatory: '[with quiet menace][hungrily]',
-  unhinged: '[madly][with crazed intensity]',
-  chilling: '[icily][with terrifying calm]',
+  // Calm spectrum → calm
+  tender: '[calm]',
+  loving: '[calm]',
+  comforting: '[calm]',
+  peaceful: '[calm]',
+  gentle: '[calm]',
+  warm: '[calm]',
+  soothing: '[calm]',
 
-  // Intimate/Romantic intensity (for mature content)
-  passionate: '[passionately][breathlessly]',
-  sensual: '[sensually][with desire]',
-  intimate: '[intimately][softly]',
-  yearning: '[with longing][breathlessly]',
-  heated: '[huskily][with building tension]',
+  // Menace spectrum → combinations
+  threatening: '[angry][whisper]',
+  menacing: '[angry][whisper]',
+  sinister: '[fearful][whisper]',
 
-  // Complex emotions
-  sarcastic: '[sarcastically]',
-  mocking: '[mockingly][laughs]',
-  dry: '[dryly]',
-  questioning: '[curiously]',
-  uncertain: '[uncertainly][hesitantly]',
-  confused: '[confusedly]',
-  desperate: '[desperately][pleading]',
-  resigned: '[resignedly][sighs]',
-  exhausted: '[wearily][tiredly]',
-  relieved: '[with relief][sighs]',
-  bitter: '[bitterly]',
-  wistful: '[wistfully][nostalgically]',
-  awestruck: '[in awe][breathlessly]',
-  defiant: '[defiantly]',
-  pleading: '[pleadingly][desperately]',
-  commanding: '[authoritatively][firmly]',
-  seductive: '[seductively][softly]',
-  reverent: '[reverently][solemnly]',
+  // Horror intensity → fearful combinations
+  brutal: '[angry][shouting]',
+  bloodthirsty: '[angry]',
+  agonized: '[fearful][shouting]',
+  tormented: '[sad][fearful]',
+  predatory: '[angry][whisper]',
+  unhinged: '[excited][angry]',
+  chilling: '[fearful][whisper]',
+
+  // Intimate → calm
+  passionate: '[excited]',
+  sensual: '[calm][whisper]',
+  intimate: '[calm][whisper]',
+  yearning: '[sad]',
+  heated: '[excited]',
+
+  // Complex emotions → best V3 match
+  sarcastic: '[calm]',        // Dry delivery
+  mocking: '[excited]',       // Amused tone
+  dry: '[calm]',              // Understated
+  questioning: '[surprised]',
+  uncertain: '[fearful]',
+  confused: '[surprised]',
+  desperate: '[fearful][shouting]',
+  resigned: '[sad]',
+  exhausted: '[sad][whisper]',
+  relieved: '[calm]',
+  bitter: '[angry][whisper]',
+  wistful: '[sad][calm]',
+  awestruck: '[surprised]',
+  defiant: '[angry]',
+  pleading: '[sad][fearful]',
+  commanding: '[shouting]',
+  seductive: '[calm][whisper]',
+  reverent: '[calm][whisper]',
 
   // Story mood presets
-  calm_bedtime: '[softly][gently]',
-  dramatic: '[dramatically]',
-  playful: '[playfully]',
-  mysterious: '[mysteriously]',
-  action: '[urgently][intensely]',
-  horror: '[ominously][darkly]',
+  calm_bedtime: '[calm]',
+  dramatic: '[excited]',
+  playful: '[excited]',
+  mysterious: '[whisper][fearful]',
+  action: '[excited][shouting]',
+  horror: '[fearful][whisper]',
 
-  // Narrator styles
-  warm_gentle: '[warmly][gently]',
-  dramatic_theatrical: '[dramatically][theatrically]',
-  playful_energetic: '[playfully][energetically]',
-  mysterious_dark: '[mysteriously][darkly]',
+  // Narrator styles → V3 equivalents
+  warm_gentle: '[calm]',
+  dramatic_theatrical: '[excited]',
+  playful_energetic: '[excited]',
+  mysterious_dark: '[whisper][fearful]',
 
   // Default
   neutral: ''  // No tags for neutral delivery
 };
+
+// DEPRECATED: Legacy alias - use EMOTION_TO_V3_TAG directly instead
+// Kept as simple alias for backwards compatibility (no Proxy overhead)
+export const EMOTION_TO_AUDIO_TAGS = EMOTION_TO_V3_TAG;
+
+const hasBracketTags = (value) => typeof value === 'string' && /\[[^\]]+\]/.test(value);
+
+/**
+ * Ensure audio tags are V3-compliant by filtering to only official tags
+ * Non-V3 tags are silently removed to prevent API ignoring them
+ *
+ * @param {string} tags - Tag string like "[excited][happy][whisper]"
+ * @returns {string} V3-compliant tags like "[excited][whisper]"
+ */
+export function ensureV3Compliant(tags) {
+  if (!tags || typeof tags !== 'string') return '';
+
+  const matches = tags.match(/\[([^\]]+)\]/g) || [];
+  const v3Tags = matches.filter(tag => {
+    const tagName = tag.replace(/[\[\]]/g, '').toLowerCase();
+    return V3_OFFICIAL_TAGS.includes(tagName);
+  });
+
+  if (v3Tags.length !== matches.length) {
+    const removed = matches.filter(t => !v3Tags.includes(t));
+    logger.debug(`[ElevenLabs V3] Removed non-compliant tags: ${removed.join(', ')} | kept: ${v3Tags.join('')}`);
+  }
+
+  return v3Tags.join('');
+}
+
+// =============================================================================
+// P0 CRITICAL: Role-Based Stability Assignment
+// =============================================================================
+// TTD endpoint ONLY accepts stability values: 0.0, 0.5, or 1.0
+// Assign stability based on speaker role for optimal voice acting:
+// - Narrator: 1.0 (Robust) - Consistent, professional delivery
+// - Emotional characters: 0.0 (Creative) - Maximum expressiveness
+// - Default characters: 0.5 (Natural) - Balanced delivery
+// =============================================================================
+
+/**
+ * Quantize stability value to valid TTD values: 0.0, 0.5, or 1.0
+ * TTD endpoint REJECTS any other values with HTTP 400
+ *
+ * DEFENSIVE: Handles undefined, NaN, and out-of-range values safely
+ *
+ * @param {number} value - Raw stability value (0.0 to 1.0)
+ * @returns {number} Quantized value: 0.0, 0.5, or 1.0
+ */
+function quantizeTTDStability(value) {
+  // DEFENSIVE: Handle invalid inputs
+  if (value === undefined || value === null || typeof value !== 'number' || Number.isNaN(value)) {
+    logger.warn(`[ElevenLabs TTD] Invalid stability input: ${value} (type: ${typeof value}), defaulting to 0.5`);
+    return 0.5; // Natural - safe default
+  }
+
+  // Clamp to valid range first
+  const clamped = Math.max(0.0, Math.min(1.0, value));
+
+  // Quantize to valid TTD values
+  if (clamped <= 0.25) return 0.0; // Creative
+  if (clamped <= 0.75) return 0.5; // Natural
+  return 1.0; // Robust
+}
+
+/**
+ * High-intensity emotions that should trigger Creative stability (0.0)
+ * These benefit from maximum expressiveness
+ */
+const HIGH_INTENSITY_EMOTIONS = [
+  'fearful', 'terrified', 'angry', 'furious', 'excited', 'sad', 'grieving',
+  'desperate', 'agonized', 'passionate', 'bloodthirsty', 'unhinged',
+  'panicked', 'enraged', 'ecstatic', 'devastated'
+];
+
+/**
+ * High-intensity emotion tags that should trigger Creative stability (0.0)
+ * for BOTH narrator and dialogue characters
+ */
+const HIGH_EMOTION_TAGS = [
+  'terrified', 'horrified', 'anguished', 'desperate', 'frantic',
+  'ecstatic', 'furious', 'sobbing', 'screaming', 'panicked',
+  'enraged', 'devastated', 'hysterical', 'bloodthirsty', 'unhinged'
+];
+
+/**
+ * Medium-intensity emotion tags that should trigger Natural-Creative stability
+ */
+const MEDIUM_EMOTION_TAGS = [
+  'fearful', 'anxious', 'excited', 'angry', 'sad', 'surprised',
+  'tense', 'urgent', 'dramatic', 'ominous', 'foreboding',
+  'menacing', 'threatening', 'passionate', 'intense', 'grieving'
+];
+
+/**
+ * Low-intensity/neutral tags - more stable delivery
+ */
+const LOW_EMOTION_TAGS = [
+  'calm', 'measured', 'gentle', 'warm', 'soft', 'reflective',
+  'contemplative', 'peaceful', 'tender', 'soothing'
+];
+
+/**
+ * Extract emotion tags from various segment/direction sources
+ */
+function extractEmotionTags(segment, voiceDirection) {
+  const tags = new Set();
+
+  // From voiceDirection tags array
+  if (voiceDirection?.tags) {
+    voiceDirection.tags.forEach(t => tags.add(t.toLowerCase().replace(/[\[\]]/g, '')));
+  }
+
+  // From segment's voiceDirection
+  if (segment?.voiceDirection?.tags) {
+    segment.voiceDirection.tags.forEach(t => tags.add(t.toLowerCase().replace(/[\[\]]/g, '')));
+  }
+
+  // From v3AudioTags string (e.g., "[fearful][urgent]")
+  const v3Tags = segment?.v3AudioTags || segment?.v3Tags || voiceDirection?.v3AudioTags || '';
+  if (v3Tags) {
+    const matches = v3Tags.match(/\[([^\]]+)\]/g) || [];
+    matches.forEach(m => tags.add(m.replace(/[\[\]]/g, '').toLowerCase()));
+  }
+
+  // From delivery string
+  const delivery = segment?.delivery || voiceDirection?.delivery || '';
+  if (delivery) {
+    const matches = delivery.match(/\[([^\]]+)\]/g) || [];
+    matches.forEach(m => tags.add(m.replace(/[\[\]]/g, '').toLowerCase()));
+  }
+
+  // From direct emotion fields
+  if (segment?.emotion) tags.add(segment.emotion.toLowerCase());
+  if (voiceDirection?.primaryEmotion) tags.add(voiceDirection.primaryEmotion.toLowerCase());
+  if (voiceDirection?.emotions) {
+    voiceDirection.emotions.forEach(e => tags.add(e.toLowerCase()));
+  }
+
+  return tags;
+}
+
+/**
+ * Get role-based stability for TTD endpoint
+ *
+ * IMPORTANT: Narrator stability is now CONTEXT-AWARE, not hardcoded to 1.0.
+ * This enables expressive narrator delivery for horror, thriller, drama, etc.
+ *
+ * @param {object} segment - The segment being processed
+ * @param {object} voiceDirection - Voice direction data (v3Tags, emotions, intensity)
+ * @param {object} options - Additional options (genre, genreProfile)
+ * @returns {number} TTD stability: 0.0 (Creative), 0.5 (Natural), or 1.0 (Robust)
+ */
+export function getStabilityForRole(segment, voiceDirection = {}, options = {}) {
+  const isNarrator = segment?.speaker === 'narrator' || options.isNarrator === true;
+  const emotionTags = extractEmotionTags(segment, voiceDirection);
+
+  // Log for debugging narrator expressiveness
+  if (isNarrator && emotionTags.size > 0) {
+    logger.debug(`[ElevenLabs] Narrator stability check | tags: ${[...emotionTags].join(', ')}`);
+  }
+
+  // Check for high-intensity emotions - Creative stability (0.0) for both narrator and dialogue
+  if (HIGH_EMOTION_TAGS.some(t => emotionTags.has(t))) {
+    const result = isNarrator ? 0.0 : 0.0; // Creative for maximum expressiveness
+    logger.debug(`[ElevenLabs] HIGH_EMOTION stability=${result} | speaker=${segment?.speaker} | tags: ${[...emotionTags].join(', ')}`);
+    return result;
+  }
+
+  // Check for medium-intensity emotions
+  if (MEDIUM_EMOTION_TAGS.some(t => emotionTags.has(t))) {
+    // Narrator gets slightly higher stability (0.35) to maintain some consistency
+    // Dialogue characters get lower (0.3) for more variation
+    const result = isNarrator ? 0.35 : 0.3;
+    logger.debug(`[ElevenLabs] MEDIUM_EMOTION stability=${result} | speaker=${segment?.speaker} | tags: ${[...emotionTags].join(', ')}`);
+    return result;
+  }
+
+  // Check for low-intensity/neutral emotions
+  if (LOW_EMOTION_TAGS.some(t => emotionTags.has(t))) {
+    const result = isNarrator ? 0.5 : 0.4;
+    logger.debug(`[ElevenLabs] LOW_EMOTION stability=${result} | speaker=${segment?.speaker}`);
+    return result;
+  }
+
+  // Check for high-intensity voice direction metadata
+  if (voiceDirection?.intensity === 'high' || voiceDirection?.emotionalIntensity === 'high') {
+    return isNarrator ? 0.2 : 0.0; // Creative
+  }
+
+  // Check for extracted emotional cues from speechTagFilterAgent
+  if (segment?.extractedEmotionalCues?.intensity === 'high') {
+    return isNarrator ? 0.2 : 0.0; // Creative
+  }
+
+  // Check for delivery modes that need expressiveness
+  if (segment?.deliveryMode === 'whisper' || segment?.deliveryMode === 'shouting') {
+    return 0.0; // Creative - whispers/shouts need natural variation
+  }
+  if (voiceDirection?.delivery === 'whisper' || voiceDirection?.delivery === 'shout') {
+    return 0.0; // Creative
+  }
+
+  // Check for high-intensity emotions from direct fields
+  const emotions = [
+    segment?.emotion,
+    segment?.extractedEmotionalCues?.emotions?.[0],
+    voiceDirection?.primaryEmotion,
+    ...(voiceDirection?.emotions || [])
+  ].filter(Boolean).map(e => e.toLowerCase());
+
+  if (emotions.some(e => HIGH_INTENSITY_EMOTIONS.includes(e))) {
+    return isNarrator ? 0.2 : 0.0; // Creative - maximum expressiveness for intense emotions
+  }
+
+  // Check v3AudioTags for emotional content (fallback for legacy format)
+  const v3Tags = segment?.v3AudioTags || segment?.v3Tags || voiceDirection?.v3AudioTags || '';
+  if (v3Tags && (
+    v3Tags.includes('[fearful') || v3Tags.includes('[angry') ||
+    v3Tags.includes('[terrified') || v3Tags.includes('[desperate') ||
+    v3Tags.includes('[shout') || v3Tags.includes('[whisper') ||
+    v3Tags.includes('[scream') || v3Tags.includes('[panick')
+  )) {
+    return isNarrator ? 0.25 : 0.0; // Creative
+  }
+
+  // Use genre profile default if available
+  if (isNarrator && options.genreProfile?.narrator?.defaultStability !== undefined) {
+    const genreStability = options.genreProfile.narrator.defaultStability;
+    logger.debug(`[ElevenLabs] Using genre narrator stability=${genreStability} for ${options.genre || 'unknown'}`);
+    return genreStability;
+  }
+
+  // Default stability based on role
+  if (isNarrator) {
+    // Default narrator: Natural-Robust (0.6) - expressive but consistent
+    // This is much lower than the old hardcoded 1.0
+    return 0.6;
+  }
+
+  // Default for dialogue characters: Natural
+  return 0.5; // Natural - balanced expressiveness
+}
 
 /**
  * Wrap text with v3 Audio Tags based on emotion
@@ -297,25 +571,44 @@ export const EMOTION_TO_AUDIO_TAGS = {
  * 2. delivery - Natural language tags (will be converted)
  * 3. emotion - Base emotion mapping
  *
+ * P0 CRITICAL: Supports layering delivery mode + emotion for combined emotional states
+ * Example: whispered + sad → "[whispers][sadly]I'm so sorry"
+ *
  * @param {string} text - The text to wrap
  * @param {string} emotion - The detected emotion (e.g., 'angry', 'whispered')
  * @param {string} [delivery] - Natural language delivery notes
  * @param {string} [v3AudioTags] - Pre-converted V3-compliant audio tags
+ * @param {object} [extractedCues] - Extracted emotional cues from speechTagFilterAgent
  * @returns {string} Text with Audio Tags prepended
  */
-export function wrapWithAudioTags(text, emotion, delivery = null, v3AudioTags = null) {
+export function wrapWithAudioTags(text, emotion, delivery = null, v3AudioTags = null, extractedCues = null) {
   if (!text) return text;
 
   // If we have pre-converted V3 tags, use them directly
   if (v3AudioTags && v3AudioTags.trim()) {
+    // P0: Layer with extracted cues if present and not already included
+    if (extractedCues?.hasEmotionalContent) {
+      let layeredTags = v3AudioTags;
+
+      // Add delivery mode if not present (using V3-compliant tag names)
+      if (extractedCues.delivery === 'whisper' && !layeredTags.toLowerCase().includes('[whisper')) {
+        layeredTags = '[whisper]' + layeredTags;  // V3 FIX: [whisper] not [whispers]
+      } else if (extractedCues.delivery === 'shouting' && !layeredTags.toLowerCase().includes('[shout')) {
+        layeredTags = '[shouting]' + layeredTags;  // V3 FIX: [shouting] not [shouts]
+      }
+
+      logger.debug(`[AudioTags] LAYERED | v3Tags: "${v3AudioTags}" | extractedCues: ${JSON.stringify(extractedCues)} | final: "${layeredTags}"`);
+      return `${layeredTags}${text}`;
+    }
+
     logger.debug(`[AudioTags] WRAP | v3Tags: "${v3AudioTags}" | text: "${text.substring(0, 40)}..."`);
     return `${v3AudioTags}${text}`;
   }
 
   const baseEmotion = (emotion || 'neutral').toString().toLowerCase().trim();
 
-  // Get base tags from emotion mapping
-  const baseTags = EMOTION_TO_AUDIO_TAGS[baseEmotion] || '';
+  // Get base tags from emotion mapping (use V3 mapping directly)
+  const baseTags = EMOTION_TO_V3_TAG[baseEmotion] || '';
 
   const extractTags = (value) => {
     if (!value) return [];
@@ -330,10 +623,38 @@ export function wrapWithAudioTags(text, emotion, delivery = null, v3AudioTags = 
     return [`[${str.toLowerCase()}]`];
   };
 
-  // Merge tags (de-dupe case-insensitive) so we don't double-apply directions.
-  const merged = [...extractTags(baseTags), ...extractTags(delivery)];
+  // P0: Build layered tags from extracted cues + emotion + delivery
+  const allTags = [];
+
+  // 1. Delivery mode first (outermost) from extracted cues (V3-compliant names)
+  if (extractedCues?.delivery === 'whisper') {
+    allTags.push('[whisper]');  // V3 FIX: [whisper] not [whispers]
+  } else if (extractedCues?.delivery === 'shouting') {
+    allTags.push('[shouting]');  // V3 FIX: [shouting] not [shouts]
+  }
+
+  // 2. Base emotion tags
+  allTags.push(...extractTags(baseTags));
+
+  // 3. Additional delivery tags
+  allTags.push(...extractTags(delivery));
+
+  // 4. Extracted emotion tags (if not already covered by baseEmotion)
+  if (extractedCues?.emotions?.length > 0) {
+    const coveredEmotions = baseEmotion.toLowerCase();
+    for (const emo of extractedCues.emotions) {
+      if (!coveredEmotions.includes(emo.toLowerCase())) {
+        const emoTag = EMOTION_TO_V3_TAG[emo.toLowerCase()];
+        if (emoTag) {
+          allTags.push(...extractTags(emoTag));
+        }
+      }
+    }
+  }
+
+  // De-dupe case-insensitive while preserving order
   const seen = new Set();
-  const tags = merged.filter(tag => {
+  const tags = allTags.filter(tag => {
     const key = tag.toLowerCase();
     if (seen.has(key)) return false;
     seen.add(key);
@@ -342,7 +663,7 @@ export function wrapWithAudioTags(text, emotion, delivery = null, v3AudioTags = 
 
   // Log Audio Tag wrapping for debugging
   if (tags) {
-    logger.debug(`[AudioTags] WRAP | emotion: ${baseEmotion} | delivery: ${delivery || 'none'} | tags: "${tags}" | text: "${text.substring(0, 40)}..."`);
+    logger.debug(`[AudioTags] WRAP | emotion: ${baseEmotion} | delivery: ${delivery || 'none'} | extractedCues: ${extractedCues ? 'yes' : 'no'} | tags: "${tags}" | text: "${text.substring(0, 40)}..."`);
   }
 
   // Return text with tags prepended
@@ -365,7 +686,13 @@ export function convertSegmentToV3(segment) {
 
   return {
     ...segment,
-    text: wrapWithAudioTags(segment.text, segment.emotion, segment.delivery, segment.v3AudioTags),
+    text: wrapWithAudioTags(
+      segment.text,
+      segment.emotion,
+      segment.delivery,
+      segment.v3AudioTags,
+      segment.extractedEmotionalCues // P0: Pass extracted emotional cues for layering
+    ),
     v3_converted: true
   };
 }
@@ -699,10 +1026,11 @@ export function getModelConfig(modelId) {
   return ELEVENLABS_MODELS[modelId] || ELEVENLABS_MODELS.eleven_multilingual_v2;
 }
 
-// Voice name cache for logging (voice_id -> name mapping)
+// Voice name cache for logging (voice_id -> { name, cachedAt } mapping)
 // This is a CACHE (not a session tracker) so we use LRU eviction instead of FAIL LOUD
 const voiceNameCache = new Map();
 const VOICE_CACHE_MAX_SIZE = 500; // Max cached voice lookups
+const VOICE_CACHE_TTL = 3600000; // 1 hour TTL for cached voice names
 
 /**
  * Add to voice cache with LRU eviction
@@ -718,7 +1046,7 @@ function cacheVoiceName(voiceId, name) {
     }
     logger.info(`[VoiceCache] Evicted ${evictCount} entries (cache was at capacity)`);
   }
-  voiceNameCache.set(voiceId, name);
+  voiceNameCache.set(voiceId, { name, cachedAt: Date.now() });
 }
 
 /**
@@ -731,9 +1059,14 @@ function cacheVoiceName(voiceId, name) {
 export async function getVoiceNameById(voiceId) {
   if (!voiceId) return 'No Voice';
 
-  // Check cache first
+  // Check cache first (with TTL expiration)
   if (voiceNameCache.has(voiceId)) {
-    return voiceNameCache.get(voiceId);
+    const cached = voiceNameCache.get(voiceId);
+    if (Date.now() - cached.cachedAt < VOICE_CACHE_TTL) {
+      return cached.name;
+    }
+    // Expired - remove and fall through to lookup
+    voiceNameCache.delete(voiceId);
   }
 
   // Check RECOMMENDED_VOICES constant
@@ -817,6 +1150,43 @@ export function estimateTTSCost(text, tier = 'standard') {
 if (!existsSync(AUDIO_CACHE_DIR)) {
   mkdirSync(AUDIO_CACHE_DIR, { recursive: true });
 }
+
+// Periodic cleanup of old cached audio files
+const AUDIO_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const AUDIO_CACHE_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
+
+async function cleanupAudioCache() {
+  try {
+    const files = await readdir(AUDIO_CACHE_DIR);
+    const now = Date.now();
+    let cleanedCount = 0;
+
+    for (const file of files) {
+      if (!file.endsWith('.mp3')) continue;
+      try {
+        const filePath = join(AUDIO_CACHE_DIR, file);
+        const fileStat = await stat(filePath);
+        if (now - fileStat.mtimeMs > AUDIO_CACHE_MAX_AGE_MS) {
+          await unlink(filePath);
+          cleanedCount++;
+        }
+      } catch (err) {
+        // Skip files that can't be stat'd or deleted
+      }
+    }
+
+    if (cleanedCount > 0) {
+      logger.info(`[AudioCache] Cleanup removed ${cleanedCount} expired .mp3 files`);
+    }
+  } catch (err) {
+    logger.warn(`[AudioCache] Cleanup failed (non-critical): ${err.message}`);
+  }
+}
+
+// Run cleanup every 6 hours
+setInterval(cleanupAudioCache, AUDIO_CACHE_CLEANUP_INTERVAL_MS);
+// Run once on startup after 60-second delay
+setTimeout(cleanupAudioCache, 60000);
 
 export class ElevenLabsService {
   constructor() {
@@ -1053,7 +1423,7 @@ export class ElevenLabsService {
               'Accept': 'audio/mpeg'
             },
             responseType: 'arraybuffer',
-            timeout: 30000 // 30 second timeout
+            timeout: Math.max(30000, text.length * 60) // Min 30s, scale ~60ms per char for V3
           }
         );
       }, { maxRetries: 3, baseDelay: 1000 });
@@ -1339,7 +1709,11 @@ export class ElevenLabsService {
     let voiceDirectedSegments = segments;
     const tagsModelId = voiceSettings.model_id || QUALITY_TIER_MODELS.premium; // eleven_v3
 
-    if (storyContext && modelSupportsAudioTags(tagsModelId)) {
+    // BUG FIX: Check if segments are already voice-directed (from orchestrator.js)
+    // If already directed, SKIP redundant voiceDirector call to preserve profile-based settings
+    const alreadyDirected = segments.some(s => s.voiceDirected === true);
+
+    if (storyContext && modelSupportsAudioTags(tagsModelId) && !alreadyDirected) {
       try {
         if (onProgress) {
           try {
@@ -1381,16 +1755,17 @@ export class ElevenLabsService {
 
       } catch (error) {
         logger.error(`[VoiceDirector] Voice direction failed: ${error.message}`);
-        logger.warn(`[VoiceDirector] Falling back to legacy emotion detection`);
-
-        // Fallback to old emotion detection if Voice Director fails
-        try {
-          voiceDirectedSegments = await detectEmotionsForSegments(segments, storyContext, sessionId, { includeNarrator: true });
-        } catch (fallbackError) {
-          logger.warn(`[VoiceDirector] Fallback also failed: ${fallbackError.message}`);
-          // Continue with original segments
-        }
+        logAlert('error', '[VoiceDirector] direction failure (fail-loud)', { error: error.message, sessionId });
+        throw error;
       }
+    } else if (alreadyDirected) {
+      // Segments already have voice direction from orchestrator.js - use them as-is
+      const directedCount = segments.filter(s => s.voiceDirected).length;
+      const sampleSettings = segments.filter(s => s.voiceDirected).slice(0, 2)
+        .map(s => `${s.speaker}: stab=${s.voiceStability?.toFixed(2)} style=${s.voiceStyle?.toFixed(2)}`)
+        .join(' | ');
+      logger.info(`[MultiVoice] Segments PRE-DIRECTED: ${directedCount}/${segments.length} already have voice direction (preserving profile-based settings)`);
+      logger.info(`[MultiVoice] Sample settings: ${sampleSettings}`);
     } else {
       logger.info(`[MultiVoice] No story context or model doesn't support audio tags, using legacy detection`);
       // Fallback for non-v3 models or missing context
@@ -1414,10 +1789,17 @@ export class ElevenLabsService {
     // =============================================================================
     const uniqueVoiceIds = [...new Set(emotionEnhancedSegments.map(s => s.voice_id || this.defaultVoiceId))];
     const voiceNameMap = new Map();
-    await Promise.all(uniqueVoiceIds.map(async (vId) => {
+    const voiceNameResults = await Promise.allSettled(uniqueVoiceIds.map(async (vId) => {
       const vName = await getVoiceNameById(vId);
-      voiceNameMap.set(vId, vName);
+      return { vId, vName };
     }));
+    voiceNameResults.forEach(result => {
+      if (result.status === 'fulfilled') {
+        voiceNameMap.set(result.value.vId, result.value.vName);
+      } else {
+        logger.warn(`[MultiVoice] Failed to load voice name: ${result.reason?.message || result.reason}`);
+      }
+    });
     logger.info(`[MultiVoice] Pre-loaded ${voiceNameMap.size} voice names (was ${emotionEnhancedSegments.length} queries)`);
 
     // Pre-log all voice assignments for this multi-voice generation
@@ -1466,26 +1848,35 @@ export class ElevenLabsService {
         segmentInfo.voiceId = voiceId;
         segmentInfo.voiceName = voiceName;
 
-        // Get emotion - prefer LLM-validated, fallback to regex
-        let emotion = segment.emotion || 'neutral';
-
-        // If no LLM emotion, use regex fallback for explicit attributions only
-        if (!segment.llmValidated && segment.speaker !== 'narrator') {
-          const regexEmotion = detectLineEmotion(segment.text, segment.attribution || '');
-          if (regexEmotion.confidence > 0.5) {
-            emotion = regexEmotion.emotion;
-          }
+        const hasVoiceDirection = segment.voiceDirected === true;
+        const hasUsableTags = hasBracketTags(segment.v3AudioTags);
+        // Allow segments with either voice direction OR usable v3 tags (fallbacks have tags)
+        if (!hasVoiceDirection && !hasUsableTags && segment.speaker !== 'narrator') {
+          throw new Error(`[TTS] Missing voice direction for dialogue segment ${segIdx} (${segment.speaker})`);
         }
 
+        const emotion = segment.emotion || 'neutral';
         const emotionPreset = VOICE_PRESETS[emotion] || VOICE_PRESETS.neutral;
-        const hasVoiceDirection = segment.voiceDirected === true;
 
         let segmentSettings;
         if (segment.speaker === 'narrator') {
+          // ARCHETYPE BASELINE: Use narrator archetype settings as baseline before emotionPreset
+          // Priority: 1) Voice direction 2) Archetype baseline 3) Emotion preset
+          let archetypeBaseline = null;
+          const archetypeId = segment.archetypeApplied || storyContext?.narratorArchetype;
+          if (archetypeId && !hasVoiceDirection) {
+            archetypeBaseline = getArchetype(archetypeId);
+            if (archetypeBaseline) {
+              logger.debug(`[TTS] Narrator segment ${segIdx}: Using archetype baseline "${archetypeBaseline.name}" for voice settings`);
+            }
+          }
+
           const stability = hasVoiceDirection && segment.voiceStability !== undefined
-            ? segment.voiceStability : emotionPreset.stability;
+            ? segment.voiceStability
+            : (archetypeBaseline?.voiceSettings?.stability ?? emotionPreset.stability);
           const style = hasVoiceDirection && segment.voiceStyle !== undefined
-            ? segment.voiceStyle : emotionPreset.style;
+            ? segment.voiceStyle
+            : (archetypeBaseline?.voiceSettings?.style ?? emotionPreset.style);
 
           segmentSettings = {
             ...voiceSettings,
@@ -1495,13 +1886,37 @@ export class ElevenLabsService {
             speaker: segment.speaker,
             detectedEmotion: segment.emotion || 'neutral',
             delivery: segment.delivery || '',
-            v3AudioTags: segment.v3AudioTags || ''
+            v3AudioTags: segment.v3AudioTags || '',
+            // P0: Include extracted emotional cues from speechTagFilterAgent
+            extractedEmotionalCues: segment.extractedEmotionalCues,
+            deliveryMode: segment.deliveryMode,
+            emotionalIntensity: segment.emotionalIntensity,
+            // Include archetype info for downstream use
+            archetypeApplied: archetypeId || null
           };
         } else {
           const stability = hasVoiceDirection && segment.voiceStability !== undefined
             ? segment.voiceStability : emotionPreset.stability;
           const style = hasVoiceDirection && segment.voiceStyle !== undefined
             ? segment.voiceStyle : emotionPreset.style;
+
+          // P0: Merge extracted emotional cues with existing v3AudioTags
+          // If segment has extracted cues from speechTagFilterAgent, layer them with existing tags
+          let effectiveV3Tags = segment.v3AudioTags || '';
+          let effectiveDelivery = segment.delivery || '';
+
+          if (segment.extractedEmotionalCues?.hasEmotionalContent) {
+            const cues = segment.extractedEmotionalCues;
+            // If we have a delivery mode from extracted cues and no existing delivery, use it
+            if (cues.delivery && !effectiveDelivery) {
+              effectiveDelivery = cues.delivery === 'whisper' ? '[whisper]' : (cues.delivery === 'shouting' ? '[shouting]' : '');  // V3 FIX: [whisper] not [whispers], [shouting] not [shouts]
+            }
+            // If we have an extracted v3Tags and no existing, use it
+            if (segment.v3Tags && !effectiveV3Tags) {
+              effectiveV3Tags = segment.v3Tags;
+            }
+            logger.debug(`[TTS] Segment ${segIdx}: Applied extracted emotional cues | delivery: ${cues.delivery} | emotions: ${cues.emotions?.join(',')} | v3Tags: ${effectiveV3Tags}`);
+          }
 
           segmentSettings = {
             ...voiceSettings,
@@ -1511,9 +1926,18 @@ export class ElevenLabsService {
             sessionId,
             speaker: segment.speaker,
             detectedEmotion: emotion,
-            delivery: segment.delivery || '',
-            v3AudioTags: segment.v3AudioTags || ''
+            delivery: effectiveDelivery,
+            v3AudioTags: effectiveV3Tags,
+            // P0: Include extracted emotional cues for role-based stability
+            extractedEmotionalCues: segment.extractedEmotionalCues,
+            deliveryMode: segment.deliveryMode || segment.extractedEmotionalCues?.delivery,
+            emotionalIntensity: segment.emotionalIntensity || segment.extractedEmotionalCues?.intensity
           };
+        }
+
+        const effectiveModel = segmentSettings.model_id || voiceSettings.model_id || QUALITY_TIER_MODELS.premium;
+        if (segment.speaker !== 'narrator' && modelSupportsAudioTags(effectiveModel) && !hasBracketTags(segmentSettings.v3AudioTags)) {
+          throw new Error(`[TTS] Dialogue segment ${segIdx} missing v3 audio tags (fail-loud)`);
         }
 
         // ENHANCED LOGGING: Per-segment TTS settings for debugging voice quality issues
@@ -1670,32 +2094,55 @@ export class ElevenLabsService {
       }
     }
 
-    if (hasFFmpeg && audioBuffers.length > 1) {
+    if (audioBuffers.length === 1) {
+      combinedBuffer = audioBuffers[0];
+    } else {
+      if (!hasFFmpeg) {
+        throw new Error('[MultiVoice] FFmpeg unavailable for multi-segment assembly (fail-loud)');
+      }
+
       // Build segment metadata for professional assembly with crossfade
-      const assemblySegments = audioBuffers.map((audio, idx) => ({
-        audio,
-        speaker: emotionEnhancedSegments[idx]?.speaker || 'narrator',
-        type: emotionEnhancedSegments[idx]?.speaker === 'narrator' ? 'narrator' : 'character',
-        duration: segmentResults[idx]?.durationMs || 0
-      }));
+      // NOTE: audioBuffers only contains successful segments, so use result.index to map back correctly
+      const assemblySegments = [];
+      let audioIdx = 0;
+      for (const result of segmentResults) {
+        if (result.success && result.audio) {
+          const originalSegment = emotionEnhancedSegments[result.index];
+          assemblySegments.push({
+            audio: audioBuffers[audioIdx++],
+            speaker: originalSegment?.speaker || 'narrator',
+            type: originalSegment?.speaker === 'narrator' ? 'narrator' : 'character',
+            duration: result.durationMs || 0,
+            voiceSpeedModifier: originalSegment?.voiceSpeedModifier  // Pass through for audio assembly
+          });
+        }
+      }
 
       logger.info(`[MultiVoice] Using FFmpeg crossfade assembly for ${assemblySegments.length} segments`);
 
-      try {
-        const assemblyResult = await assembleMultiVoiceAudio(assemblySegments, {
-          ...ASSEMBLY_PRESETS.natural,
-          outputFormat: 'mp3'
-        });
-        combinedBuffer = assemblyResult.audio;
-        logger.info(`[MultiVoice] FFmpeg assembly complete: ${combinedBuffer.length} bytes`);
-      } catch (assemblyError) {
-        logger.warn(`[MultiVoice] FFmpeg assembly failed, falling back to simple concat: ${assemblyError.message}`);
-        combinedBuffer = Buffer.concat(audioBuffers);
+      const assemblyResult = await assembleMultiVoiceAudio(assemblySegments, {
+        ...ASSEMBLY_PRESETS.natural,
+        outputFormat: 'mp3'
+      });
+      combinedBuffer = assemblyResult.audio;
+
+      // FIXED: Scale word timings to match actual FFmpeg duration
+      // FFmpeg adds gaps/crossfades that change the total duration
+      const actualDuration = assemblyResult.duration;
+      if (actualDuration && actualDuration > 0 && cumulativeTimeMs > 0) {
+        const scaleFactor = actualDuration / cumulativeTimeMs;
+        // Only scale if difference is significant (>1% drift)
+        if (Math.abs(scaleFactor - 1.0) > 0.01) {
+          logger.info(`[MultiVoice] Scaling word timings: raw=${cumulativeTimeMs}ms actual=${Math.round(actualDuration)}ms factor=${scaleFactor.toFixed(3)}`);
+          allWordTimings.forEach(word => {
+            word.start_ms = Math.round(word.start_ms * scaleFactor);
+            word.end_ms = Math.round(word.end_ms * scaleFactor);
+          });
+          cumulativeTimeMs = actualDuration; // Update to actual duration
+        }
       }
-    } else {
-      // Fallback to simple concatenation (single segment or no FFmpeg)
-      logger.info(`[MultiVoice] Using simple buffer concatenation (segments: ${audioBuffers.length}, ffmpeg: ${hasFFmpeg})`);
-      combinedBuffer = Buffer.concat(audioBuffers);
+
+      logger.info(`[MultiVoice] FFmpeg assembly complete: ${combinedBuffer.length} bytes, ${Math.round(cumulativeTimeMs)}ms`);
     }
 
     // Build combined word timings object
@@ -1705,7 +2152,7 @@ export class ElevenLabsService {
       segment_count: audioBuffers.length
     };
 
-    logger.info(`[MultiVoice] OUTPUT | bytes: ${combinedBuffer.length} | segments: ${audioBuffers.length} | words: ${allWordTimings.length} | duration: ${cumulativeTimeMs}ms`);
+    logger.info(`[MultiVoice] OUTPUT | bytes: ${combinedBuffer.length} | segments: ${audioBuffers.length} | words: ${allWordTimings.length} | duration: ${Math.round(cumulativeTimeMs)}ms`);
     logger.info(`[MultiVoice] ================================================`);
 
     return {
@@ -1758,6 +2205,16 @@ export class ElevenLabsService {
     // CRITICAL: Log all unique speakers in segments
     const uniqueSpeakers = [...new Set(segments.map(s => s.speaker))];
     logger.info(`[MultiVoice] Unique speakers in segments: ${uniqueSpeakers.join(', ')}`);
+
+    // Voice diversity guard: require a minimum spread of voices across characters
+    const dialogueSpeakers = [...new Set(segments.filter(s => s.speaker !== 'narrator').map(s => s.speaker.toLowerCase().trim()))];
+    const usedDialogueVoices = new Set(dialogueSpeakers.map(name => characterVoices[name]).filter(Boolean));
+    const minVoicesRequired = Math.max(1, Math.ceil(dialogueSpeakers.length / 3));
+    if (dialogueSpeakers.length > 0 && usedDialogueVoices.size < minVoicesRequired) {
+      const err = `[MultiVoice] Voice diversity check failed: ${usedDialogueVoices.size}/${dialogueSpeakers.length} unique voices (min required: ${minVoicesRequired})`;
+      logAlert('error', err, { usedVoices: [...usedDialogueVoices] });
+      throw new Error(err);
+    }
 
     return segments.map((segment, idx) => {
       // For narrator segments, use the narrator voice
@@ -1885,7 +2342,12 @@ export class ElevenLabsService {
    */
   async textToSpeechWithTimestamps(text, voiceId = null, options = {}) {
     const voice = voiceId || this.defaultVoiceId;
-    const { sessionId, detectedEmotion, delivery, v3AudioTags } = options;
+    const { sessionId, detectedEmotion, delivery, v3AudioTags, extractedEmotionalCues } = options;
+    const modelId = options.model_id || QUALITY_TIER_MODELS.premium; // eleven_v3 default
+    const hasDelivery = typeof delivery === 'string' ? delivery.trim().length > 0 : !!delivery;
+    const hasV3Tags = hasBracketTags(v3AudioTags);
+    const supportsAudioTags = modelSupportsAudioTags(modelId);
+    const hasExtractedCues = extractedEmotionalCues?.hasEmotionalContent === true;
 
     // CRITICAL: Check text length BEFORE making API call
     // ElevenLabs with-timestamps endpoint has 5000 char limit
@@ -1895,26 +2357,30 @@ export class ElevenLabsService {
       return this.textToSpeechWithChunking(text, voice, options);
     }
 
-    // Determine model - v3 is new default for premium quality
-    const modelId = options.model_id || QUALITY_TIER_MODELS.premium; // eleven_v3
+    // Validate presence of audio tags for dialogue-heavy content when using v3
+    // P0: Allow extracted emotional cues as valid alternative to explicit tags
+    const isDialogueHeavy = (text.match(/"[^"]+"/g) || []).length >= 5;
+    if (supportsAudioTags && isDialogueHeavy && !hasV3Tags && !hasDelivery && !hasExtractedCues && (!detectedEmotion || detectedEmotion === 'neutral')) {
+      const err = '[ElevenLabs] Dialogue-heavy text missing v3 audio tags/delivery directives (fail-loud)';
+      logAlert('error', err, { sessionId });
+      throw new Error(err);
+    }
 
     // Apply or strip Audio Tags based on model support
     let processedText = text;
-    const hasDelivery = typeof delivery === 'string' ? delivery.trim().length > 0 : !!delivery;
-    const hasV3Tags = typeof v3AudioTags === 'string' ? v3AudioTags.trim().length > 0 : !!v3AudioTags;
-    const supportsAudioTags = modelSupportsAudioTags(modelId);
 
-    if (supportsAudioTags && (hasV3Tags || hasDelivery || (detectedEmotion && detectedEmotion !== 'neutral'))) {
+    if (supportsAudioTags && (hasV3Tags || hasDelivery || hasExtractedCues || (detectedEmotion && detectedEmotion !== 'neutral'))) {
       // Model supports audio tags - wrap with V3 emotion tags
-      processedText = wrapWithAudioTags(text, detectedEmotion || 'neutral', delivery, v3AudioTags);
-      logger.info(`[ElevenLabs] Applied Audio Tags: "${processedText.substring(0, 60)}..."${hasV3Tags ? ' (V3 converted)' : ''}`);
+      // P0: Pass extracted emotional cues for layered tag support
+      processedText = wrapWithAudioTags(text, detectedEmotion || 'neutral', delivery, v3AudioTags, extractedEmotionalCues);
+      const cueInfo = hasExtractedCues ? ` (extractedCues: ${extractedEmotionalCues.delivery || 'none'}, ${extractedEmotionalCues.emotions?.join(',') || 'none'})` : '';
+      logger.info(`[ElevenLabs] Applied Audio Tags (v3): "${processedText.substring(0, 80)}..."${hasV3Tags ? ' (V3 converted)' : ''}${cueInfo}`);
     } else if (!supportsAudioTags) {
-      // BUG FIX 7: Model doesn't support audio tags - strip any existing tags to prevent literal speaking
-      // This prevents tags like [excited], [whisper] from being spoken aloud
+      // Strip tags for models that can't handle them
       const originalLength = processedText.length;
       processedText = stripTags(processedText);
       if (processedText.length !== originalLength) {
-        logger.info(`[ElevenLabs] Stripped audio tags for non-V3 model: removed ${originalLength - processedText.length} chars`);
+        logger.info(`[ElevenLabs] Stripped audio tags for non-v3 model: removed ${originalLength - processedText.length} chars`);
       }
     }
 
@@ -1931,38 +2397,57 @@ export class ElevenLabsService {
       const preset = options.preset ? VOICE_PRESETS[options.preset] : null;
       const modelConfig = getModelConfig(modelId);
 
-      // STABILITY SETTINGS for ElevenLabs with-timestamps endpoint:
-      // CRITICAL: The TTD endpoint ONLY accepts stability values of 0.0, 0.5, or 1.0
-      // This is different from the regular TTS endpoint which accepts continuous values.
-      //
-      // Quantization mapping:
-      // - 0.0: Creative (< 0.25) - Very expressive, more variation
-      // - 0.5: Natural (0.25-0.75) - Balanced, recommended for most content
-      // - 1.0: Robust (> 0.75) - Very consistent, less expressive
-      //
-      // For storytelling, we generally want 0.5 (Natural) for good expressiveness
-      // while maintaining word timing accuracy for karaoke.
-      const rawStability = options.stability ?? preset?.stability ?? 0.45;
-      const isNarrator = options.isNarrator === true || options.speaker === 'narrator';
-      const defaultStability = isNarrator ? 0.55 : 0.40;
-      const effectiveStability = rawStability !== undefined ? rawStability : defaultStability;
+      // =============================================================================
+      // P0 CRITICAL: Role-Based Stability Assignment for TTD Endpoint
+      // =============================================================================
+      // TTD endpoint ONLY accepts stability values: 0.0, 0.5, or 1.0
+      // - 0.0: Creative - Maximum expressiveness (for emotional dialogue)
+      // - 0.5: Natural - Balanced delivery (default for regular dialogue)
+      // - 1.0: Robust - Maximum consistency (for narrator)
+      // =============================================================================
 
-      // QUANTIZE stability to valid TTD values: 0.0, 0.5, or 1.0
-      // This is required for the with-timestamps endpoint to work
-      let ttdStability;
-      if (effectiveStability < 0.25) {
-        ttdStability = 0.0; // Creative
-      } else if (effectiveStability > 0.75) {
-        ttdStability = 1.0; // Robust
-      } else {
-        ttdStability = 0.5; // Natural (default, best for storytelling)
-      }
+      // Build segment-like object from options for stability determination
+      const segmentForStability = {
+        speaker: options.speaker,
+        emotion: options.detectedEmotion || options.emotion,
+        extractedEmotionalCues: options.extractedEmotionalCues,
+        deliveryMode: options.deliveryMode,
+        v3AudioTags: options.v3AudioTags || options.delivery
+      };
 
-      logger.info(`[ElevenLabs TTD] Stability: raw=${rawStability?.toFixed(2)} | target=${effectiveStability.toFixed(2)} | quantized=${ttdStability} | isNarrator=${isNarrator}`);
+      // Build voice direction object from options
+      const voiceDirectionForStability = {
+        intensity: options.emotionalIntensity || options.intensity,
+        primaryEmotion: options.detectedEmotion || options.emotion,
+        delivery: options.deliveryMode,
+        v3AudioTags: options.v3AudioTags
+      };
+
+      // Get role-based stability and quantize to valid TTD values (0.0, 0.5, or 1.0)
+      // TTD endpoint REJECTS any other stability values with HTTP 400
+      const rawStability = getStabilityForRole(
+        segmentForStability,
+        voiceDirectionForStability,
+        { isNarrator: options.isNarrator }
+      );
+      const ttdStability = quantizeTTDStability(rawStability);
+
+      // Log the stability decision with context
+      const stabilityReason = ttdStability === 1.0 ? 'Robust (narrator/consistent)'
+        : ttdStability === 0.0 ? 'Creative (emotional/expressive)'
+        : 'Natural (balanced)';
+      logger.info(`[ElevenLabs TTD] ROLE_STABILITY | raw=${rawStability} → quantized=${ttdStability} (${stabilityReason}) | speaker=${options.speaker || 'unknown'} | emotion=${options.detectedEmotion || options.emotion || 'none'} | delivery=${options.deliveryMode || 'none'}`);
 
       // P2.3: Build voice settings with conditional speaker_boost support
+      // FINAL SAFEGUARD: Ensure stability is exactly one of the valid TTD values
+      const VALID_TTD_STABILITIES = [0.0, 0.5, 1.0];
+      const finalStability = VALID_TTD_STABILITIES.includes(ttdStability) ? ttdStability : 0.5;
+      if (finalStability !== ttdStability) {
+        logger.error(`[ElevenLabs TTD] CRITICAL: Invalid stability ${ttdStability} bypassed quantization! Forcing to ${finalStability}`);
+      }
+
       const voiceSettings = {
-        stability: ttdStability, // Quantized to 0.0, 0.5, or 1.0 for TTD endpoint
+        stability: finalStability, // GUARANTEED to be 0.0, 0.5, or 1.0 for TTD endpoint
         similarity_boost: options.similarity_boost ?? preset?.similarity_boost ?? 0.75,
         style: options.style ?? preset?.style ?? 0.3
       };
@@ -2004,6 +2489,8 @@ export class ElevenLabsService {
         text
       );
 
+      this._validateWordTimings(wordTimings, text);
+
       // Calculate checksum for integrity
       const checksum = crypto.createHash('sha256').update(audioBuffer).digest('hex');
       const audioHash = this.generateHash(text, voice);
@@ -2035,17 +2522,8 @@ export class ElevenLabsService {
         throw new Error('ElevenLabs rate limit exceeded');
       }
 
-      // Fallback to regular TTS without timestamps
-      logger.warn('Falling back to TTS without timestamps');
-      const audio = await this.textToSpeech(text, voice, options);
-      return {
-        audio,
-        audioUrl: null,
-        audioHash: this.generateHash(text, voice),
-        checksum: crypto.createHash('sha256').update(audio).digest('hex'),
-        wordTimings: null,
-        durationSeconds: null
-      };
+      // Premium fail-loud: do not fall back to TTS without timestamps
+      throw error;
     }
   }
 
@@ -2055,6 +2533,36 @@ export class ElevenLabsService {
    * @param {string} originalText - Original text for reference
    * @returns {object} Word-level timing data
    */
+  _validateWordTimings(wordTimings, contextText = '') {
+    if (!wordTimings?.words || wordTimings.words.length === 0 || !wordTimings.total_duration_ms) {
+      throw new Error('ElevenLabs returned no word timings (fail-loud)');
+    }
+    if (wordTimings.total_duration_ms <= 0 || wordTimings.total_duration_ms > 30 * 60 * 1000) {
+      throw new Error(`ElevenLabs word timings duration invalid (${wordTimings.total_duration_ms} ms)`);
+    }
+
+    const first = wordTimings.words[0];
+    const last = wordTimings.words[wordTimings.words.length - 1];
+    // ElevenLabs v3 with audio tags may add lead-in time (up to 500ms is normal)
+    // Only fail for extreme delays (>1000ms) that indicate a problem
+    if (first.start_ms > 1000) {
+      throw new Error(`[ElevenLabs] Word timings start too late (${first.start_ms}ms > 1000ms threshold)`);
+    } else if (first.start_ms > 400) {
+      logger.warn(`[ElevenLabs] Word timings start at ${first.start_ms}ms (moderate lead-in, may affect karaoke sync)`);
+    }
+    // Allow more drift for assembled audio (500ms instead of 250ms)
+    if (Math.abs(wordTimings.total_duration_ms - last.end_ms) > 500) {
+      throw new Error(`[ElevenLabs] Word timing duration drift: total=${wordTimings.total_duration_ms}ms, lastEnd=${last.end_ms}ms`);
+    }
+
+    for (let i = 1; i < wordTimings.words.length; i++) {
+      if (wordTimings.words[i].start_ms < wordTimings.words[i - 1].end_ms) {
+        throw new Error(`ElevenLabs word timings non-monotonic at index ${i} (fail-loud)`);
+      }
+    }
+    logger.info(`[ElevenLabs] Word timings validated | words=${wordTimings.words.length} | durationMs=${wordTimings.total_duration_ms} | preview="${contextText.substring(0, 40)}..."`);
+  }
+
   processCharacterAlignment(alignment, originalText) {
     if (!alignment?.characters || !alignment?.character_start_times_seconds) {
       logger.warn('No alignment data available for word timing');
@@ -2352,64 +2860,13 @@ export class ElevenLabsService {
    * @returns {object} Audio result with potential phonetic info
    */
   async textToSpeechWithPhoneticFallback(text, voiceId = null, options = {}) {
-    const voice = voiceId || this.defaultVoiceId;
-
-    // First, try normal TTS
-    try {
-      const result = await this.textToSpeechWithTimestamps(text, voice, options);
-      return {
-        ...result,
-        usedPhonetic: false,
-        originalText: text
-      };
-    } catch (error) {
-      // Check if this is a content refusal
-      if (!this._isContentRefusal(error)) {
-        throw error; // Re-throw non-content-policy errors
-      }
-
-      logger.warn(`[ElevenLabs] Content policy refusal detected, attempting phonetic fallback`);
-
-      // Check if text has potentially problematic content
-      if (!containsPotentiallyRefusedContent(text)) {
-        logger.warn(`[ElevenLabs] Text doesn't match known patterns, refusal may be for unknown reason`);
-        throw error; // Can't help with unknown content issues
-      }
-
-      // Apply phonetic respellings
-      const { phoneticText, mappings, hasReplacements } = await applyPhoneticRespellings(text);
-
-      if (!hasReplacements) {
-        logger.warn(`[ElevenLabs] No phonetic replacements made, cannot recover`);
-        throw error;
-      }
-
-      logger.info(`[ElevenLabs] Retrying with ${mappings.length} phonetic replacements`);
-
-      // Retry with phonetic text
-      try {
-        const result = await this.textToSpeechWithTimestamps(phoneticText, voice, options);
-
-        // Store alignment for karaoke sync
-        if (result.wordTimings) {
-          await storeWordAlignment(text, phoneticText, voice, {
-            mappings,
-            wordTimings: result.wordTimings
-          });
-        }
-
-        return {
-          ...result,
-          usedPhonetic: true,
-          originalText: text,
-          phoneticText: phoneticText,
-          phoneticMappings: mappings
-        };
-      } catch (retryError) {
-        logger.error(`[ElevenLabs] Phonetic retry also failed: ${retryError.message}`);
-        throw new Error(`Content policy refusal even with phonetic fallback: ${retryError.message}`);
-      }
-    }
+    // Premium fail-loud: no phonetic fallback. If the primary call fails, bubble the error.
+    const result = await this.textToSpeechWithTimestamps(text, voiceId, options);
+    return {
+      ...result,
+      usedPhonetic: false,
+      originalText: text
+    };
   }
 
   // ============================================================================

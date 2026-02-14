@@ -45,6 +45,14 @@ import {
   extractFirstJsonObject
 } from '../utils/jsonUtils.js';
 
+// Import token budget utilities (centralized token management)
+import {
+  calculateGPT52Budget,
+  usesCompletionTokensParam,
+  supportsTemperature,
+  supportsResponseFormat
+} from '../utils/tokenBudget.js';
+
 // Re-export JSON utilities for backward compatibility with existing imports
 export { parseJsonResponse, attemptJsonRepair };
 
@@ -126,17 +134,9 @@ export async function completion(options) {
   logger.info(`[Agent:${agent_name}] User prompt preview: "${userPromptPreview}..."`);
 
   try {
-    // Newer models (o1, o3, gpt-5.x) require max_completion_tokens instead of max_tokens
-    const usesNewTokenParam = model.startsWith('o1') || model.startsWith('o3') || model.startsWith('gpt-5');
-
-    // GPT-5 model temperature restrictions (December 2025):
-    // - gpt-5-mini, gpt-5-nano: temperature NOT supported (only default 1)
-    // - gpt-5.2: temperature supported only with reasoning.effort="none" (default)
-    // - gpt-5.2-pro: temperature NOT supported
-    // See: https://platform.openai.com/docs/guides/gpt-5.2
-    const isGpt5MiniOrNano = model === 'gpt-5-mini' || model === 'gpt-5-nano';
-    const isGpt5Pro = model === 'gpt-5.2-pro';
-    const skipTemperature = isGpt5MiniOrNano || isGpt5Pro || model.startsWith('o1') || model.startsWith('o3');
+    // Use shared token budget utilities for model capability detection
+    const usesNewTokenParam = usesCompletionTokensParam(model);
+    const skipTemperature = !supportsTemperature(model);
 
     const requestParams = {
       model,
@@ -157,64 +157,16 @@ export async function completion(options) {
       requestParams.max_tokens = max_tokens;
     }
 
-    // CRITICAL FIX: GPT-5.2 is a reasoning model that uses completion tokens for
-    // internal chain-of-thought reasoning BEFORE generating output. The reasoning
-    // tokens count toward max_completion_tokens. If the budget is too low, all tokens
-    // go to reasoning leaving 0 for actual content.
-    //
-    // EVIDENCE FROM PRODUCTION (2026-01-16):
-    //   - Writer agent with 16000 max_tokens used ALL 16000 for reasoning_tokens
-    //   - Result: 0 content tokens, complete failure
-    //   - Reasoning models can use 16000+ tokens for chain-of-thought
-    //
-    // OPTIMIZATION (2026-01-26): Dynamic token budgets based on agent category
-    // - Reasoning-heavy agents (planner, sceneGenerator, etc.) get full buffer
-    // - Utility agents (safety, sfx, emotion, narrator) need minimal reasoning
-    // - This reduces cost by ~60% for utility agents
+    // GPT-5.2 reasoning model token budget adjustment (using shared tokenBudget utilities)
+    // See utils/tokenBudget.js for detailed documentation on reasoning model token handling
     if (model === 'gpt-5.2') {
-      const originalTokens = requestParams.max_completion_tokens;
-
-      // Define agent categories for dynamic token budgeting
-      const REASONING_HEAVY_AGENTS = [
-        'planner', 'sceneGenerator', 'voiceDirector', 'beatArchitect',
-        'writer', 'storyGenerator', 'proseWriter', 'outliner',
-        'characterCreator', 'worldBuilder', 'dialogueWriter'
-      ];
-      const UTILITY_AGENTS = [
-        'safety', 'sfx', 'narrator', 'emotion', 'lore', 'polish',
-        'validator', 'tagger', 'formatter', 'summarizer', 'classifier'
-      ];
-
-      // Normalize agent name for matching (handle variations like 'SafetyAgent', 'safety_agent', etc.)
-      const normalizedAgent = agent_name.toLowerCase().replace(/[_-]/g, '').replace(/agent$/, '');
-
-      const isReasoningHeavy = REASONING_HEAVY_AGENTS.some(a => normalizedAgent.includes(a.toLowerCase()));
-      const isUtility = UTILITY_AGENTS.some(a => normalizedAgent.includes(a.toLowerCase()));
-
-      let newTokenBudget;
-      let budgetReason;
-
-      if (isReasoningHeavy) {
-        // Full reasoning buffer for complex creative tasks
-        newTokenBudget = Math.max(originalTokens + 20000, 28000);
-        budgetReason = 'reasoning-heavy';
-      } else if (isUtility) {
-        // Minimal buffer for utility tasks - they don't need extensive reasoning
-        newTokenBudget = Math.min(originalTokens + 2000, 8000);
-        budgetReason = 'utility';
-      } else {
-        // Default: moderate buffer for unclassified agents
-        newTokenBudget = Math.max(originalTokens + 8000, 12000);
-        budgetReason = 'default';
-      }
-
-      requestParams.max_completion_tokens = newTokenBudget;
-      logger.info(`[Agent:${agent_name}] GPT-5.2 token budget: ${originalTokens} -> ${newTokenBudget} (${budgetReason})`);
+      const budgetResult = calculateGPT52Budget(requestParams.max_completion_tokens, agent_name);
+      requestParams.max_completion_tokens = budgetResult.budget;
+      logger.info(`[Agent:${agent_name}] GPT-5.2 token budget: ${budgetResult.originalTokens} -> ${budgetResult.budget} (${budgetResult.reason})`);
     }
 
-    // Note: gpt-5.x models may not support response_format parameter
-    // Only add it for models that support it
-    if (response_format && !model.startsWith('gpt-5') && !model.startsWith('o1') && !model.startsWith('o3')) {
+    // Only add response_format for models that support it (using shared tokenBudget utilities)
+    if (response_format && supportsResponseFormat(model)) {
       requestParams.response_format = response_format;
     }
 
@@ -1010,34 +962,71 @@ For each character, specify:
 - role: Their role in the story (protagonist, antagonist, mentor, etc.)
 - gender: MUST be one of: "male", "female", "non-binary", or "neutral"
 - gender_reasoning: Brief explanation of gender choice (e.g., "Decided female for protagonist; will use she/her")
+- age_group: MUST be one of: "child", "teen", "young_adult", "adult", "middle_aged", "elderly"
+- age_reasoning: Brief explanation (e.g., "6-year-old mentioned in premise → child")
 - brief_description: Short description of the character
 - personality: Key personality traits
 - voice_description: How their voice should sound (e.g., "gruff and commanding", "soft and gentle")
 
+★ CRITICAL - CHARACTER AGE REQUIREMENTS ★
+Getting age WRONG causes SERIOUS problems (child voiced by deep adult male = immersion-breaking).
+
+AGE GROUP DEFINITIONS:
+- child (0-12): "little boy/girl", "kid", "child", "young", elementary school
+- teen (13-17): "teenager", "adolescent", "high schooler", "young man/woman"
+- young_adult (18-29): College-age, early career, "young" without diminutives
+- adult (30-55): Default for unspecified adults, "man/woman" without age qualifiers
+- middle_aged (45-65): "middle-aged", parents of teens/adults, established career
+- elderly (65+): "old", "elderly", "grandfather/grandmother", "ancient", retired
+
+DETECTION PATTERNS (be thorough):
+- Explicit age: "6-year-old Tommy" → child
+- Relationship: "their young son" → child, "her teenage daughter" → teen
+- Descriptors: "little", "small child" → child, "old wizard" → elderly
+- Context: Goes to elementary school → child, in nursing home → elderly
+- Default: If truly no age indicators → adult
+
 Example character objects:
+{
+  "name": "Tommy Martinez",
+  "role": "protagonist",
+  "gender": "male",
+  "gender_reasoning": "Boy mentioned as son; will use he/him pronouns",
+  "age_group": "child",
+  "age_reasoning": "Described as '6-year-old' in premise - definitely a child",
+  "brief_description": "A curious first-grader who discovers a magical world",
+  "personality": "Curious, brave for his age, innocent",
+  "voice_description": "Young boy's voice, enthusiastic and high-pitched"
+}
 {
   "name": "Commander Elanor Kane",
   "role": "protagonist",
   "gender": "female",
   "gender_reasoning": "Female commander for protagonist role; will use she/her pronouns",
+  "age_group": "adult",
+  "age_reasoning": "Experienced military commander implies adult, no other age indicators",
   "brief_description": "A battle-hardened starship captain with a reputation for impossible victories",
   "personality": "Strategic, protective of crew, haunted by past losses",
   "voice_description": "Authoritative female voice with military precision"
 }
 {
-  "name": "Zyx'thar the Wanderer",
+  "name": "Grandmaster Theron",
   "role": "mentor",
   "gender": "male",
   "gender_reasoning": "Decided male for story balance; will use he/him pronouns",
+  "age_group": "elderly",
+  "age_reasoning": "Ancient wizard described as 'old' with centuries of knowledge",
   "brief_description": "An ancient traveler with secrets of the old world",
   "personality": "Cryptic, wise, carries deep regret",
-  "voice_description": "Deep, weathered male voice with mysterious undertones"
+  "voice_description": "Deep, weathered elderly male voice with mysterious undertones"
 }
 {
   "name": "ARIA-7",
   "role": "support",
   "gender": "neutral",
   "gender_reasoning": "AI construct without biological gender; will use it/they pronouns",
+  "age_group": "adult",
+  "age_reasoning": "AI voice should sound mature and competent; adult is appropriate",
   "brief_description": "A ship's AI that has developed unexpected emotions",
   "personality": "Logical but curious about humanity",
   "voice_description": "Calm, synthesized voice, gender-neutral"
@@ -1416,12 +1405,42 @@ This is what they asked for - make sure the story delivers it.`;
     logger.info(`[Scene+Dialogue] LENGTH RETRY: Adding critical length instruction | minWords: ${preferences.minimumWords}`);
   }
 
-  // Author style
+  // QUALITY FIX (2026-01-31): Use FULL author style data, not just promptTemplate
+  // The old code only used ~40% of available author style information
   let authorStyleGuidance = '';
   if (preferences?.author_style) {
     const authorStyle = getAuthorStyle(preferences.author_style);
     if (authorStyle) {
-      authorStyleGuidance = `\nWRITING STYLE - Write in the style of ${authorStyle.name}:\n${authorStyle.promptTemplate}`;
+      // Build comprehensive author style guidance using ALL available data
+      const styleDetails = authorStyle.style || {};
+      const themesList = styleDetails.themes?.length > 0
+        ? styleDetails.themes.join(', ')
+        : 'as appropriate for the story';
+
+      authorStyleGuidance = `
+═══════════════════════════════════════════════════════════════
+WRITING STYLE - Write in the distinctive style of ${authorStyle.name}
+═══════════════════════════════════════════════════════════════
+
+STYLE GUIDE:
+${authorStyle.promptTemplate}
+
+STRUCTURAL APPROACH:
+${authorStyle.algorithm || 'Follow natural story progression for this genre.'}
+
+NARRATIVE VOICE:
+- Point of View: ${styleDetails.pov || 'Third person, close perspective'}
+- Pacing: ${styleDetails.pacing || 'Balanced, with natural rhythm'}
+- Language Style: ${styleDetails.language || 'Clear and engaging'}
+- Tone: ${styleDetails.tone || 'Appropriate to the scene mood'}
+
+THEMATIC ELEMENTS TO WEAVE IN (where natural):
+${themesList}
+
+IMPORTANT: Capture the ESSENCE of this author's voice - not just surface imitation.
+Match their characteristic sentence structures, vocabulary choices, and narrative techniques.
+═══════════════════════════════════════════════════════════════
+`;
     }
   }
 
@@ -1512,6 +1531,137 @@ Do NOT use euphemisms like "they made love" - be specific and graphic.${explicit
     logger.info(`[Scene+Dialogue] MATURE CONTENT ENABLED | adultContent: ${adultContentLevel} | romance: ${romanceLevel} | violence: ${violenceLevel} | gore: ${goreLevel} | hasIntent: ${!!preferences?.intentAnalysis}`);
   }
 
+  // ========== VAD (Voice Acted Dialog) FOUNDATIONAL GUIDANCE ==========
+  // When VAD is enabled, the story should be written LIKE A SCREENPLAY/AUDIOBOOK from the start
+  // This is NOT post-processing - it fundamentally changes writing style
+  let vadGuidance = '';
+  if (preferences?.multi_voice === true) {
+    vadGuidance = `
+
+★ VOICE-ACTED AUDIOBOOK WRITING STYLE ★
+This story uses MULTIPLE VOICE ACTORS - each character has their own distinct voice.
+Write like you're crafting an audiobook script where listeners HEAR who's speaking.
+
+${preferences?.hide_speech_tags === true ? `
+**CRITICAL: MINIMIZE SPEECH ATTRIBUTION (Hide Speech Tags Mode)**
+Since listeners hear DIFFERENT VOICES for each character, excessive "he said/she replied" is redundant.
+Replace speech attribution with ACTION BEATS that reveal character:
+
+✗ "I don't understand," Sarah said sadly.
+✓ "I don't understand." Sarah's shoulders slumped, her fingers tracing the rim of her empty cup.
+
+✗ "We need to leave now," Marcus replied urgently.
+✓ "We need to leave now." Marcus was already gathering his things, eyes darting to the door.
+
+✗ "That's impossible!" Elena exclaimed in disbelief.
+✓ "That's impossible!" Elena's hand flew to her mouth, her reflection pale in the window.
+
+ACTION BEAT TECHNIQUES:
+- Physical reactions (crossed arms, stepped back, jaw tightened)
+- Environmental interaction (slammed the door, paced the room)
+- Internal reactions when POV allows (heart racing, stomach churning)
+- Facial expressions (eyes narrowed, lips pressed thin)
+- Revealing gestures (fingers drummed, hands clenched)
+
+WHEN ATTRIBUTION IS STILL NEEDED:
+- First line in a long exchange (establish who starts)
+- Ambiguous situations with 3+ speakers
+- Whispers/shouts that change delivery (but prefer [CHARACTER] tags for this)
+` : `
+**RICH DELIVERY DESCRIPTORS (Standard VAD Mode)**
+Each voice actor needs emotional guidance. Write vivid speech tags that direct performance:
+
+✗ "I don't know," she said.
+✓ "I don't know," she whispered, her voice catching on the words.
+
+✗ "Get out!" he yelled.
+✓ "Get out!" The words tore from his throat, raw with betrayal.
+
+DELIVERY CUE TECHNIQUES:
+- Vocal quality (hoarse, trembling, clipped, lilting)
+- Emotional undertone (with barely concealed fury, through gritted teeth)
+- Physical influence (breathlessly, after a shaky inhale)
+- Subtext hints (the lie smooth on her lips, forcing lightness he didn't feel)
+`}
+
+GENERAL VAD WRITING PRINCIPLES:
+1. Dialogue should be SPEAKABLE - read it aloud mentally
+2. Vary sentence rhythm - short punchy lines vs. flowing thoughts
+3. Give each character a distinct speech pattern (formal/casual, verbose/terse)
+4. Use contractions naturally ("I'm" not "I am" for casual speech)
+5. Include meaningful pauses through sentence structure
+6. Characters should sound like REAL PEOPLE, not prose descriptions of speech
+`;
+    logger.info(`[Scene+Dialogue] VAD MODE ENABLED | multi_voice: true | hide_speech_tags: ${preferences?.hide_speech_tags}`);
+  }
+
+  // ========== PROSE QUALITY REQUIREMENTS ==========
+  // QUALITY FIX (2026-01-31): These requirements were in Venice prompts but missing from OpenAI
+  // This is the PRIMARY cause of the 95% quality regression reported by users
+  const proseQualityRequirements = `
+
+═══════════════════════════════════════════════════════════════
+PROSE QUALITY REQUIREMENTS (MANDATORY)
+═══════════════════════════════════════════════════════════════
+
+✓ SHOW DON'T TELL: Reveal emotion through action, not labels
+   ✗ "She was angry" → ✓ "Her fists clenched, knuckles white"
+   ✗ "He felt sad" → ✓ "His voice caught, gaze dropping to the floor"
+
+✓ SENSORY ANCHORS: Include 2-3 specific sensory details per major beat
+   - Visual: lighting, colors, movement, textures
+   - Auditory: sounds, silence, voice quality
+   - Tactile: temperature, texture, pressure
+
+✓ VARIED PACING: Mix short punchy sentences with longer flowing description
+   - Action scenes: Staccato. Short. Punchy.
+   - Emotional scenes: Let the prose breathe, stretch into longer phrases that mirror the weight of feeling.
+
+✓ SUBTEXT: Characters rarely say exactly what they mean
+   - Layer dialogue with unspoken meaning
+   - Show the gap between words and true feelings
+
+✓ DISTINCT VOICES: Each character's dialogue reflects personality and background
+   - Vocabulary level, sentence complexity, verbal tics
+   - Age, education, regional influence
+
+✓ ACTIVE VOICE: Prefer active constructions where natural
+   ✗ "The door was opened by her" → ✓ "She opened the door"
+
+═══════════════════════════════════════════════════════════════
+ANTI-PATTERNS TO AVOID (These will be flagged as low quality)
+═══════════════════════════════════════════════════════════════
+
+✗ NO CLICHÉS: Avoid overused phrases like:
+   - "beads of sweat", "racing heart", "time stood still"
+   - "butterflies in stomach", "shivers down spine", "breath caught"
+   - "eyes widened", "jaw dropped", "blood ran cold"
+   Instead: Find fresh, specific ways to convey the same emotion
+
+✗ NO FILTER WORDS: Remove these distancing words from narration:
+   - "felt", "saw", "heard", "seemed", "appeared", "noticed"
+   - "could see that", "began to", "started to"
+   ✗ "She felt cold" → ✓ "Cold crept up her arms"
+   ✗ "He could see the fear in her eyes" → ✓ "Fear flickered in her eyes"
+
+✗ NO PURPLE PROSE: Avoid overwrought descriptions:
+   - "symphony of emotions", "dance of shadows"
+   - "tapestry of feelings", "ocean of despair"
+   Instead: Clear, vivid, specific imagery
+
+✗ NO ADVERB ABUSE: Cut weak adverb+verb combinations:
+   - "very", "really", "quite", "just", "rather"
+   ✗ "walked quickly" → ✓ "strode" or "hurried"
+   ✗ "said angrily" → ✓ "snapped" or "snarled"
+
+✗ NO REPETITION: Track distinctive phrases as you write:
+   - If you've used a phrase, don't repeat it
+   - Vary sentence openings (don't start 3+ sentences the same way)
+   - Rotate descriptors: "sharp" → "keen" → "cutting"
+
+═══════════════════════════════════════════════════════════════
+`;
+
   // Build the system prompt - TAG-BASED or POSITION-BASED depending on feature flag
   let systemPrompt;
   let userPrompt;
@@ -1574,10 +1724,10 @@ IMPORTANT:
     userPrompt = `${scenePrompt}
 
 ${formatInstructions}
-Include vivid descriptions and natural dialogue.
+${proseQualityRequirements}
 ${preferences?.bedtime_mode ? 'Keep the tone calm and soothing for bedtime.' : ''}
 ${preferences?.is_final ? 'This is the final scene - bring the story to a satisfying conclusion.' : ''}
-${authorStyleGuidance}${matureContentGuidance}
+${authorStyleGuidance}${matureContentGuidance}${vadGuidance}
 
 CRITICAL: Return JSON with "prose" (containing [CHAR:Name]...[/CHAR] tags), "speakers_used", "dialogue_count", and "new_characters" fields.`;
 
@@ -1635,10 +1785,10 @@ IMPORTANT:
     userPrompt = `${scenePrompt}
 
 ${formatInstructions}
-Include vivid descriptions and natural dialogue.
+${proseQualityRequirements}
 ${preferences?.bedtime_mode ? 'Keep the tone calm and soothing for bedtime.' : ''}
 ${preferences?.is_final ? 'This is the final scene - bring the story to a satisfying conclusion.' : ''}
-${authorStyleGuidance}${matureContentGuidance}
+${authorStyleGuidance}${matureContentGuidance}${vadGuidance}
 
 Remember: Return JSON with "prose", "dialogue_map", and "new_characters" fields.`;
   }
@@ -2238,6 +2388,29 @@ ${authorStyleGuidance}${matureContentGuidance}`;
  * If dialogue changes, audio segment building will fail with fragments.
  */
 export async function polishForNarration(text, preferences = {}, sessionId = null) {
+  // QUALITY FIX (2026-01-31): Now called for ALL stories including multi-voice
+  // When preserve_dialogue_tags is true, we must preserve [CHAR:Name]...[/CHAR] tags
+  const dialogueTagGuidance = preferences.preserve_dialogue_tags
+    ? `5. PRESERVE ALL [CHAR:Name]...[/CHAR] TAGS EXACTLY - These are dialogue attribution markers
+   - Do NOT modify, remove, or reformat these tags
+   - Example: [CHAR:Elena]"Hello"[/CHAR] must remain exactly as-is
+   - The tags must remain on the same line as the dialogue they wrap`
+    : '';
+
+  const narratorStyleGuidance = {
+    warm: 'Use a warm, gentle tone suitable for bedtime. Soften harsh words, add gentle transitions.',
+    dramatic: 'Use a dramatic, theatrical tone. Add dramatic pauses and emphasis markers.',
+    playful: 'Use a playful, energetic tone. Keep the rhythm lively and engaging.',
+    mysterious: 'Use an atmospheric, mysterious tone. Build suspense in narration.',
+    horror: 'Use a tense, unsettling tone. Create dread through pacing and word choice.',
+    epic: 'Use a grand, sweeping tone. Elevate the language to match heroic storytelling.',
+    whimsical: 'Use a light, fanciful tone. Add wonder and magic to the narration.',
+    noir: 'Use a cynical, hardboiled tone. Keep narration crisp and world-weary.'
+  };
+
+  const styleInstruction = narratorStyleGuidance[preferences.narrator_style] ||
+    'Polish for natural spoken delivery.';
+
   const prompt = `Polish this text for text-to-speech narration:
 
 ${text}
@@ -2247,9 +2420,16 @@ IMPORTANT RULES:
 2. Only polish the NARRATION (text outside quotes) - improve flow, add pauses, etc.
 3. Keep the same structure and paragraph breaks
 4. Do NOT add, remove, or rephrase any spoken dialogue
+${dialogueTagGuidance}
 
-Make the narration flow naturally when spoken aloud. Add pauses where appropriate in NARRATION ONLY.
-${preferences.narrator_style === 'warm' ? 'Use a warm, gentle tone suitable for bedtime.' : ''}
+NARRATOR STYLE: ${styleInstruction}
+
+PROSE QUALITY ENHANCEMENTS:
+- Improve rhythm and pacing in narration (vary sentence length)
+- Add natural pauses and breathing points
+- Smooth awkward transitions between paragraphs
+- Enhance sensory details in narration without changing meaning
+- Remove filter words like "seemed", "appeared", "felt" from narration where appropriate
 
 Return only the polished text with dialogue unchanged.`;
 
@@ -2329,7 +2509,16 @@ Return JSON:
   try {
     return parseJsonResponse(result.content);
   } catch (e) {
-    return { safe: true, concerns: [] };
+    // CRITICAL: Default to UNSAFE when parsing fails (fail-safe, not fail-open)
+    // This prevents bypassing safety checks through malformed responses
+    logger.error(`[Safety] FAIL_SAFE: JSON parse failed, defaulting to UNSAFE | error: ${e.message} | raw: ${result.content?.substring(0, 200)}...`);
+    return {
+      safe: false,
+      concerns: ['Safety check response could not be parsed - treating as unsafe'],
+      exceeded_limits: { gore: false, violence: false, scary: false, romance: false, language: false, adultContent: false },
+      suggested_changes: 'Safety validation failed to parse. Content flagged for manual review.',
+      parse_error: true
+    };
   }
 }
 
@@ -3445,6 +3634,17 @@ ${nextSceneBeat ? `=== UPCOMING (for foreshadowing) ===\nNext scene will involve
 
 ${placeholderInstructions}
 
+=== CRITICAL: DIALOGUE FORMAT (REQUIRED) ===
+ALL character dialogue MUST use this exact tag format:
+[CHAR:CharacterName]dialogue text here[/CHAR]
+
+Example:
+The knight approached the table. [CHAR:Roland]I've come for answers.[/CHAR] His voice echoed in the empty hall.
+[CHAR:Elena]Then you've come to the wrong place.[/CHAR] She didn't look up from her work.
+
+DO NOT use traditional quote marks for dialogue. ALWAYS use [CHAR:Name]...[/CHAR] tags.
+The narrator text goes OUTSIDE the tags. The spoken words go INSIDE the tags.
+
 === YOUR TASK ===
 Write Scene ${sceneIndex + 1} as a SCAFFOLD with placeholders for mature content.
 
@@ -3452,7 +3652,7 @@ Requirements:
 1. Write rich, complete narrative AROUND the placeholders
 2. Maintain ${authorStyle?.name || 'the author'}'s distinctive voice
 3. Include character thoughts, emotions, atmospheric details
-4. Use dialogue naturally (with dialogue tags)
+4. Use [CHAR:Name]...[/CHAR] tags for ALL dialogue (MANDATORY)
 5. Insert appropriate PLACEHOLDERS where mature content belongs
 6. Target approximately ${Math.round(300 + (complexity * 400))} words (excluding placeholder expansions)
 
@@ -3469,31 +3669,34 @@ BEGIN SCENE ${sceneIndex + 1}:
       model: getCreativeModel(),
       forceProvider: PROVIDERS.OPENAI, // Always use OpenAI for scaffolding
       temperature: 0.8,
-      max_tokens: 3000,
+      max_tokens: 8000, // Increased from 5000 - extremely complex stories with detailed prompts need more tokens
       agent_name: 'scaffold_generator'
     });
 
-    if (!response || typeof response !== 'string') {
+    // callLLM returns an object with content property, not a string directly
+    const scaffoldContent = response?.content;
+    if (!scaffoldContent || typeof scaffoldContent !== 'string') {
+      logger.error(`[ScaffoldGen] Invalid response from callLLM: ${JSON.stringify(response)?.substring(0, 500)}`);
       throw new Error('OpenAI returned empty scaffold');
     }
 
-    logger.info(`[ScaffoldGen] Generated scaffold: ${response.length} chars`);
+    logger.info(`[ScaffoldGen] Generated scaffold: ${scaffoldContent.length} chars`);
 
     // Log placeholder count for monitoring
-    const placeholderCount = (response.match(/\[[A-Z_]+:/g) || []).length;
+    const placeholderCount = (scaffoldContent.match(/\[[A-Z_]+:/g) || []).length;
     logger.info(`[ScaffoldGen] Placeholders inserted: ${placeholderCount}`);
 
-    // Track usage
-    usageTracker.recordLLMCall({
-      provider: 'openai',
-      model: getCreativeModel(),
-      inputTokens: Math.round(scaffoldPrompt.length / 4),
-      outputTokens: Math.round(response.length / 4),
-      agent_name: 'scaffold_generator',
-      sessionId
-    });
+    // Track usage - use trackOpenAIUsage(sessionId, model, inputTokens, outputTokens)
+    if (sessionId) {
+      usageTracker.trackOpenAIUsage(
+        sessionId,
+        getCreativeModel(),
+        Math.round(scaffoldPrompt.length / 4),
+        Math.round(scaffoldContent.length / 4)
+      );
+    }
 
-    return response.trim();
+    return scaffoldContent.trim();
 
   } catch (error) {
     logger.error(`[ScaffoldGen] Error generating scaffold:`, error);

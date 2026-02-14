@@ -66,8 +66,17 @@ export function detectJsonTruncation(content) {
     reasons.push('unclosed string (ends inside quotes)');
   }
 
+  // Check for malformed structure (more closing than opening)
+  if (braceCount < 0) {
+    reasons.push(`${Math.abs(braceCount)} extra closing brace(s) '}'`);
+  }
+  if (bracketCount < 0) {
+    reasons.push(`${Math.abs(bracketCount)} extra closing bracket(s) ']'`);
+  }
+
   // Check for common truncation patterns at end of content
   const lastChars = content.substring(Math.max(0, content.length - 20)).trim();
+  const last50 = content.substring(Math.max(0, content.length - 50)).trim();
 
   // Ends with incomplete key-value (no closing quote or value)
   if (/"\s*:\s*$/.test(lastChars)) {
@@ -77,6 +86,31 @@ export function detectJsonTruncation(content) {
   // Ends with comma (expecting more content)
   if (/,\s*$/.test(lastChars) && (braceCount > 0 || bracketCount > 0)) {
     reasons.push('ends with comma inside structure');
+  }
+
+  // Ends with truncated boolean or null keyword
+  // Match partial: tru, fal, fals, nul at end of content
+  if (/:\s*(tru|fal|fals|nul)\s*$/i.test(last50)) {
+    reasons.push('ends with truncated boolean/null keyword');
+  }
+
+  // Ends with backslash (incomplete escape sequence)
+  if (/\\$/.test(content)) {
+    reasons.push('ends with incomplete escape sequence');
+  }
+
+  // Ends with colon followed by whitespace only (value expected)
+  if (/:\s*$/.test(lastChars) && !inString) {
+    reasons.push('ends after colon with no value');
+  }
+
+  // Ends mid-number (digit followed by nothing, inside a structure)
+  if (/:\s*-?\d+$/.test(lastChars) && (braceCount > 0 || bracketCount > 0)) {
+    // This could be valid (e.g., "count": 5}) but combined with unclosed structure it's suspicious
+    // Only flag if there's already evidence of truncation
+    if (braceCount > 0 || bracketCount > 0) {
+      reasons.push('potentially truncated number value (unclosed structure)');
+    }
   }
 
   return {
@@ -137,6 +171,46 @@ export function extractFirstJsonObject(text) {
 }
 
 /**
+ * Fix multi-line unquoted string values (GPT-5.2 bug)
+ * Handles prose fields that span multiple lines without quotes
+ * Example: "prose": The story text...\nmore text...\n"dialogue_map": [
+ * Fixed:   "prose": "The story text...\nmore text...",\n"dialogue_map": [
+ *
+ * @param {string} content - JSON content with potentially unquoted multi-line strings
+ * @returns {string} Fixed JSON string
+ */
+export function fixMultiLineUnquotedStrings(content) {
+  // Pattern: "prose": followed by unquoted text until the next JSON field
+  // Captures: "prose": (unquoted multi-line content) ,"next_field":
+  // Uses lazy matching to find the shortest valid capture
+
+  // Match "prose": followed by text that doesn't start with a quote,
+  // capturing everything until we hit ,\n"something": pattern
+  const prosePattern = /("prose"\s*:\s*)(?!")([^]*?)(\s*,\s*"\w+"\s*:)/;
+
+  const match = content.match(prosePattern);
+  if (match) {
+    const [fullMatch, keyPart, unquotedValue, nextField] = match;
+
+    // Clean the value: trim, escape quotes, and escape newlines for JSON
+    let cleanValue = unquotedValue.trim();
+    // Escape backslashes first, then quotes, then newlines
+    cleanValue = cleanValue
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"')
+      .replace(/\n/g, '\\n')
+      .replace(/\r/g, '\\r')
+      .replace(/\t/g, '\\t');
+
+    const fixed = content.replace(fullMatch, `${keyPart}"${cleanValue}"${nextField}`);
+    logger.info(`[fixMultiLineUnquotedStrings] Fixed unquoted multi-line prose (${unquotedValue.length} chars)`);
+    return fixed;
+  }
+
+  return content;
+}
+
+/**
  * Attempt to fix unquoted string values in JSON (GPT-5.2 bug)
  * Fixes patterns like: "prose": The story text...
  * To proper JSON: "prose": "The story text..."
@@ -145,6 +219,9 @@ export function extractFirstJsonObject(text) {
  * @returns {string} Fixed JSON string
  */
 export function fixUnquotedStringValues(content) {
+  // First, try to fix multi-line unquoted strings (like prose)
+  let fixed = fixMultiLineUnquotedStrings(content);
+
   // Pattern explanation:
   // ("[\w]+"\s*:\s*) - captures "key":
   // (?!["{\[\d]|true|false|null) - NOT followed by valid JSON value starters
@@ -153,7 +230,6 @@ export function fixUnquotedStringValues(content) {
   // This regex finds patterns like "prose": Some text here, or "name": Value
   // and wraps the unquoted value in quotes
 
-  let fixed = content;
   let iterations = 0;
   const maxIterations = 100; // Prevent infinite loops
 
@@ -423,10 +499,187 @@ export function attemptJsonRepair(content, type = 'generic') {
   }
 }
 
+/**
+ * Fix common JSON syntax errors from LLM outputs
+ * Handles: trailing commas, missing commas, unescaped newlines in strings
+ *
+ * @param {string} content - Potentially malformed JSON
+ * @returns {string} Cleaned JSON string
+ */
+export function fixCommonJsonErrors(content) {
+  let fixed = content;
+
+  // 1. Remove trailing commas before closing brackets/braces
+  // Pattern: ,\s*] or ,\s*}
+  fixed = fixed.replace(/,(\s*[\]}])/g, '$1');
+
+  // 2. Fix missing commas between array elements
+  // Pattern: }\s*{ without comma (common in arrays of objects)
+  fixed = fixed.replace(/\}(\s*)\{/g, '},$1{');
+
+  // 3. Fix unescaped newlines inside strings
+  // This is tricky - we need to be careful not to break valid JSON
+  // Look for patterns like "...\n..." inside strings and escape them
+  // We do this by tracking string boundaries
+  let result = '';
+  let inString = false;
+  let escapeNext = false;
+
+  for (let i = 0; i < fixed.length; i++) {
+    const char = fixed[i];
+
+    if (escapeNext) {
+      result += char;
+      escapeNext = false;
+      continue;
+    }
+
+    if (char === '\\') {
+      result += char;
+      escapeNext = true;
+      continue;
+    }
+
+    if (char === '"') {
+      result += char;
+      inString = !inString;
+      continue;
+    }
+
+    // If we're inside a string and hit a real newline, escape it
+    if (inString && (char === '\n' || char === '\r')) {
+      result += char === '\n' ? '\\n' : '\\r';
+      continue;
+    }
+
+    result += char;
+  }
+
+  // 4. Fix single quotes to double quotes for property names
+  // Pattern: {'key': or { 'key':
+  // Only do this outside of string values
+  result = result.replace(/([{,]\s*)'([^']+)'(\s*:)/g, '$1"$2"$3');
+
+  return result;
+}
+
+/**
+ * Robust JSON repair specifically for VoiceDirector responses
+ * Handles large arrays of direction objects that may have formatting issues
+ *
+ * @param {string} content - Raw LLM response
+ * @returns {object|null} Parsed JSON or null if unrecoverable
+ */
+export function repairVoiceDirectorJson(content) {
+  if (!content || typeof content !== 'string') {
+    return null;
+  }
+
+  logger.debug(`[repairVoiceDirectorJson] Input length: ${content.length}`);
+
+  // Step 1: Strip markdown code blocks
+  let cleaned = content;
+  const codeBlockMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (codeBlockMatch) {
+    cleaned = codeBlockMatch[1].trim();
+    logger.debug('[repairVoiceDirectorJson] Stripped markdown code block');
+  }
+
+  // Step 2: Apply common fixes
+  cleaned = fixCommonJsonErrors(cleaned);
+
+  // Step 3: Try to parse
+  try {
+    return JSON.parse(cleaned);
+  } catch (e1) {
+    logger.debug(`[repairVoiceDirectorJson] First parse attempt failed: ${e1.message}`);
+  }
+
+  // Step 4: Try extracting first JSON object
+  const extracted = extractFirstJsonObject(cleaned);
+  if (extracted) {
+    try {
+      return JSON.parse(extracted);
+    } catch (e2) {
+      // Try fixing the extracted portion
+      const fixedExtracted = fixCommonJsonErrors(extracted);
+      try {
+        return JSON.parse(fixedExtracted);
+      } catch (e3) {
+        logger.debug(`[repairVoiceDirectorJson] Extracted JSON parse failed: ${e3.message}`);
+      }
+    }
+  }
+
+  // Step 5: Try to salvage individual direction objects from the array
+  // Look for "directions": [ ... ] pattern
+  const directionsMatch = cleaned.match(/"directions"\s*:\s*\[([\s\S]*)\]/);
+  if (directionsMatch) {
+    const arrayContent = directionsMatch[1];
+    const directions = [];
+
+    // Extract individual objects using bracket matching
+    let depth = 0;
+    let objectStart = -1;
+    let inStr = false;
+    let escNext = false;
+
+    for (let i = 0; i < arrayContent.length; i++) {
+      const c = arrayContent[i];
+
+      if (escNext) {
+        escNext = false;
+        continue;
+      }
+      if (c === '\\' && inStr) {
+        escNext = true;
+        continue;
+      }
+      if (c === '"') {
+        inStr = !inStr;
+        continue;
+      }
+
+      if (!inStr) {
+        if (c === '{') {
+          if (depth === 0) objectStart = i;
+          depth++;
+        } else if (c === '}') {
+          depth--;
+          if (depth === 0 && objectStart !== -1) {
+            const objStr = arrayContent.substring(objectStart, i + 1);
+            try {
+              const obj = JSON.parse(fixCommonJsonErrors(objStr));
+              if (typeof obj.index === 'number') {
+                directions.push(obj);
+              }
+            } catch (e) {
+              // Skip malformed individual objects
+              logger.debug(`[repairVoiceDirectorJson] Skipping malformed direction object at index ~${directions.length}`);
+            }
+            objectStart = -1;
+          }
+        }
+      }
+    }
+
+    if (directions.length > 0) {
+      logger.info(`[repairVoiceDirectorJson] Salvaged ${directions.length} direction objects from malformed JSON`);
+      return { directions };
+    }
+  }
+
+  logger.error(`[repairVoiceDirectorJson] All repair strategies failed. Content preview: ${cleaned.substring(0, 300)}...`);
+  return null;
+}
+
 export default {
   parseJsonResponse,
   attemptJsonRepair,
   detectJsonTruncation,
   extractFirstJsonObject,
-  fixUnquotedStringValues
+  fixUnquotedStringValues,
+  fixMultiLineUnquotedStrings,
+  fixCommonJsonErrors,
+  repairVoiceDirectorJson
 };

@@ -388,12 +388,12 @@ export default function AdvancedConfigureStory({ outlineId, libraryId }) {
             </div>
           </div>
 
-          {/* Multi-Voice */}
+          {/* Voice Acted Dialog (VAD) */}
           <div className="flex items-center justify-between p-4 bg-slate-800/50 rounded-xl">
             <div>
               <div className="text-slate-100 font-medium flex items-center gap-2">
                 <Users className="w-4 h-4 text-golden-400" />
-                Multi-Voice Narration
+                Voice Acted Dialog
               </div>
               <div className="text-slate-400 text-sm">
                 Different voices for {counts.characters} characters
@@ -406,13 +406,36 @@ export default function AdvancedConfigureStory({ outlineId, libraryId }) {
                 multi_voice: value,
                 hide_speech_tags: value
               }))}
-              label="Multi-Voice Narration"
-              description="Different voices for each character"
+              label="Voice Acted Dialog"
+              description="Each character has their own voice actor"
               colorOn="bg-golden-400"
               size="large"
               showLabel={true}
             />
           </div>
+
+          {/* Hide Speech Tags (sub-option when VAD is enabled) */}
+          {config.multi_voice && (
+            <div className="flex items-center justify-between p-4 bg-slate-800/30 rounded-xl ml-4 border-l-2 border-golden-400/30">
+              <div>
+                <div className="text-slate-100 font-medium text-sm">
+                  Streamlined Attribution
+                </div>
+                <div className="text-slate-400 text-xs">
+                  Remove "he said/she replied" - you'll hear who's speaking
+                </div>
+              </div>
+              <AccessibleToggle
+                enabled={config.hide_speech_tags}
+                onChange={(value) => setConfig(prev => ({ ...prev, hide_speech_tags: value }))}
+                label="Hide Speech Tags"
+                description="Remove redundant speech attribution"
+                colorOn="bg-golden-400/70"
+                size="small"
+                showLabel={false}
+              />
+            </div>
+          )}
 
           {/* Sound Effects */}
           <div className="flex items-center justify-between p-4 bg-slate-800/50 rounded-xl">

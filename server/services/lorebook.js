@@ -19,8 +19,11 @@ export class LorebookService {
    */
   async loadEntries() {
     // DB LIMIT PROTECTION: Limit lore entries to 200 max
+    // Explicit columns for performance
     const result = await pool.query(`
-      SELECT * FROM lore_entries
+      SELECT id, story_session_id, entry_type, title, content, tags, importance,
+             parent_location_id, created_at
+      FROM lore_entries
       WHERE story_session_id = $1
       ORDER BY importance DESC
       LIMIT 200
