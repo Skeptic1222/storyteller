@@ -286,7 +286,6 @@ const CircularProgress = memo(function CircularProgress({
           size={size}
           strokeWidth={ringStrokeWidth}
           activeQuadrant={activeQuadrant}
-          stageStatuses={stageStatuses}
         />
         <ProgressCenter
           percent={displayPercent}
@@ -314,7 +313,6 @@ const CircularProgress = memo(function CircularProgress({
           size={size}
           strokeWidth={ringStrokeWidth}
           activeQuadrant={activeQuadrant}
-          stageStatuses={stageStatuses}
         />
 
         {/* Center content */}

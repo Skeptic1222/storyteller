@@ -14,8 +14,8 @@ import { memo, useMemo } from 'react';
 export const QUADRANT_COLORS = {
   Q1: {
     label: 'Story',
-    colorStart: '#0A2342', // Navy (narrimo-midnight)
-    colorEnd: '#1A4A7A',   // Lighter navy
+    colorStart: '#1A3A5C', // Navy (brighter for visibility on dark bg)
+    colorEnd: '#2A5A8A',   // Lighter navy
     stages: ['story']
   },
   Q2: {
@@ -96,7 +96,7 @@ const QuadrantSegment = memo(function QuadrantSegment({
         return { opacity: 1, filter: showGlow ? `url(#${glowId})` : 'none' };
       case 'pending':
       default:
-        return { opacity: 0.25, filter: 'none' };
+        return { opacity: 0.30, filter: 'none' };
     }
   }, [state, showGlow, glowId]);
 

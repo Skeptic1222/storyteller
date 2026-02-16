@@ -45,7 +45,6 @@ const CircularProgressRing = memo(function CircularProgressRing({
   size = 400,
   strokeWidth = 16,
   activeQuadrant = null, // Optionally force active quadrant
-  stageStatuses = {},    // For determining which quadrants are complete
   showBackground = true,
   showDividers = true
 }) {
@@ -90,7 +89,7 @@ const CircularProgressRing = memo(function CircularProgressRing({
   const dividerLines = useMemo(() => {
     if (!showDividers) return null;
 
-    return [90, 180, 270].map((angle) => {
+    return [0, 90, 180, 270].map((angle) => {
       const radian = ((angle - 90) * Math.PI) / 180;
       const innerRadius = radius - strokeWidth / 2 - 2;
       const outerRadius = radius + strokeWidth / 2 + 2;
@@ -164,18 +163,34 @@ const CircularProgressRing = memo(function CircularProgressRing({
         const isCurrentQuadrant = quadrantKey === currentQuadrant;
 
         return (
-          <QuadrantSegment
-            key={quadrantKey}
-            quadrantKey={quadrantKey}
-            center={center}
-            radius={radius}
-            strokeWidth={strokeWidth}
-            startAngle={angles.start}
-            endAngle={angles.end}
-            state={qState.state}
-            fillPercent={qState.fillPercent}
-            showGlow={isCurrentQuadrant && qState.state !== 'pending'}
-          />
+          <g key={quadrantKey}>
+            {/* Background track arc for partial quadrants (shows the unfilled remainder) */}
+            {qState.state === 'partial' && (
+              <QuadrantSegment
+                quadrantKey={quadrantKey}
+                center={center}
+                radius={radius}
+                strokeWidth={strokeWidth}
+                startAngle={angles.start}
+                endAngle={angles.end}
+                state="pending"
+                fillPercent={0}
+                showGlow={false}
+              />
+            )}
+            {/* Actual quadrant arc */}
+            <QuadrantSegment
+              quadrantKey={quadrantKey}
+              center={center}
+              radius={radius}
+              strokeWidth={strokeWidth}
+              startAngle={angles.start}
+              endAngle={angles.end}
+              state={qState.state}
+              fillPercent={qState.fillPercent}
+              showGlow={isCurrentQuadrant && qState.state !== 'pending'}
+            />
+          </g>
         );
       })}
 

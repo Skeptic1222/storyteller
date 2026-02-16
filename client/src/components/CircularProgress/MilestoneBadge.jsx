@@ -132,19 +132,22 @@ const MilestoneBadge = memo(function MilestoneBadge({
 
   // Handle fill animation when transitioning from active to complete
   useEffect(() => {
+    let fillTimeout, bounceTimeout;
     if (status === 'in_progress') {
       setWasActive(true);
     } else if (status === 'success' && wasActive) {
       // Trigger filling animation
       setIsFilling(true);
-      const fillTimeout = setTimeout(() => {
+      fillTimeout = setTimeout(() => {
         setIsFilling(false);
         setShowBounce(true);
-        const bounceTimeout = setTimeout(() => setShowBounce(false), 500);
-        return () => clearTimeout(bounceTimeout);
+        bounceTimeout = setTimeout(() => setShowBounce(false), 500);
       }, 600); // Match the fill animation duration
-      return () => clearTimeout(fillTimeout);
     }
+    return () => {
+      clearTimeout(fillTimeout);
+      clearTimeout(bounceTimeout);
+    };
   }, [status, wasActive]);
 
   const style = getStateStyles(effectiveState, quadrantKey);
@@ -306,19 +309,6 @@ const MilestoneBadge = memo(function MilestoneBadge({
         </div>
       )}
 
-      {/* Inline styles for badge fill animation */}
-      <style>{`
-        @keyframes badgeFill {
-          0% {
-            clip-path: circle(0% at 50% 50%);
-            filter: brightness(0.5);
-          }
-          100% {
-            clip-path: circle(100% at 50% 50%);
-            filter: brightness(1);
-          }
-        }
-      `}</style>
     </>
   );
 });
