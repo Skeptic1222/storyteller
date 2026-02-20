@@ -11,6 +11,7 @@ import AccessibleToggle from '../components/ui/AccessibleToggle';
 import { apiCall } from '../config';
 import { PROVIDER_THRESHOLDS } from '../constants/authorStyles';
 import { AuthorStylePicker } from '../components/configure';
+import DirectorStylePicker from '../components/configure/DirectorStylePicker';
 import { configLog } from '../utils/clientLogger';
 import AdvancedConfigureStory from '../components/configure/AdvancedConfigureStory';
 
@@ -307,7 +308,10 @@ function Configure() {
     custom_prompt: '', // e.g., "Write like Stephen King", "Include dragons", "Set in medieval Japan"
 
     // Author writing style (e.g., 'shakespeare', 'tolkien', 'king')
-    author_style: 'none'
+    author_style: 'none',
+
+    // Director style for VAD production vision (e.g., 'hitchcock', 'spielberg')
+    director_style: null
   });
 
   const [selectedVoice, setSelectedVoice] = useState(null);
@@ -810,7 +814,8 @@ function Configure() {
             success: true,
             reasoning: data.reasoning?.length ? data.reasoning : appliedReasons,
             suggestedConfig: data.suggestedConfig,
-            sectionsUpdated: Object.keys(autoSelect).filter(k => autoSelect[k])
+            sectionsUpdated: Object.keys(autoSelect).filter(k => autoSelect[k]),
+            degraded: data.analysis?.keyword_fallback || data.analysis?.llm_failed || false
           });
         }
       } else {
@@ -1126,13 +1131,24 @@ function Configure() {
           {/* Analysis result */}
           {analysisResult && (
             <div className={`mt-3 p-3 rounded-xl text-sm ${
-              analysisResult.success
+              analysisResult.success && !analysisResult.degraded
                 ? 'bg-green-500/10 border border-green-500/30 text-green-300'
-                : 'bg-red-500/10 border border-red-500/30 text-red-300'
+                : analysisResult.success && analysisResult.degraded
+                  ? 'bg-amber-500/10 border border-amber-500/30 text-amber-300'
+                  : 'bg-red-500/10 border border-red-500/30 text-red-300'
             }`}>
               {analysisResult.success ? (
                 <>
-                  <div className="font-medium mb-1">Settings auto-configured!</div>
+                  <div className="font-medium mb-1">
+                    {analysisResult.degraded
+                      ? 'Settings configured (keyword-based — AI temporarily unavailable)'
+                      : 'Settings auto-configured!'}
+                  </div>
+                  {analysisResult.degraded && (
+                    <div className="text-xs text-amber-400/80 mb-2">
+                      AI analysis hit a rate limit. Settings were inferred from keywords in your premise and may be less precise. You can retry later or adjust manually.
+                    </div>
+                  )}
                   <ul className="text-xs space-y-1 text-slate-300">
                     {(Array.isArray(analysisResult.reasoning)
                       ? analysisResult.reasoning
@@ -2073,6 +2089,18 @@ function Configure() {
             />
           </div>
         </section>
+
+        {/* Director Style Picker - Only visible when Voice Acting is enabled */}
+        {config.multi_voice && (
+          <section>
+            <DirectorStylePicker
+              selectedDirector={config.director_style || null}
+              onDirectorChange={(director) => setConfig(prev => ({ ...prev, director_style: director }))}
+              genres={config.genres || {}}
+              disabled={!config.multi_voice}
+            />
+          </section>
+        )}
 
         {/* Ambient Sound Effects Toggle */}
         <section>

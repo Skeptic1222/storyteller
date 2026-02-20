@@ -15,6 +15,8 @@ import OpenAI from 'openai';
 import { pool } from '../database/pool.js';
 import { logger, aiLogger } from '../utils/logger.js';
 import { getAuthorStyle } from './authorStyles.js';
+import { formatDNAForOutline, formatDNAForScene } from './storyDNA.js';
+import { getDirectorStyle, buildDirectorVADGuidance, buildDirectorSFXGuidance, buildDirectorVoiceGuidance } from './directorStyles.js';
 import * as usageTracker from './usageTracker.js';
 import {
   getModelForAgent,
@@ -913,8 +915,13 @@ CHARACTER REQUIREMENTS:
 Include these character types/names in the story: ${preferences.character_hints.join(', ')}`;
   }
 
+  // Build Story DNA guidance (replaces raw JSON dump for tonal direction)
+  const storyDNAGuidance = preferences.story_dna
+    ? formatDNAForOutline(preferences.story_dna)
+    : '';
+
   const prompt = `Create a story outline based on these preferences:
-${JSON.stringify(preferences, null, 2)}
+${storyDNAGuidance || JSON.stringify(preferences, null, 2)}
 ${storyRequestInstruction}
 ${characterHintsInstruction}
 
@@ -1592,7 +1599,18 @@ GENERAL VAD WRITING PRINCIPLES:
 5. Include meaningful pauses through sentence structure
 6. Characters should sound like REAL PEOPLE, not prose descriptions of speech
 `;
-    logger.info(`[Scene+Dialogue] VAD MODE ENABLED | multi_voice: true | hide_speech_tags: ${preferences?.hide_speech_tags}`);
+
+    // Phase 4: Director Style integration — adds cinematic production vision
+    const directorKey = preferences?.director_style || null;
+    if (directorKey) {
+      const directorGuidance = buildDirectorVADGuidance(directorKey);
+      if (directorGuidance) {
+        vadGuidance += `\n${directorGuidance}`;
+        logger.info(`[Scene+Dialogue] Director Style applied: ${directorKey}`);
+      }
+    }
+
+    logger.info(`[Scene+Dialogue] VAD MODE ENABLED | multi_voice: true | hide_speech_tags: ${preferences?.hide_speech_tags} | director: ${directorKey || 'none'}`);
   }
 
   // ========== PROSE QUALITY REQUIREMENTS ==========
@@ -1728,6 +1746,8 @@ ${proseQualityRequirements}
 ${preferences?.bedtime_mode ? 'Keep the tone calm and soothing for bedtime.' : ''}
 ${preferences?.is_final ? 'This is the final scene - bring the story to a satisfying conclusion.' : ''}
 ${authorStyleGuidance}${matureContentGuidance}${vadGuidance}
+${preferences?.story_dna ? formatDNAForScene(preferences.story_dna, preferences.sceneIndex || 0, preferences.totalScenes || 5) : ''}
+${preferences?.continuityPrompt || ''}
 
 CRITICAL: Return JSON with "prose" (containing [CHAR:Name]...[/CHAR] tags), "speakers_used", "dialogue_count", and "new_characters" fields.`;
 
@@ -1789,6 +1809,8 @@ ${proseQualityRequirements}
 ${preferences?.bedtime_mode ? 'Keep the tone calm and soothing for bedtime.' : ''}
 ${preferences?.is_final ? 'This is the final scene - bring the story to a satisfying conclusion.' : ''}
 ${authorStyleGuidance}${matureContentGuidance}${vadGuidance}
+${preferences?.story_dna ? formatDNAForScene(preferences.story_dna, preferences.sceneIndex || 0, preferences.totalScenes || 5) : ''}
+${preferences?.continuityPrompt || ''}
 
 Remember: Return JSON with "prose", "dialogue_map", and "new_characters" fields.`;
   }

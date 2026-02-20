@@ -22,6 +22,7 @@ const SharedStory = lazy(() => import('./pages/SharedStory'));
 const Admin = lazy(() => import('./pages/Admin'));
 const Subscription = lazy(() => import('./pages/Subscription'));
 const Settings = lazy(() => import('./pages/Settings'));
+const ScriptEditor = lazy(() => import('./pages/ScriptEditor'));
 // DnD Campaign pages removed - migrated to GameMaster (2026-01-08)
 
 // Loading spinner for lazy-loaded pages
@@ -103,6 +104,7 @@ function App() {
                     <Route path="/admin" element={<RequireAuth><Admin /></RequireAuth>} />
                     <Route path="/subscription" element={<RequireAuth><Subscription /></RequireAuth>} />
                     <Route path="/settings" element={<RequireAuth><Settings /></RequireAuth>} />
+                    <Route path="/script/:sessionId" element={<RequireAuth><ScriptEditor /></RequireAuth>} />
                   </Routes>
                 </Suspense>
               </div>

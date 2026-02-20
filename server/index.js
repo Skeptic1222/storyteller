@@ -42,6 +42,7 @@ import continuationRoutes from './routes/continuation.js';
 import analyticsRoutes from './routes/analytics.js';
 import storyBibleRoutes from './routes/story-bible.js';
 import testStoriesRoutes from './routes/testStories.js';
+import scriptEditorRoutes from './routes/scriptEditor.js';
 // DnD routes removed - migrated to GameMaster project (2026-01-08)
 
 const __filename = fileURLToPath(import.meta.url);
@@ -348,7 +349,8 @@ const apiRoutes = [
   ['continuation', continuationRoutes],
   ['analytics', analyticsRoutes],
   ['story-bible', storyBibleRoutes],
-  ['test-stories', testStoriesRoutes]
+  ['test-stories', testStoriesRoutes],
+  ['script', scriptEditorRoutes]
   // DnD campaign/maps routes removed - migrated to GameMaster (2026-01-08)
 ];
 

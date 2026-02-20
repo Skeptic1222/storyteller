@@ -348,7 +348,11 @@ export function buildOutlinePreferences(session, config) {
     series_settings: seriesSettings,
     author_style: config.author_style || null,
     story_request: config.story_request || customPrompt || null,
-    character_count: config.character_count || null
+    character_count: config.character_count || null,
+    // Story DNA (holistic tonal blueprint, generated before outline)
+    story_dna: config.story_dna || null,
+    // Phase 4: Director style for VAD production vision
+    director_style: config.director_style || null
   };
 }
 

@@ -43,36 +43,36 @@ const AUDIO_CACHE_DIR = process.env.AUDIO_CACHE_DIR || join(__dirname, '..', '..
 //   - suitable_ages: Array of character age groups this voice works well for
 export const RECOMMENDED_VOICES = {
   male_narrators: [
-    { voice_id: 'JBFqnCBsd6RMkjVDRZzb', name: 'George', style: 'warm', gender: 'male', description: 'Warm British narrator, perfect for classic tales', age_group: 'middle_aged', can_be_child: false, suitable_ages: ['adult', 'middle_aged', 'elderly'] },
-    { voice_id: 'onwK4e9ZLuTAKqWW03F9', name: 'Daniel', style: 'authoritative', gender: 'male', description: 'Deep authoritative British accent', age_group: 'adult', can_be_child: false, suitable_ages: ['adult', 'middle_aged', 'elderly'] },
-    { voice_id: 'N2lVS1w4EtoT3dr4eOWO', name: 'Callum', style: 'gravelly', gender: 'male', description: 'Gravelly Transatlantic, great for D&D', age_group: 'adult', can_be_child: false, suitable_ages: ['adult', 'middle_aged'] },
-    { voice_id: 'TxGEqnHWrfWFTfGW9XjX', name: 'Josh', style: 'deep', gender: 'male', description: 'Deep American male', age_group: 'adult', can_be_child: false, suitable_ages: ['adult', 'middle_aged'] },
-    { voice_id: 'VR6AewLTigWG4xSOukaG', name: 'Arnold', style: 'crisp', gender: 'male', description: 'Crisp American narrator', age_group: 'adult', can_be_child: false, suitable_ages: ['young_adult', 'adult', 'middle_aged'] },
-    { voice_id: 'pNInz6obpgDQGcFmaJgB', name: 'Adam', style: 'middle', gender: 'male', description: 'Deep middle-aged American', age_group: 'middle_aged', can_be_child: false, suitable_ages: ['adult', 'middle_aged', 'elderly'] },
-    { voice_id: 'yoZ06aMxZJJ28mfd3POQ', name: 'Sam', style: 'raspy', gender: 'male', description: 'Raspy American, great for mystery', age_group: 'adult', can_be_child: false, suitable_ages: ['adult', 'middle_aged', 'elderly'] }
+    { voice_id: 'JBFqnCBsd6RMkjVDRZzb', name: 'George', style: 'warm', gender: 'male', accent: 'british', description: 'Warm British narrator, perfect for classic tales', age_group: 'middle_aged', can_be_child: false, suitable_ages: ['adult', 'middle_aged', 'elderly'] },
+    { voice_id: 'onwK4e9ZLuTAKqWW03F9', name: 'Daniel', style: 'authoritative', gender: 'male', accent: 'british', description: 'Deep authoritative British accent', age_group: 'adult', can_be_child: false, suitable_ages: ['adult', 'middle_aged', 'elderly'] },
+    { voice_id: 'N2lVS1w4EtoT3dr4eOWO', name: 'Callum', style: 'gravelly', gender: 'male', accent: 'transatlantic', description: 'Gravelly Transatlantic, great for D&D', age_group: 'adult', can_be_child: false, suitable_ages: ['adult', 'middle_aged'] },
+    { voice_id: 'TxGEqnHWrfWFTfGW9XjX', name: 'Josh', style: 'deep', gender: 'male', accent: 'american', description: 'Deep American male', age_group: 'adult', can_be_child: false, suitable_ages: ['adult', 'middle_aged'] },
+    { voice_id: 'VR6AewLTigWG4xSOukaG', name: 'Arnold', style: 'crisp', gender: 'male', accent: 'american', description: 'Crisp American narrator', age_group: 'adult', can_be_child: false, suitable_ages: ['young_adult', 'adult', 'middle_aged'] },
+    { voice_id: 'pNInz6obpgDQGcFmaJgB', name: 'Adam', style: 'middle', gender: 'male', accent: 'american', description: 'Deep middle-aged American', age_group: 'middle_aged', can_be_child: false, suitable_ages: ['adult', 'middle_aged', 'elderly'] },
+    { voice_id: 'yoZ06aMxZJJ28mfd3POQ', name: 'Sam', style: 'raspy', gender: 'male', accent: 'american', description: 'Raspy American, great for mystery', age_group: 'adult', can_be_child: false, suitable_ages: ['adult', 'middle_aged', 'elderly'] }
   ],
   female_narrators: [
-    { voice_id: 'EXAVITQu4vr4xnSDxMaL', name: 'Bella', style: 'soft', gender: 'female', description: 'Soft American female, ideal for calm stories', age_group: 'adult', can_be_child: false, suitable_ages: ['young_adult', 'adult', 'middle_aged'] },
-    { voice_id: 'XB0fDUnXU5powFXDhCwa', name: 'Charlotte', style: 'seductive', gender: 'female', description: 'Swedish seductive voice', age_group: 'adult', can_be_child: false, suitable_ages: ['young_adult', 'adult'] },
-    { voice_id: 'pFZP5JQG7iQjIQuC4Bku', name: 'Lily', style: 'British', gender: 'female', description: 'British warm narrator', age_group: 'adult', can_be_child: false, suitable_ages: ['young_adult', 'adult', 'middle_aged'] },
-    { voice_id: 'jBpfuIE2acCO8z3wKNLl', name: 'Gigi', style: 'young', gender: 'female', description: 'Young American female, great for YA', age_group: 'young', can_be_child: true, suitable_ages: ['child', 'teen', 'young_adult'] },
-    { voice_id: 'ThT5KcBeYPX3keUQqHPh', name: 'Dorothy', style: 'pleasant', gender: 'female', description: 'Pleasant British storyteller', age_group: 'middle_aged', can_be_child: false, suitable_ages: ['adult', 'middle_aged', 'elderly'] },
-    { voice_id: 'MF3mGyEYCl7XYWbV9V6O', name: 'Elli', style: 'emotional', gender: 'female', description: 'Emotional American female', age_group: 'young_adult', can_be_child: false, suitable_ages: ['teen', 'young_adult', 'adult'] },
-    { voice_id: 'oWAxZDx7w5VEj9dCyTzz', name: 'Grace', style: 'gentle', gender: 'female', description: 'Gentle Southern American', age_group: 'adult', can_be_child: false, suitable_ages: ['adult', 'middle_aged', 'elderly'] }
+    { voice_id: 'EXAVITQu4vr4xnSDxMaL', name: 'Bella', style: 'soft', gender: 'female', accent: 'american', description: 'Soft American female, ideal for calm stories', age_group: 'adult', can_be_child: false, suitable_ages: ['young_adult', 'adult', 'middle_aged'] },
+    { voice_id: 'XB0fDUnXU5powFXDhCwa', name: 'Charlotte', style: 'seductive', gender: 'female', accent: 'swedish', description: 'Swedish seductive voice', age_group: 'adult', can_be_child: false, suitable_ages: ['young_adult', 'adult'] },
+    { voice_id: 'pFZP5JQG7iQjIQuC4Bku', name: 'Lily', style: 'British', gender: 'female', accent: 'british', description: 'British warm narrator', age_group: 'adult', can_be_child: false, suitable_ages: ['young_adult', 'adult', 'middle_aged'] },
+    { voice_id: 'jBpfuIE2acCO8z3wKNLl', name: 'Gigi', style: 'young', gender: 'female', accent: 'american', description: 'Young American female, great for YA', age_group: 'young', can_be_child: true, suitable_ages: ['child', 'teen', 'young_adult'] },
+    { voice_id: 'ThT5KcBeYPX3keUQqHPh', name: 'Dorothy', style: 'pleasant', gender: 'female', accent: 'british', description: 'Pleasant British storyteller', age_group: 'middle_aged', can_be_child: false, suitable_ages: ['adult', 'middle_aged', 'elderly'] },
+    { voice_id: 'MF3mGyEYCl7XYWbV9V6O', name: 'Elli', style: 'emotional', gender: 'female', accent: 'american', description: 'Emotional American female', age_group: 'young_adult', can_be_child: false, suitable_ages: ['teen', 'young_adult', 'adult'] },
+    { voice_id: 'oWAxZDx7w5VEj9dCyTzz', name: 'Grace', style: 'gentle', gender: 'female', accent: 'american', description: 'Gentle Southern American', age_group: 'adult', can_be_child: false, suitable_ages: ['adult', 'middle_aged', 'elderly'] }
   ],
   character_voices: [
-    { voice_id: 'IKne3meq5aSn9XLyUdCD', name: 'Charlie', style: 'Australian', gender: 'male', description: 'Friendly Australian male', age_group: 'young_adult', can_be_child: false, suitable_ages: ['teen', 'young_adult', 'adult'] },
-    { voice_id: 'g5CIjZEefAph4nQFvHAz', name: 'Ethan', style: 'young', gender: 'male', description: 'Young American male', age_group: 'young', can_be_child: true, suitable_ages: ['child', 'teen', 'young_adult'] },
-    { voice_id: 'cjVigY5qzO86Huf0OWal', name: 'Eric', style: 'friendly', gender: 'male', description: 'Friendly middle-aged American', age_group: 'middle_aged', can_be_child: false, suitable_ages: ['adult', 'middle_aged'] },
-    { voice_id: 'ODq5zmih8GrVes37Dizd', name: 'Patrick', style: 'shouty', gender: 'male', description: 'Shouty American, great for action', age_group: 'adult', can_be_child: false, suitable_ages: ['adult', 'middle_aged'] },
-    { voice_id: 'SOYHLrjzK2X1ezoPC6cr', name: 'Harry', style: 'anxious', gender: 'male', description: 'Anxious young British male', age_group: 'young', can_be_child: true, suitable_ages: ['child', 'teen', 'young_adult'] },
-    { voice_id: 'GBv7mTt0atIp3Br8iCZE', name: 'Thomas', style: 'calm', gender: 'male', description: 'Calm American male', age_group: 'adult', can_be_child: false, suitable_ages: ['young_adult', 'adult', 'middle_aged'] }
+    { voice_id: 'IKne3meq5aSn9XLyUdCD', name: 'Charlie', style: 'Australian', gender: 'male', accent: 'australian', description: 'Friendly Australian male', age_group: 'young_adult', can_be_child: false, suitable_ages: ['teen', 'young_adult', 'adult'] },
+    { voice_id: 'g5CIjZEefAph4nQFvHAz', name: 'Ethan', style: 'young', gender: 'male', accent: 'american', description: 'Young American male', age_group: 'young', can_be_child: true, suitable_ages: ['child', 'teen', 'young_adult'] },
+    { voice_id: 'cjVigY5qzO86Huf0OWal', name: 'Eric', style: 'friendly', gender: 'male', accent: 'american', description: 'Friendly middle-aged American', age_group: 'middle_aged', can_be_child: false, suitable_ages: ['adult', 'middle_aged'] },
+    { voice_id: 'ODq5zmih8GrVes37Dizd', name: 'Patrick', style: 'shouty', gender: 'male', accent: 'american', description: 'Shouty American, great for action', age_group: 'adult', can_be_child: false, suitable_ages: ['adult', 'middle_aged'] },
+    { voice_id: 'SOYHLrjzK2X1ezoPC6cr', name: 'Harry', style: 'anxious', gender: 'male', accent: 'british', description: 'Anxious young British male', age_group: 'young', can_be_child: true, suitable_ages: ['child', 'teen', 'young_adult'] },
+    { voice_id: 'GBv7mTt0atIp3Br8iCZE', name: 'Thomas', style: 'calm', gender: 'male', accent: 'american', description: 'Calm American male', age_group: 'adult', can_be_child: false, suitable_ages: ['young_adult', 'adult', 'middle_aged'] }
   ],
   expressive_voices: [
-    { voice_id: 'XrExE9yKIg1WjnnlVkGX', name: 'Matilda', style: 'warm', gender: 'female', description: 'Warm American, great for children\'s stories', age_group: 'young', can_be_child: true, suitable_ages: ['child', 'teen', 'young_adult'] },
-    { voice_id: 'CYw3kZ02Hs0563khs1Fj', name: 'Dave', style: 'conversational', gender: 'male', description: 'Conversational British-Essex', age_group: 'adult', can_be_child: false, suitable_ages: ['young_adult', 'adult'] },
-    { voice_id: 'FGY2WhTYpPnrIDTdsKH5', name: 'Laura', style: 'upbeat', gender: 'female', description: 'Upbeat American female', age_group: 'young_adult', can_be_child: true, suitable_ages: ['child', 'teen', 'young_adult', 'adult'] },
-    { voice_id: 'TX3LPaxmHKxFdv7VOQHJ', name: 'Liam', style: 'articulate', gender: 'male', description: 'Articulate American male', age_group: 'adult', can_be_child: false, suitable_ages: ['young_adult', 'adult', 'middle_aged'] }
+    { voice_id: 'XrExE9yKIg1WjnnlVkGX', name: 'Matilda', style: 'warm', gender: 'female', accent: 'american', description: 'Warm American, great for children\'s stories', age_group: 'young', can_be_child: true, suitable_ages: ['child', 'teen', 'young_adult'] },
+    { voice_id: 'CYw3kZ02Hs0563khs1Fj', name: 'Dave', style: 'conversational', gender: 'male', accent: 'british', description: 'Conversational British-Essex', age_group: 'adult', can_be_child: false, suitable_ages: ['young_adult', 'adult'] },
+    { voice_id: 'FGY2WhTYpPnrIDTdsKH5', name: 'Laura', style: 'upbeat', gender: 'female', accent: 'american', description: 'Upbeat American female', age_group: 'young_adult', can_be_child: true, suitable_ages: ['child', 'teen', 'young_adult', 'adult'] },
+    { voice_id: 'TX3LPaxmHKxFdv7VOQHJ', name: 'Liam', style: 'articulate', gender: 'male', accent: 'american', description: 'Articulate American male', age_group: 'adult', can_be_child: false, suitable_ages: ['young_adult', 'adult', 'middle_aged'] }
   ]
 };
 

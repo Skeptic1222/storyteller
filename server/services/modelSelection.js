@@ -117,6 +117,7 @@ const AGENT_CATEGORY_MAP = {
   'conversation_router': AGENT_CATEGORIES.UTILITY,
   'cover_validator': AGENT_CATEGORIES.UTILITY,
   'gender_validator': AGENT_CATEGORIES.UTILITY,
+  'style_validator': AGENT_CATEGORIES.UTILITY,       // Author style scoring (structured JSON output)
   'unknown': AGENT_CATEGORIES.UTILITY  // Default fallback
 };
 

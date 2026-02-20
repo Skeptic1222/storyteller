@@ -1688,6 +1688,12 @@ function Story() {
               >
                 View in Library
               </button>
+              <button
+                onClick={() => navigate(`/script/${sessionId}`)}
+                className="px-8 py-3 bg-slate-800 border border-purple-400 rounded-full text-purple-400 hover:bg-slate-700"
+              >
+                Edit Script
+              </button>
             </div>
           </div>
         ) : (

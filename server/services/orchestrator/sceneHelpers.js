@@ -500,7 +500,13 @@ export function buildScenePreferences({ config, isFinal, sceneIndex, targetScene
     adultContent: intensity.adultContent || 0,
     // VAD settings - FOUNDATIONAL: These change HOW stories are written, not just post-processed
     multi_voice: config?.multi_voice === true,
-    hide_speech_tags: config?.hide_speech_tags === true
+    hide_speech_tags: config?.hide_speech_tags === true,
+    // Story DNA - holistic tonal blueprint (generated at config time)
+    story_dna: config?.story_dna || null,
+    sceneIndex: sceneIndex,
+    totalScenes: targetScenes,
+    // Phase 4: Director Style for VAD production vision
+    director_style: config?.director_style || null
   };
 }
 

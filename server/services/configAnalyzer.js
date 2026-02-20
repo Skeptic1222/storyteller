@@ -40,6 +40,7 @@ const SENSIBLE_DEFAULTS = {
   bedtime_mode: false,
   narrator: {
     preferred_gender: 'neutral',
+    preferred_accent: 'neutral',
     voice_style: 'dramatic',
     characteristics: [],
     tone_descriptors: '',
@@ -146,6 +147,7 @@ Analyze the premise and return JSON with the following structure (be precise and
   "bedtime_reasoning": "Is this appropriate for pre-sleep stories?",
   "narrator": {
     "preferred_gender": "masculine|feminine|neutral",
+    "preferred_accent": "british|american|australian|neutral",
     "voice_style": "dramatic|warm|mysterious|playful|epic|horror|noir|whimsical|calm",
     "characteristics": ["deep", "gravelly", "rich", "soothing", "commanding", "gentle", "authoritative", "raspy", "silky"],
     "tone_descriptors": "2-3 word description like 'gruff and commanding' or 'warm and gentle'",
@@ -165,6 +167,12 @@ NARRATOR SELECTION INSTRUCTIONS:
 - Epic fantasy → deep, dramatic, commanding
 - Noir/detective → gravelly, cynical, world-weary
 - Think: "How would audiobook fans expect this to be narrated?"
+
+ACCENT SELECTION (preferred_accent):
+- "british": British comedy, Dickens/Austen/Pratchett settings, stories set in England/UK, Monty Python style, dry wit humor, Victorian/Regency era
+- "american": American noir, westerns, modern US settings, cowboy stories, stories set in New York/Texas/Chicago
+- "australian": Stories set in Australia, outback adventures, Australian characters
+- "neutral": No strong accent preference — epic fantasy, sci-fi, genre fiction without regional setting. This is the DEFAULT.
 
 AUTHOR STYLE CATALOG (use this to select author_style):
 ${authorCatalog}
@@ -406,8 +414,14 @@ Return ONLY valid JSON, no markdown, no explanations outside JSON.`;
 
     return analysis;
   } catch (error) {
-    logger.error('[ConfigAnalyzer] LLM analysis failed:', error.message);
-    return { ...SENSIBLE_DEFAULTS, llm_failed: true, llm_error: error.message };
+    // Detect rate-limit (429) errors so callers can use keyword fallback instead of retrying
+    const isRateLimit = error.status === 429 ||
+      error.code === 'rate_limit_exceeded' ||
+      /rate.?limit|429|too many requests/i.test(error.message);
+
+    const errorType = isRateLimit ? 'rate_limit' : error.message;
+    logger.error(`[ConfigAnalyzer] LLM analysis failed (${isRateLimit ? 'RATE_LIMIT' : 'ERROR'}):`, error.message);
+    return { ...SENSIBLE_DEFAULTS, llm_failed: true, llm_error: errorType };
   }
 }
 
@@ -452,7 +466,7 @@ export function generateReasoningFromLLM(llmAnalysis) {
       .join(', ');
 
     if (topGenres) {
-      lines.push(`📚 **Genres**: ${topGenres}`);
+      lines.push(`📚 Genres: ${topGenres}`);
       if (llmAnalysis.genres_reasoning) {
         lines.push(`   ${llmAnalysis.genres_reasoning}`);
       }
@@ -460,37 +474,55 @@ export function generateReasoningFromLLM(llmAnalysis) {
   }
 
   if (llmAnalysis.intensity) {
-    lines.push(`⚡ **Content Intensity**:`);
-    lines.push(`   ${llmAnalysis.intensity.reasoning}`);
+    const intensityReasoning = llmAnalysis.intensity.reasoning;
+    if (intensityReasoning) {
+      lines.push(`⚡ Content Intensity: ${intensityReasoning}`);
+    } else {
+      // Summarize top intensities for keyword fallback
+      const topIntensities = Object.entries(llmAnalysis.intensity)
+        .filter(([k, v]) => typeof v === 'number' && v > 20 && k !== 'reasoning')
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([k, v]) => `${k} ${v}%`);
+      if (topIntensities.length) {
+        lines.push(`⚡ Content Intensity: ${topIntensities.join(', ')}`);
+      }
+    }
   }
 
   if (llmAnalysis.format) {
-    lines.push(`📖 **Story Format**: ${llmAnalysis.format}`);
-    lines.push(`   ${llmAnalysis.format_reasoning}`);
+    lines.push(`📖 Story Format: ${llmAnalysis.format}`);
+    if (llmAnalysis.format_reasoning) {
+      lines.push(`   ${llmAnalysis.format_reasoning}`);
+    }
   }
 
   if (llmAnalysis.character_count) {
-    lines.push(`👥 **Character Count**: ~${llmAnalysis.character_count.estimated} characters`);
-    lines.push(`   ${llmAnalysis.character_count.reasoning}`);
+    lines.push(`👥 Character Count: ~${llmAnalysis.character_count.estimated} characters`);
+    if (llmAnalysis.character_count.reasoning) {
+      lines.push(`   ${llmAnalysis.character_count.reasoning}`);
+    }
   }
 
   // Voice acting (check both new and legacy field names)
   const voiceActed = llmAnalysis.voice_acted ?? llmAnalysis.multi_narrator;
   const voiceActedReasoning = llmAnalysis.voice_acted_reasoning || llmAnalysis.multi_narrator_reasoning;
   if (voiceActed !== undefined) {
-    lines.push(`🎭 **Voice Acting**: ${voiceActed ? 'Character voices (dialogue voiced by different speakers)' : 'Single narrator (one voice reads all)'}`);
+    lines.push(`🎭 Voice Acting: ${voiceActed ? 'Character voices (dialogue voiced by different speakers)' : 'Single narrator (one voice reads all)'}`);
     if (voiceActedReasoning) {
       lines.push(`   ${voiceActedReasoning}`);
     }
   }
 
   if (llmAnalysis.author_style) {
-    lines.push(`✍️ **Writing Style**: ${llmAnalysis.author_style}`);
-    lines.push(`   ${llmAnalysis.author_reasoning}`);
+    lines.push(`✍️ Writing Style: ${llmAnalysis.author_style}`);
+    if (llmAnalysis.author_reasoning) {
+      lines.push(`   ${llmAnalysis.author_reasoning}`);
+    }
   }
 
   if (llmAnalysis.bedtime_mode) {
-    lines.push(`😴 **Bedtime Appropriate**: Yes - ${llmAnalysis.bedtime_reasoning}`);
+    lines.push(`😴 Bedtime Appropriate: Yes - ${llmAnalysis.bedtime_reasoning || ''}`);
   }
 
   return lines.join('\n');

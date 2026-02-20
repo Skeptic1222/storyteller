@@ -42,6 +42,24 @@ import { DEFAULT_NARRATOR_VOICE_ID, DM_VOICE_ID } from '../constants/voices.js';
 import { normalizeStyleValue } from '../utils/styleUtils.js';
 import { calculateEffectiveLimits } from '../utils/audienceLimits.js';
 import { runHybridPipeline, validateUserIntent } from './hybridContentPipeline.js';
+import { generateStoryDNA } from './storyDNA.js';
+
+// Phase 2: Story State Tracker — anti-hallucination continuity tracking
+import {
+  initializeStoryState,
+  formatStateForPrompt,
+  validateSceneConsistency,
+  updateStoryState,
+  saveStoryState,
+  loadStoryState
+} from './storyStateTracker.js';
+
+// Phase 3: Author Style Validator — post-generation style scoring + rewrite
+import {
+  validateAuthorStyle,
+  rewriteForStyle,
+  saveStyleScore
+} from './agents/authorStyleValidator.js';
 
 // Import orchestrator modules
 import {
@@ -835,6 +853,24 @@ export class Orchestrator {
 
     logger.info(`Generating outline for session ${this.sessionId}`, { preferences });
 
+    // Generate Story DNA — holistic tonal blueprint from all sliders + premise
+    this.emitProgress('outline_analyzing_tone');
+    try {
+      const storyDNA = await generateStoryDNA(preferences, this.sessionId);
+      // Store DNA in config for downstream use (scene generation, etc.)
+      config.story_dna = storyDNA;
+      await pool.query(
+        'UPDATE story_sessions SET config_json = $1 WHERE id = $2',
+        [JSON.stringify(config), this.sessionId]
+      );
+      // Also attach to preferences so outline generation uses it
+      preferences.story_dna = storyDNA;
+      logger.info(`[Orchestrator] Story DNA generated: "${storyDNA.genre_fusion}"`);
+    } catch (dnaError) {
+      logger.warn(`[Orchestrator] Story DNA generation failed (non-fatal): ${dnaError.message}`);
+      // Continue without DNA — outline generation still works with raw preferences
+    }
+
     // Generate outline
     this.emitProgress('outline_generating');
     const outline = await generateOutline(preferences, this.sessionId);
@@ -910,6 +946,16 @@ export class Orchestrator {
     });
 
     this.outline = { ...result, ...outline };
+
+    // Phase 2: Initialize Story State Tracker from outline + characters
+    try {
+      const characters = outline.main_characters || [];
+      const storyState = initializeStoryState(outline, characters, this.sessionId);
+      await saveStoryState(this.sessionId, storyState);
+      logger.info(`[Orchestrator] Story state initialized: ${Object.keys(storyState.characters).length} chars, ${storyState.plotThreads.length} threads`);
+    } catch (stateError) {
+      logger.warn(`[Orchestrator] Story state initialization failed (non-fatal): ${stateError.message}`);
+    }
 
     // ★ NEW: Generate voice profiles for better emotional narration ★
     // This runs in parallel to avoid slowing down outline generation too much
@@ -1076,6 +1122,19 @@ export class Orchestrator {
       }
     }
 
+    // Phase 2: Load story state for continuity injection
+    let storyState = null;
+    let continuityPrompt = '';
+    try {
+      storyState = await loadStoryState(this.sessionId);
+      continuityPrompt = formatStateForPrompt(storyState, sceneIndex);
+      if (continuityPrompt) {
+        logger.info(`[Orchestrator] Continuity prompt loaded (${continuityPrompt.length} chars)`);
+      }
+    } catch (stateError) {
+      logger.warn(`[Orchestrator] Story state loading failed (non-fatal): ${stateError.message}`);
+    }
+
     // Check multi-voice early - BUG FIX: Use same logic as voiceHelpers.shouldUseMultiVoice
     // Previously this was inconsistent: orchestrator required explicit true, voiceHelpers defaulted to enabled
     // Now both use the same logic: enabled if explicitly true OR if characters exist (unless explicitly false)
@@ -1132,6 +1191,11 @@ export class Orchestrator {
       sceneIndex,
       targetScenes
     });
+
+    // Phase 2: Inject continuity requirements into scene preferences
+    if (continuityPrompt) {
+      scenePreferences.continuityPrompt = continuityPrompt;
+    }
 
     // Add intent analysis to preferences for explicit content guidance
     if (intentAnalysis) {
@@ -1554,6 +1618,48 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
       });
     }
 
+    // Phase 2: Post-scene state tracking (validate consistency + update state)
+    // Runs in parallel for efficiency — non-blocking
+    if (storyState) {
+      Promise.allSettled([
+        validateSceneConsistency(rawText, storyState, sceneIndex, this.sessionId),
+        updateStoryState(rawText, storyState, sceneIndex, this.sessionId)
+      ]).then(([validationRes, updateRes]) => {
+        if (validationRes.status === 'fulfilled' && validationRes.value.severity === 'major') {
+          logger.warn(`[Orchestrator] Major continuity issues detected in scene ${sceneIndex + 1}`);
+        }
+        if (updateRes.status === 'fulfilled') {
+          saveStoryState(this.sessionId, updateRes.value).catch(e =>
+            logger.warn(`[Orchestrator] Story state save failed: ${e.message}`)
+          );
+        }
+      }).catch(e => logger.warn(`[Orchestrator] Story state tracking error: ${e.message}`));
+    }
+
+    // Phase 3: Author Style Validation (conditional rewrite if score < 55)
+    const authorStyleKey = this.session.config_json?.author_style || null;
+    let styleScore = null;
+    if (authorStyleKey) {
+      try {
+        const styleValidation = await validateAuthorStyle(rawText, authorStyleKey, this.sessionId);
+        styleScore = styleValidation.score;
+        if (styleValidation.needsRewrite && !styleValidation.skipped) {
+          logger.info(`[Orchestrator] Author style score ${styleScore}/100 < 55, triggering rewrite`);
+          const rewriteResult = await rewriteForStyle(rawText, authorStyleKey, styleValidation, this.sessionId);
+          if (rewriteResult.rewritten) {
+            rawText = rewriteResult.rewrittenText;
+            polishedText = rewriteResult.rewrittenText;
+            styleScore = rewriteResult.newScore;
+            logger.info(`[Orchestrator] Style rewrite complete: ${rewriteResult.originalScore} → ${rewriteResult.newScore}`);
+          }
+        } else if (!styleValidation.skipped) {
+          logger.info(`[Orchestrator] Author style score: ${styleScore}/100 (pass)`);
+        }
+      } catch (styleError) {
+        logger.warn(`[Orchestrator] Author style validation failed (non-fatal): ${styleError.message}`);
+      }
+    }
+
     // Determine final text
     let finalText = willUseMultiVoice ? rawText : polishedText;
 
@@ -1589,6 +1695,13 @@ ${scenePreferences.is_final ? 'This is the final scene - bring the story to a sa
       multiVoice: willUseMultiVoice
     });
     this.logTiming('saveScene', saveStartTime);
+
+    // Phase 3: Save style score to scene record (non-blocking)
+    if (styleScore !== null && scene?.id) {
+      saveStyleScore(scene.id, styleScore, this.sessionId).catch(e =>
+        logger.warn(`[Orchestrator] Style score save failed: ${e.message}`)
+      );
+    }
 
     // Speaker validation (C+E architecture)
     let dialogueMap = sceneDialogueMap;

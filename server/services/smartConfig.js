@@ -21,8 +21,10 @@ import { completion, parseJsonResponse } from './openai.js';
 import { getUtilityModel } from './modelSelection.js';
 import { AUTHOR_STYLES } from './authorStyles.js';
 import { analyzePremiseLLM, generateReasoningFromLLM, SENSIBLE_DEFAULTS } from './configAnalyzer.js';
+import { analyzePremiseKeywords } from './keywordAnalyzer.js';
 import { multiPassAnalyze, hasComplexRequirements, COMPLEX_PREMISE_THRESHOLD } from './premiseProcessor.js';
 import { detectNarratorArchetype, getArchetypeForGenre } from './narratorArchetypes.js';
+import { getRecommendedDirector } from './directorStyles.js';
 
 function formatAuthorCatalogLine(id, author) {
   const genres = Array.isArray(author?.genres) ? author.genres.join(', ') : '';
@@ -375,66 +377,66 @@ const VOICE_RECOMMENDATIONS = {
 // Priority: genre-specific > style-based > default
 const GENRE_VOICE_RECOMMENDATIONS = {
   horror: {
-    primary: { voice_id: 'yoZ06aMxZJJ28mfd3POQ', name: 'Sam', gender: 'male', reason: 'Raspy voice perfect for horror and suspense' },
-    secondary: { voice_id: 'N2lVS1w4EtoT3dr4eOWO', name: 'Callum', gender: 'male', reason: 'Gravelly unsettling edge' },
-    female: { voice_id: 'XB0fDUnXU5powFXDhCwa', name: 'Charlotte', gender: 'female', reason: 'Seductive and mysterious' }
+    primary: { voice_id: 'yoZ06aMxZJJ28mfd3POQ', name: 'Sam', gender: 'male', accent: 'american', reason: 'Raspy voice perfect for horror and suspense' },
+    secondary: { voice_id: 'N2lVS1w4EtoT3dr4eOWO', name: 'Callum', gender: 'male', accent: 'transatlantic', reason: 'Gravelly unsettling edge' },
+    female: { voice_id: 'XB0fDUnXU5powFXDhCwa', name: 'Charlotte', gender: 'female', accent: 'swedish', reason: 'Seductive and mysterious' }
   },
   scifi: {
-    primary: { voice_id: 'onwK4e9ZLuTAKqWW03F9', name: 'Daniel', gender: 'male', reason: 'Authoritative delivery for sci-fi narratives' },
-    secondary: { voice_id: 'N2lVS1w4EtoT3dr4eOWO', name: 'Callum', gender: 'male', reason: 'Gravelly tone for space opera' },
-    female: { voice_id: 'pFZP5JQG7iQjIQuC4Bku', name: 'Lily', gender: 'female', reason: 'Clear British voice for professional sci-fi' }
+    primary: { voice_id: 'onwK4e9ZLuTAKqWW03F9', name: 'Daniel', gender: 'male', accent: 'british', reason: 'Authoritative delivery for sci-fi narratives' },
+    secondary: { voice_id: 'N2lVS1w4EtoT3dr4eOWO', name: 'Callum', gender: 'male', accent: 'transatlantic', reason: 'Gravelly tone for space opera' },
+    female: { voice_id: 'pFZP5JQG7iQjIQuC4Bku', name: 'Lily', gender: 'female', accent: 'british', reason: 'Clear British voice for professional sci-fi' }
   },
   fantasy: {
-    primary: { voice_id: 'N2lVS1w4EtoT3dr4eOWO', name: 'Callum', gender: 'male', reason: 'Gravelly Transatlantic, perfect for epic fantasy' },
-    secondary: { voice_id: 'TxGEqnHWrfWFTfGW9XjX', name: 'Josh', gender: 'male', reason: 'Deep voice for epic tales' },
-    female: { voice_id: 'ThT5KcBeYPX3keUQqHPh', name: 'Dorothy', gender: 'female', reason: 'Pleasant British storyteller' }
+    primary: { voice_id: 'N2lVS1w4EtoT3dr4eOWO', name: 'Callum', gender: 'male', accent: 'transatlantic', reason: 'Gravelly Transatlantic, perfect for epic fantasy' },
+    secondary: { voice_id: 'TxGEqnHWrfWFTfGW9XjX', name: 'Josh', gender: 'male', accent: 'american', reason: 'Deep voice for epic tales' },
+    female: { voice_id: 'ThT5KcBeYPX3keUQqHPh', name: 'Dorothy', gender: 'female', accent: 'british', reason: 'Pleasant British storyteller' }
   },
   mystery: {
-    primary: { voice_id: 'yoZ06aMxZJJ28mfd3POQ', name: 'Sam', gender: 'male', reason: 'Raspy American, great for mystery' },
-    secondary: { voice_id: 'pNInz6obpgDQGcFmaJgB', name: 'Adam', gender: 'male', reason: 'Deep middle-aged voice for noir' },
-    female: { voice_id: 'ThT5KcBeYPX3keUQqHPh', name: 'Dorothy', gender: 'female', reason: 'Pleasant British mystery narrator' }
+    primary: { voice_id: 'yoZ06aMxZJJ28mfd3POQ', name: 'Sam', gender: 'male', accent: 'american', reason: 'Raspy American, great for mystery' },
+    secondary: { voice_id: 'pNInz6obpgDQGcFmaJgB', name: 'Adam', gender: 'male', accent: 'american', reason: 'Deep middle-aged voice for noir' },
+    female: { voice_id: 'ThT5KcBeYPX3keUQqHPh', name: 'Dorothy', gender: 'female', accent: 'british', reason: 'Pleasant British mystery narrator' }
   },
   adventure: {
-    primary: { voice_id: 'TxGEqnHWrfWFTfGW9XjX', name: 'Josh', gender: 'male', reason: 'Deep voice for thrilling adventures' },
-    secondary: { voice_id: 'SOYHLrjzK2X1ezoPC6cr', name: 'Harry', gender: 'male', reason: 'Animated warrior energy' },
-    female: { voice_id: 'FGY2WhTYpPnrIDTdsKH5', name: 'Laura', gender: 'female', reason: 'Upbeat and energetic' }
+    primary: { voice_id: 'TxGEqnHWrfWFTfGW9XjX', name: 'Josh', gender: 'male', accent: 'american', reason: 'Deep voice for thrilling adventures' },
+    secondary: { voice_id: 'SOYHLrjzK2X1ezoPC6cr', name: 'Harry', gender: 'male', accent: 'british', reason: 'Animated warrior energy' },
+    female: { voice_id: 'FGY2WhTYpPnrIDTdsKH5', name: 'Laura', gender: 'female', accent: 'american', reason: 'Upbeat and energetic' }
   },
   romance: {
-    primary: { voice_id: 'ThT5KcBeYPX3keUQqHPh', name: 'Dorothy', gender: 'female', reason: 'Pleasant British voice for romance' },
-    secondary: { voice_id: 'pFZP5JQG7iQjIQuC4Bku', name: 'Lily', gender: 'female', reason: 'Warm British narrator' },
-    male: { voice_id: 'JBFqnCBsd6RMkjVDRZzb', name: 'George', gender: 'male', reason: 'Warm resonance for romantic tales' }
+    primary: { voice_id: 'ThT5KcBeYPX3keUQqHPh', name: 'Dorothy', gender: 'female', accent: 'british', reason: 'Pleasant British voice for romance' },
+    secondary: { voice_id: 'pFZP5JQG7iQjIQuC4Bku', name: 'Lily', gender: 'female', accent: 'british', reason: 'Warm British narrator' },
+    male: { voice_id: 'JBFqnCBsd6RMkjVDRZzb', name: 'George', gender: 'male', accent: 'british', reason: 'Warm resonance for romantic tales' }
   },
   humor: {
-    primary: { voice_id: 'CYw3kZ02Hs0563khs1Fj', name: 'Dave', gender: 'male', reason: 'Conversational British-Essex, great for comedy' },
-    secondary: { voice_id: 'IKne3meq5aSn9XLyUdCD', name: 'Charlie', gender: 'male', reason: 'Friendly Australian energy' },
-    female: { voice_id: 'jBpfuIE2acCO8z3wKNLl', name: 'Gigi', gender: 'female', reason: 'Young playful voice' }
+    primary: { voice_id: 'CYw3kZ02Hs0563khs1Fj', name: 'Dave', gender: 'male', accent: 'british', reason: 'Conversational British-Essex, great for comedy' },
+    secondary: { voice_id: 'IKne3meq5aSn9XLyUdCD', name: 'Charlie', gender: 'male', accent: 'australian', reason: 'Friendly Australian energy' },
+    female: { voice_id: 'jBpfuIE2acCO8z3wKNLl', name: 'Gigi', gender: 'female', accent: 'american', reason: 'Young playful voice' }
   },
   fairytale: {
-    primary: { voice_id: 'XrExE9yKIg1WjnnlVkGX', name: 'Matilda', gender: 'female', reason: 'Warm voice perfect for children\'s stories' },
-    secondary: { voice_id: 'JBFqnCBsd6RMkjVDRZzb', name: 'George', gender: 'male', reason: 'Warm British narrator for classic tales' },
-    female: { voice_id: 'EXAVITQu4vr4xnSDxMaL', name: 'Sarah', gender: 'female', reason: 'Soft and reassuring' }
+    primary: { voice_id: 'XrExE9yKIg1WjnnlVkGX', name: 'Matilda', gender: 'female', accent: 'american', reason: 'Warm voice perfect for children\'s stories' },
+    secondary: { voice_id: 'JBFqnCBsd6RMkjVDRZzb', name: 'George', gender: 'male', accent: 'british', reason: 'Warm British narrator for classic tales' },
+    female: { voice_id: 'EXAVITQu4vr4xnSDxMaL', name: 'Sarah', gender: 'female', accent: 'american', reason: 'Soft and reassuring' }
   },
   // Genre blends - for stories with multiple strong genres
   horror_scifi: {
-    primary: { voice_id: 'N2lVS1w4EtoT3dr4eOWO', name: 'Callum', gender: 'male', reason: 'Gravelly voice for cosmic horror and dark sci-fi' },
-    secondary: { voice_id: 'onwK4e9ZLuTAKqWW03F9', name: 'Daniel', gender: 'male', reason: 'Authoritative delivery for serious sci-fi horror' },
-    female: { voice_id: 'pFZP5JQG7iQjIQuC4Bku', name: 'Lily', gender: 'female', reason: 'Clear British voice for professional sci-fi horror' }
+    primary: { voice_id: 'N2lVS1w4EtoT3dr4eOWO', name: 'Callum', gender: 'male', accent: 'transatlantic', reason: 'Gravelly voice for cosmic horror and dark sci-fi' },
+    secondary: { voice_id: 'onwK4e9ZLuTAKqWW03F9', name: 'Daniel', gender: 'male', accent: 'british', reason: 'Authoritative delivery for serious sci-fi horror' },
+    female: { voice_id: 'pFZP5JQG7iQjIQuC4Bku', name: 'Lily', gender: 'female', accent: 'british', reason: 'Clear British voice for professional sci-fi horror' }
   },
   dark_fantasy: {
-    primary: { voice_id: 'N2lVS1w4EtoT3dr4eOWO', name: 'Callum', gender: 'male', reason: 'Gravelly voice perfect for dark fantasy and gothic tales' },
-    secondary: { voice_id: 'yoZ06aMxZJJ28mfd3POQ', name: 'Sam', gender: 'male', reason: 'Raspy edge for darker fantasy elements' },
-    female: { voice_id: 'XB0fDUnXU5powFXDhCwa', name: 'Charlotte', gender: 'female', reason: 'Mysterious and seductive for dark fantasy' }
+    primary: { voice_id: 'N2lVS1w4EtoT3dr4eOWO', name: 'Callum', gender: 'male', accent: 'transatlantic', reason: 'Gravelly voice perfect for dark fantasy and gothic tales' },
+    secondary: { voice_id: 'yoZ06aMxZJJ28mfd3POQ', name: 'Sam', gender: 'male', accent: 'american', reason: 'Raspy edge for darker fantasy elements' },
+    female: { voice_id: 'XB0fDUnXU5powFXDhCwa', name: 'Charlotte', gender: 'female', accent: 'swedish', reason: 'Mysterious and seductive for dark fantasy' }
   },
   // Mood-based fallbacks
   bedtime: {
-    primary: { voice_id: 'XrExE9yKIg1WjnnlVkGX', name: 'Matilda', gender: 'female', reason: 'Warm and soothing for bedtime' },
-    secondary: { voice_id: 'EXAVITQu4vr4xnSDxMaL', name: 'Sarah', gender: 'female', reason: 'Soft and comforting' },
-    male: { voice_id: 'JBFqnCBsd6RMkjVDRZzb', name: 'George', gender: 'male', reason: 'Warm resonance' }
+    primary: { voice_id: 'XrExE9yKIg1WjnnlVkGX', name: 'Matilda', gender: 'female', accent: 'american', reason: 'Warm and soothing for bedtime' },
+    secondary: { voice_id: 'EXAVITQu4vr4xnSDxMaL', name: 'Sarah', gender: 'female', accent: 'american', reason: 'Soft and comforting' },
+    male: { voice_id: 'JBFqnCBsd6RMkjVDRZzb', name: 'George', gender: 'male', accent: 'british', reason: 'Warm resonance' }
   },
   children: {
-    primary: { voice_id: 'XrExE9yKIg1WjnnlVkGX', name: 'Matilda', gender: 'female', reason: 'Warm American, great for children\'s stories' },
-    secondary: { voice_id: 'g5CIjZEefAph4nQFvHAz', name: 'Ethan', gender: 'male', reason: 'Young friendly voice' },
-    female: { voice_id: 'jBpfuIE2acCO8z3wKNLl', name: 'Gigi', gender: 'female', reason: 'Young American, great for YA' }
+    primary: { voice_id: 'XrExE9yKIg1WjnnlVkGX', name: 'Matilda', gender: 'female', accent: 'american', reason: 'Warm American, great for children\'s stories' },
+    secondary: { voice_id: 'g5CIjZEefAph4nQFvHAz', name: 'Ethan', gender: 'male', accent: 'american', reason: 'Young friendly voice' },
+    female: { voice_id: 'jBpfuIE2acCO8z3wKNLl', name: 'Gigi', gender: 'female', accent: 'american', reason: 'Young American, great for YA' }
   }
 };
 
@@ -646,9 +648,12 @@ class SmartConfigEngine {
         llmAnalysis = await analyzePremiseLLM(premiseText);
       }
 
-      // analyzePremiseLLM always returns a valid object (uses SENSIBLE_DEFAULTS on failure)
-      // Check if it was a fallback by looking for the llm_failed flag
-      if (llmAnalysis.llm_failed) {
+      // If LLM hit rate limit, use keyword-based fallback instead of generic defaults.
+      // This avoids firing more doomed LLM calls and gives premise-specific results.
+      if (llmAnalysis.llm_failed && llmAnalysis.llm_error === 'rate_limit') {
+        this.logger.warn('[SmartConfig] Rate-limited by OpenAI — switching to keyword fallback');
+        llmAnalysis = analyzePremiseKeywords(premiseText);
+      } else if (llmAnalysis.llm_failed) {
         this.logger.warn('[SmartConfig] LLM analysis failed, using sensible defaults');
       }
 
@@ -668,6 +673,8 @@ class SmartConfigEngine {
         analysis: {
           llm: llmAnalysis,
           llm_failed: llmAnalysis.llm_failed || false,
+          llm_error: llmAnalysis.llm_error || null,
+          keyword_fallback: llmAnalysis.keyword_fallback || false,
           multi_pass: llmAnalysis._multiPassProcessed || false
         },
         suggestedConfig,
@@ -675,13 +682,31 @@ class SmartConfigEngine {
       };
     } catch (error) {
       this.logger.error('[SmartConfig] Error interpreting premise:', error);
-      // Use sensible defaults on catastrophic failure
-      const fallbackAnalysis = { ...SENSIBLE_DEFAULTS, llm_failed: true, error: error.message };
+
+      // On catastrophic failure, try keyword fallback before resorting to generic defaults
+      const isRateLimit = error.status === 429 ||
+        /rate.?limit|429|too many requests/i.test(error.message);
+
+      let fallbackAnalysis;
+      if (isRateLimit) {
+        this.logger.warn('[SmartConfig] Catastrophic rate-limit — using keyword fallback');
+        fallbackAnalysis = analyzePremiseKeywords(premiseText);
+      } else {
+        fallbackAnalysis = { ...SENSIBLE_DEFAULTS, llm_failed: true, llm_error: error.message };
+      }
+
       return {
         success: true,
-        analysis: { llm: fallbackAnalysis, llm_failed: true },
+        analysis: {
+          llm: fallbackAnalysis,
+          llm_failed: true,
+          llm_error: fallbackAnalysis.llm_error || error.message,
+          keyword_fallback: fallbackAnalysis.keyword_fallback || false
+        },
         suggestedConfig: this.generateConfig(fallbackAnalysis, currentConfig),
-        reasoning: 'Analysis failed, using sensible defaults for a general adventure story.'
+        reasoning: fallbackAnalysis.keyword_fallback
+          ? 'AI analysis unavailable (rate limited). Settings based on keyword analysis of your premise.'
+          : 'Analysis failed, using sensible defaults for a general adventure story.'
       };
     }
   }
@@ -747,6 +772,15 @@ class SmartConfigEngine {
     config.multi_narrator = config.voice_acted; // Backward compatibility
     config.sfx_enabled = multiPassResult.sfx_enabled || false;
     config.sfx_level = multiPassResult.sfx_level || null;
+
+    // Phase 4: Auto-recommend director style based on genre mix (when voice acting enabled)
+    if (config.voice_acted && config.genres) {
+      const recommendedDirector = getRecommendedDirector(config.genres);
+      if (recommendedDirector) {
+        config.director_style = recommendedDirector;
+        this.logger.info(`[SmartConfig] Auto-recommended director: ${recommendedDirector}`);
+      }
+    }
 
     // Bedtime mode
     config.bedtime_mode = multiPassResult.bedtime_mode || false;
@@ -1533,7 +1567,8 @@ Return ONLY valid JSON, no markdown, no explanation.`;
     // This is the key insight: fans of specific genres expect specific voices
     // =======================================================================
     if (narratorRecommendation && narratorRecommendation.preferred_gender) {
-      this.logger.info(`[SmartConfig] LLM Narrator Inference: gender=${narratorRecommendation.preferred_gender}, style=${narratorRecommendation.voice_style}, tone="${narratorRecommendation.tone_descriptors}"`);
+      const preferredAccent = narratorRecommendation.preferred_accent || 'neutral';
+      this.logger.info(`[SmartConfig] LLM Narrator Inference: gender=${narratorRecommendation.preferred_gender}, accent=${preferredAccent}, style=${narratorRecommendation.voice_style}, tone="${narratorRecommendation.tone_descriptors}"`);
       this.logger.info(`[SmartConfig] LLM Reasoning: ${narratorRecommendation.reasoning}`);
 
       // Map LLM characteristics to genre voice recommendations
@@ -1542,7 +1577,7 @@ Return ONLY valid JSON, no markdown, no explanation.`;
       const llmChars = narratorRecommendation.characteristics || [];
 
       // Try to find a matching voice from genre recommendations based on LLM guidance
-      const voiceMatch = this.findVoiceByLLMGuidance(llmGender, llmStyle, llmChars, genres);
+      const voiceMatch = this.findVoiceByLLMGuidance(llmGender, llmStyle, llmChars, genres, preferredAccent);
       if (voiceMatch) {
         this.logger.info(`[SmartConfig] Selected LLM-guided voice: ${voiceMatch.name} (${voiceMatch.reason})`);
         return {
@@ -1713,9 +1748,10 @@ Return ONLY valid JSON, no markdown, no explanation.`;
    * @param {string} llmStyle - 'dramatic', 'warm', 'mysterious', 'epic', 'horror', 'noir', etc.
    * @param {string[]} llmChars - Characteristics like ['deep', 'gravelly', 'commanding']
    * @param {Object} genres - Genre scores from config
+   * @param {string} [preferredAccent='neutral'] - 'british', 'american', 'australian', or 'neutral'
    * @returns {Object|null} Voice recommendation or null
    */
-  findVoiceByLLMGuidance(llmGender, llmStyle, llmChars, genres) {
+  findVoiceByLLMGuidance(llmGender, llmStyle, llmChars, genres, preferredAccent = 'neutral') {
     // Map LLM style to best matching genre category
     // FIX: Don't map "dramatic" to adventure - dramatic fits multiple genres
     // Instead, use genre scores to determine the best match for dramatic stories
@@ -1738,33 +1774,67 @@ Return ONLY valid JSON, no markdown, no explanation.`;
     // Map LLM characteristics to specific voices
     // This is the key - characteristics like "gravelly" or "commanding" point to specific voices
     const charToVoice = {
-      'gravelly': { voice_id: 'N2lVS1w4EtoT3dr4eOWO', name: 'Callum', gender: 'male', reason: 'Gravelly Transatlantic voice' },
-      'gruff': { voice_id: 'N2lVS1w4EtoT3dr4eOWO', name: 'Callum', gender: 'male', reason: 'Gruff commanding presence' },
-      'raspy': { voice_id: 'yoZ06aMxZJJ28mfd3POQ', name: 'Sam', gender: 'male', reason: 'Raspy American voice' },
-      'deep': { voice_id: 'TxGEqnHWrfWFTfGW9XjX', name: 'Josh', gender: 'male', reason: 'Deep resonant voice' },
-      'commanding': { voice_id: 'N2lVS1w4EtoT3dr4eOWO', name: 'Callum', gender: 'male', reason: 'Commanding authoritative voice' },
-      'authoritative': { voice_id: 'onwK4e9ZLuTAKqWW03F9', name: 'Daniel', gender: 'male', reason: 'Authoritative narrator' },
-      'warm': { voice_id: 'XrExE9yKIg1WjnnlVkGX', name: 'Matilda', gender: 'female', reason: 'Warm nurturing voice' },
-      'gentle': { voice_id: 'EXAVITQu4vr4xnSDxMaL', name: 'Sarah', gender: 'female', reason: 'Soft and reassuring' },
-      'soothing': { voice_id: 'XrExE9yKIg1WjnnlVkGX', name: 'Matilda', gender: 'female', reason: 'Warm soothing voice' },
-      'rich': { voice_id: 'JBFqnCBsd6RMkjVDRZzb', name: 'George', gender: 'male', reason: 'Rich resonant baritone' },
-      'silky': { voice_id: 'XB0fDUnXU5powFXDhCwa', name: 'Charlotte', gender: 'female', reason: 'Silky mysterious voice' },
-      'seductive': { voice_id: 'XB0fDUnXU5powFXDhCwa', name: 'Charlotte', gender: 'female', reason: 'Seductive and mysterious' }
+      'gravelly': { voice_id: 'N2lVS1w4EtoT3dr4eOWO', name: 'Callum', gender: 'male', accent: 'transatlantic', reason: 'Gravelly Transatlantic voice' },
+      'gruff': { voice_id: 'N2lVS1w4EtoT3dr4eOWO', name: 'Callum', gender: 'male', accent: 'transatlantic', reason: 'Gruff commanding presence' },
+      'raspy': { voice_id: 'yoZ06aMxZJJ28mfd3POQ', name: 'Sam', gender: 'male', accent: 'american', reason: 'Raspy American voice' },
+      'deep': { voice_id: 'TxGEqnHWrfWFTfGW9XjX', name: 'Josh', gender: 'male', accent: 'american', reason: 'Deep resonant voice' },
+      'commanding': { voice_id: 'N2lVS1w4EtoT3dr4eOWO', name: 'Callum', gender: 'male', accent: 'transatlantic', reason: 'Commanding authoritative voice' },
+      'authoritative': { voice_id: 'onwK4e9ZLuTAKqWW03F9', name: 'Daniel', gender: 'male', accent: 'british', reason: 'Authoritative narrator' },
+      'warm': { voice_id: 'XrExE9yKIg1WjnnlVkGX', name: 'Matilda', gender: 'female', accent: 'american', reason: 'Warm nurturing voice' },
+      'gentle': { voice_id: 'EXAVITQu4vr4xnSDxMaL', name: 'Sarah', gender: 'female', accent: 'american', reason: 'Soft and reassuring' },
+      'soothing': { voice_id: 'XrExE9yKIg1WjnnlVkGX', name: 'Matilda', gender: 'female', accent: 'american', reason: 'Warm soothing voice' },
+      'rich': { voice_id: 'JBFqnCBsd6RMkjVDRZzb', name: 'George', gender: 'male', accent: 'british', reason: 'Rich resonant baritone' },
+      'silky': { voice_id: 'XB0fDUnXU5powFXDhCwa', name: 'Charlotte', gender: 'female', accent: 'swedish', reason: 'Silky mysterious voice' },
+      'seductive': { voice_id: 'XB0fDUnXU5powFXDhCwa', name: 'Charlotte', gender: 'female', accent: 'swedish', reason: 'Seductive and mysterious' }
+    };
+
+    const hasAccentPref = preferredAccent && preferredAccent !== 'neutral';
+
+    // Helper: does a voice's accent match the preference?
+    // 'transatlantic' is compatible with both british and american preferences
+    const accentMatches = (voiceAccent, pref) => {
+      if (!pref || pref === 'neutral') return true;
+      if (voiceAccent === pref) return true;
+      if (voiceAccent === 'transatlantic' && (pref === 'british' || pref === 'american')) return true;
+      return false;
+    };
+
+    // Helper: check gender compatibility
+    const genderMatches = (voiceGender, llmGenderPref) => {
+      return llmGenderPref === 'neutral' ||
+        (llmGenderPref === 'masculine' && voiceGender === 'male') ||
+        (llmGenderPref === 'feminine' && voiceGender === 'female');
     };
 
     // First, check for characteristic matches (highest priority - most specific)
     if (llmChars && llmChars.length > 0) {
+      // Pass 1: Look for characteristic match WITH correct accent
+      if (hasAccentPref) {
+        for (const char of llmChars) {
+          const charLower = char.toLowerCase();
+          if (charToVoice[charLower]) {
+            const voice = charToVoice[charLower];
+            if (genderMatches(voice.gender, llmGender) && accentMatches(voice.accent, preferredAccent)) {
+              this.logger.info(`[SmartConfig] LLM characteristic "${char}" matched voice with ${preferredAccent} accent: ${voice.name}`);
+              return voice;
+            }
+          }
+        }
+      }
+
+      // Pass 2: Accept characteristic match regardless of accent (fallback)
       for (const char of llmChars) {
         const charLower = char.toLowerCase();
         if (charToVoice[charLower]) {
           const voice = charToVoice[charLower];
-          // Verify gender preference matches (masculine->male, feminine->female)
-          const genderMatch =
-            llmGender === 'neutral' ||
-            (llmGender === 'masculine' && voice.gender === 'male') ||
-            (llmGender === 'feminine' && voice.gender === 'female');
-
-          if (genderMatch) {
+          if (genderMatches(voice.gender, llmGender)) {
+            // If we have an accent preference but no accent match was found above,
+            // check if there's a same-accent voice in genre recommendations instead
+            if (hasAccentPref) {
+              this.logger.debug(`[SmartConfig] Characteristic "${char}" matched ${voice.name} but accent mismatch (${voice.accent} vs ${preferredAccent}), trying genre-accent fallback`);
+              // Don't return yet — let the genre-based selection below try accent matching
+              break;
+            }
             this.logger.info(`[SmartConfig] LLM characteristic "${char}" matched voice: ${voice.name}`);
             return voice;
           }
@@ -1791,15 +1861,8 @@ Return ONLY valid JSON, no markdown, no explanation.`;
     const genreVoices = GENRE_VOICE_RECOMMENDATIONS[matchedGenre];
 
     if (genreVoices) {
-      // Select based on LLM gender preference
-      if (llmGender === 'feminine' && genreVoices.female) {
-        return genreVoices.female;
-      } else if (llmGender === 'masculine') {
-        return genreVoices.primary || genreVoices.secondary;
-      } else {
-        // Neutral - use genre default
-        return genreVoices.primary;
-      }
+      const voice = this._selectVoiceFromGenreWithAccent(genreVoices, llmGender, preferredAccent, accentMatches);
+      if (voice) return voice;
     }
 
     // Third, fall back to genre from config
@@ -1808,13 +1871,53 @@ Return ONLY valid JSON, no markdown, no explanation.`;
 
     if (dominantGenre && GENRE_VOICE_RECOMMENDATIONS[dominantGenre]) {
       const dg = GENRE_VOICE_RECOMMENDATIONS[dominantGenre];
-      if (llmGender === 'feminine' && dg.female) {
-        return dg.female;
-      }
-      return dg.primary;
+      const voice = this._selectVoiceFromGenreWithAccent(dg, llmGender, preferredAccent, accentMatches);
+      if (voice) return voice;
     }
 
     return null;
+  }
+
+  /**
+   * Select voice from a genre recommendation set, preferring accent matches.
+   * Examines primary/secondary/female/male entries and picks the best fit.
+   */
+  _selectVoiceFromGenreWithAccent(genreVoices, llmGender, preferredAccent, accentMatchFn) {
+    const hasAccentPref = preferredAccent && preferredAccent !== 'neutral';
+
+    // Collect all candidate voices from the genre entry
+    const candidates = [];
+    for (const key of ['primary', 'secondary', 'female', 'male']) {
+      if (genreVoices[key]) candidates.push(genreVoices[key]);
+    }
+
+    // Filter by gender
+    const genderFiltered = candidates.filter(v => {
+      if (llmGender === 'neutral') return true;
+      if (llmGender === 'masculine' && v.gender === 'male') return true;
+      if (llmGender === 'feminine' && v.gender === 'female') return true;
+      return false;
+    });
+
+    const pool = genderFiltered.length > 0 ? genderFiltered : candidates;
+
+    // If accent preference, try to find a matching voice
+    if (hasAccentPref) {
+      const accentMatch = pool.find(v => accentMatchFn(v.accent, preferredAccent));
+      if (accentMatch) {
+        this.logger.info(`[SmartConfig] Accent-matched voice: ${accentMatch.name} (${accentMatch.accent} matches ${preferredAccent})`);
+        return accentMatch;
+      }
+      this.logger.debug(`[SmartConfig] No ${preferredAccent} accent match in genre pool, using best gender match`);
+    }
+
+    // Fall back to standard gender-based selection
+    if (llmGender === 'feminine' && genreVoices.female) {
+      return genreVoices.female;
+    } else if (llmGender === 'masculine') {
+      return genreVoices.primary || genreVoices.secondary;
+    }
+    return genreVoices.primary;
   }
 
   // NOTE: generateReasoning() has been removed - we now use generateReasoningFromLLM from configAnalyzer.js
