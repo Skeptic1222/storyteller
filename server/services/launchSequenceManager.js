@@ -409,8 +409,21 @@ export class LaunchSequenceManager {
 
       // Stage 5: Audio Synthesis - Generate intro + scene audio BEFORE reveal
       // This ensures everything is ready to play when the user sees the content
+      // SKIP audio when Script Editor is enabled - user will render from the editor
       if (this.cancelled) return null;
-      if (this.stageStatuses[STAGES.AUDIO] !== STATUS.SUCCESS) {
+      const sessionConfig = await pool.query('SELECT config_json FROM story_sessions WHERE id = $1', [this.sessionId]);
+      const scriptEditorEnabled = sessionConfig.rows[0]?.config_json?.script_editor_enabled === true;
+
+      if (scriptEditorEnabled) {
+        logger.info(`[LaunchSequence] Script Editor enabled - skipping audio synthesis stage`);
+        this.stageStatuses[STAGES.AUDIO] = STATUS.SUCCESS;
+        this.stageResults.audio = { skipped: true, reason: 'script_editor_enabled' };
+        // Update session state for Script Editor
+        await pool.query(
+          `UPDATE story_sessions SET script_editor_state = 'text_ready' WHERE id = $1`,
+          [this.sessionId]
+        );
+      } else if (this.stageStatuses[STAGES.AUDIO] !== STATUS.SUCCESS) {
         await this.runAudioSynthesis();
         await this.saveGenerationState(); // P2 FIX: Save after each stage
       }

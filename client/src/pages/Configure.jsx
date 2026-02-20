@@ -311,7 +311,10 @@ function Configure() {
     author_style: 'none',
 
     // Director style for VAD production vision (e.g., 'hitchcock', 'spielberg')
-    director_style: null
+    director_style: null,
+
+    // Script Editor - edit per-line voice directions before audio render
+    script_editor_enabled: false
   });
 
   const [selectedVoice, setSelectedVoice] = useState(null);
@@ -2099,6 +2102,30 @@ function Configure() {
               genres={config.genres || {}}
               disabled={!config.multi_voice}
             />
+          </section>
+        )}
+
+        {/* Script Editor Toggle - Edit voice directions before audio render */}
+        {config.multi_voice && (
+          <section>
+            <div className="flex items-center justify-between p-4 bg-slate-800/50 rounded-xl">
+              <div>
+                <div className="text-slate-100 font-medium flex items-center gap-2">
+                  <PenTool className="w-4 h-4 text-emerald-400" />
+                  Script Editor
+                </div>
+                <div className="text-slate-400 text-sm">Edit per-line voice directions before audio render</div>
+              </div>
+              <AccessibleToggle
+                enabled={config.script_editor_enabled}
+                onChange={(value) => setConfig(prev => ({ ...prev, script_editor_enabled: value }))}
+                label="Script Editor"
+                description="Open the script editor to fine-tune voice acting before rendering audio"
+                colorOn="bg-emerald-400"
+                size="large"
+                showLabel={true}
+              />
+            </div>
           </section>
         )}
 

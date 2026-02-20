@@ -291,6 +291,13 @@ export function setupStoryHandlers(socket, io) {
         progressData.lastUpdate = Date.now();
       }
 
+      // Check if Script Editor flow was used (audio was skipped)
+      if (launchResult.stageResults?.audio?.skipped) {
+        logger.info(`[Socket] Script Editor flow - redirecting to /script/${session_id}`);
+        socket.emit('redirect-to-script-editor', { sessionId: session_id });
+        return;
+      }
+
       // Store pending audio info - including pre-synthesized audio from launch sequence
       // This enables immediate playback without a second progress bar
       canAddToMap('pendingAudio');

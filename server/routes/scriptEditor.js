@@ -687,8 +687,99 @@ router.post('/:sessionId/render-all', requireAuth, requireSessionOwner, async (r
  * @returns {{ message: string }}
  */
 router.post('/:sessionId/assemble', requireAuth, requireSessionOwner, async (req, res) => {
-  // TODO: Will use ffmpeg to concatenate audio segments in order
-  return res.status(501).json({ message: 'Assembly not yet implemented' });
+  const { sessionId } = req.params;
+  const { sceneId } = req.body;
+
+  // Get rendered segments for the specified scene (or all scenes)
+  let query, params;
+  if (sceneId) {
+    query = `SELECT id, segment_index, speaker, audio_url, audio_status, audio_duration_ms
+             FROM scene_voice_directions
+             WHERE story_session_id = $1 AND scene_id = $2
+             ORDER BY segment_index ASC`;
+    params = [sessionId, sceneId];
+  } else {
+    query = `SELECT svd.id, svd.segment_index, svd.speaker, svd.audio_url, svd.audio_status, svd.audio_duration_ms, ss.sequence_index
+             FROM scene_voice_directions svd
+             JOIN story_scenes ss ON svd.scene_id = ss.id
+             WHERE svd.story_session_id = $1
+             ORDER BY ss.sequence_index ASC, svd.segment_index ASC`;
+    params = [sessionId];
+  }
+
+  const segResult = await pool.query(query, params);
+  const segments = segResult.rows;
+
+  if (segments.length === 0) {
+    return res.status(400).json({ error: 'No segments found for assembly' });
+  }
+
+  // Check all segments are rendered
+  const unrendered = segments.filter(s => s.audio_status !== 'rendered');
+  if (unrendered.length > 0) {
+    return res.status(400).json({
+      error: `${unrendered.length} segments not yet rendered`,
+      unrenderedCount: unrendered.length,
+      totalSegments: segments.length
+    });
+  }
+
+  // Read audio buffers from disk
+  const { readFile, writeFile } = await import('fs/promises');
+  const { join } = await import('path');
+  const { assembleMultiVoiceAudio } = await import('../services/audioAssembler.js');
+  const crypto = await import('crypto');
+
+  const AUDIO_DIR = process.env.AUDIO_CACHE_DIR || join(import.meta.dirname, '..', '..', 'public', 'audio');
+  const audioSegments = [];
+
+  for (const seg of segments) {
+    if (!seg.audio_url) continue;
+    // audio_url is like /audio/hash.mp3 or /storyteller/audio/hash.mp3
+    const filename = seg.audio_url.split('/').pop();
+    const filePath = join(AUDIO_DIR, filename);
+    try {
+      const buffer = await readFile(filePath);
+      audioSegments.push({
+        audio: buffer,
+        speaker: seg.speaker,
+        durationMs: seg.audio_duration_ms || 0
+      });
+    } catch (err) {
+      logger.warn(`[ScriptEditor:Assemble] Failed to read audio file ${filePath}: ${err.message}`);
+    }
+  }
+
+  if (audioSegments.length === 0) {
+    return res.status(400).json({ error: 'No audio files could be read from disk' });
+  }
+
+  // Assemble with FFmpeg
+  const assembledBuffer = await assembleMultiVoiceAudio(audioSegments, {
+    crossfadeMs: 50,
+    gapMs: 200,
+    narratorGapMs: 400,
+    outputFormat: 'mp3'
+  });
+
+  // Save assembled file
+  const hash = crypto.createHash('md5').update(assembledBuffer).digest('hex').slice(0, 16);
+  const assembledFilename = `assembled_${sessionId.slice(0, 8)}_${hash}.mp3`;
+  const assembledPath = join(AUDIO_DIR, assembledFilename);
+  await writeFile(assembledPath, assembledBuffer);
+
+  const audioUrl = `/audio/${assembledFilename}`;
+  const totalDurationMs = segments.reduce((sum, s) => sum + (s.audio_duration_ms || 0), 0);
+
+  logger.info(`[ScriptEditor:Assemble] Assembled ${audioSegments.length} segments → ${assembledFilename} (${Math.round(assembledBuffer.length / 1024)}KB)`);
+
+  return res.json({
+    audioUrl,
+    segmentsAssembled: audioSegments.length,
+    totalSegments: segments.length,
+    durationMs: totalDurationMs,
+    fileSizeKb: Math.round(assembledBuffer.length / 1024)
+  });
 });
 
 // =============================================================================

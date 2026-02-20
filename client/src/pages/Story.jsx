@@ -554,6 +554,17 @@ function Story() {
     }
   }, [connected, sessionId, socket]);
 
+  // Listen for Script Editor redirect (when script_editor_enabled skips audio)
+  useEffect(() => {
+    if (!socket) return;
+    const handleScriptRedirect = (data) => {
+      console.log('[Story] Script Editor redirect received, navigating to /script/', data.sessionId);
+      navigate(`/script/${data.sessionId}`);
+    };
+    socket.on('redirect-to-script-editor', handleScriptRedirect);
+    return () => socket.off('redirect-to-script-editor', handleScriptRedirect);
+  }, [socket, navigate]);
+
   // Set autoplay from session config when session loads
   useEffect(() => {
     if (session?.config_json?.autoplay !== undefined) {
