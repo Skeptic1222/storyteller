@@ -45,7 +45,8 @@ export function useAutoContinue({
   const wasPlayingRef = useRef(false);
   const autoContinueTimerRef = useRef(null);
   const autoContinueLockRef = useRef(false);
-  const pendingAutoContinue = externalPendingRef || useRef(false);
+  const internalPendingRef = useRef(false);
+  const pendingAutoContinue = externalPendingRef || internalPendingRef;
 
   // Store callbacks in refs to avoid dependency churn
   const continueStoryRef = useRef(continueStory);

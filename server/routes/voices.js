@@ -1161,6 +1161,16 @@ router.post('/quality-tiers/recommend', async (req, res) => {
 router.get('/usage/:sessionId', async (req, res) => {
   try {
     const { sessionId } = req.params;
+
+    // Verify session ownership
+    const session = await pool.query('SELECT user_id FROM story_sessions WHERE id = $1', [sessionId]);
+    if (session.rows.length === 0) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+    if (session.rows[0].user_id !== req.user.id && !req.user.is_admin) {
+      return res.status(403).json({ error: 'Not authorized to access this session' });
+    }
+
     const stats = await qualityTierConfig.getUsageStats(sessionId);
 
     res.json(stats);

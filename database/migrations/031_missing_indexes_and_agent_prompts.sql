@@ -19,10 +19,17 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_scene_voice_dirs_session_status
 
 -- Create agent_prompts table if not exists (was only in schema.sql, missing from migrations)
 -- Migration 030 inserts into this table but never creates it
+-- Must include ALL columns that 030 references (description, model, temperature, max_tokens)
 CREATE TABLE IF NOT EXISTS agent_prompts (
   id SERIAL PRIMARY KEY,
   agent_name VARCHAR(100) NOT NULL UNIQUE,
   system_prompt TEXT,
+  description TEXT,
+  model VARCHAR(50) DEFAULT 'gpt-4o-mini',
+  temperature FLOAT DEFAULT 0.7,
+  max_tokens INTEGER DEFAULT 2000,
+  is_active BOOLEAN DEFAULT true,
+  version INTEGER DEFAULT 1,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );

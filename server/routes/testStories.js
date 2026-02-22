@@ -137,7 +137,7 @@ router.delete('/:sessionId', async (req, res) => {
     const status = error.message.includes('not found') ? 404
       : error.message.includes('not a test session') ? 403
       : 500;
-    res.json({ error: error.message });
+    res.status(status).json({ error: error.message });
   }
 });
 

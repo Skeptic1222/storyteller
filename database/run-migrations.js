@@ -51,6 +51,11 @@ const MIGRATION_ORDER = [
   { version: '027', file: '027_composited_images.sql' },
   { version: '028', file: '028_narrator_archetype.sql' },
   { version: '029', file: '029_character_age.sql' },
+  { version: '030', file: '030_style_score_and_voice_directions.sql' },
+  // 031 uses CREATE INDEX CONCURRENTLY and must run outside a transaction
+  { version: '031', file: '031_missing_indexes_and_agent_prompts.sql', transactional: false },
+  // 032 uses CREATE INDEX CONCURRENTLY and must run outside a transaction
+  { version: '032', file: '032_missing_query_indexes.sql', transactional: false },
 ];
 
 // Database connection
