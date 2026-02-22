@@ -3111,8 +3111,9 @@ router.post('/synopsis/generate-from-world', async (req, res) => {
 async function runMultiAgentSynopsisGeneration(params) {
   const { libraryId, libraryName, world, characters, locations, items, factions, lore, events, roomId } = params;
   const { generateWithOpenAI } = await import('../services/openai.js');
+  const { getBroadcastIO } = await import('../socket/state.js');
 
-  const io = global.io;
+  const io = getBroadcastIO();
   const storyTitle = libraryName || 'Untitled Story';
 
   const emit = (event, data) => {
@@ -6114,9 +6115,10 @@ router.post('/extract-advanced', async (req, res) => {
  */
 async function runAdvancedExtractionWithSynopsis(content, libraryId, libraryName, roomId, generateSynopsis = true) {
   const { generateWithOpenAI } = await import('../services/openai.js');
+  const { getBroadcastIO } = await import('../socket/state.js');
 
-  // Get io from global context for socket emissions
-  const io = global.io;
+  // Get io from socket state for socket emissions
+  const io = getBroadcastIO();
 
   const emit = (event, data) => {
     if (io) {

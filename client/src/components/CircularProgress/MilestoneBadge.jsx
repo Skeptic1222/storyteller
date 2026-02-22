@@ -37,20 +37,20 @@ const getStateStyles = (state, quadrantKey) => {
 
   const baseStyles = {
     pending: {
-      border: 'border-slate-600',
-      text: 'text-slate-400',
-      labelText: 'text-slate-500',
+      border: 'border-transparent',
+      text: 'text-slate-500',
+      labelText: 'text-slate-600',
       shadow: '',
       glow: false,
-      bgStyle: { background: 'rgba(51, 65, 85, 0.6)' }
+      bgStyle: { background: '#1e293b' }
     },
     approaching: {
-      border: 'border-slate-500',
+      border: 'border-transparent',
       text: 'text-slate-300',
       labelText: 'text-slate-400',
-      shadow: 'shadow-sm',
+      shadow: '',
       glow: false,
-      bgStyle: { background: 'rgba(71, 85, 105, 0.8)' }
+      bgStyle: { background: '#334155' }
     },
     active: {
       border: 'border-white/50',
@@ -256,7 +256,7 @@ const MilestoneBadge = memo(function MilestoneBadge({
         {/* Main badge */}
         <div
           className={`
-            relative flex items-center justify-center rounded-full border-2 backdrop-blur-sm
+            relative flex items-center justify-center rounded-full border-2
             ${style.border} ${style.shadow}
             ${effectiveState === 'active' ? 'animate-pulse' : ''}
             ${showBounce ? 'animate-bounce' : ''}

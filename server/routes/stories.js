@@ -173,6 +173,50 @@ router.post('/start', requireAuth, validateBody(schemas.storyStart), async (req,
 });
 
 /**
+ * GET /api/stories/config/styles
+ * Get available literary styles, narrator styles, and default voices
+ * NOTE: Must be defined before /:id to avoid being shadowed by it
+ */
+router.get('/config/styles', async (req, res) => {
+  try {
+    res.json({
+      literary_styles: LITERARY_STYLES,
+      narrator_styles: NARRATOR_STYLES,
+      default_voices: DEFAULT_VOICES
+    });
+  } catch (error) {
+    logger.error('Error fetching styles:', error);
+    res.status(500).json({ error: 'Failed to fetch styles' });
+  }
+});
+
+/**
+ * GET /api/stories/recent/:userId
+ * Get recent stories for a user
+ * NOTE: Must be defined before /:id to avoid being shadowed by it
+ */
+router.get('/recent/:userId', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const limit = parseInt(req.query.limit) || 10;
+
+    const stories = await pool.query(`
+      SELECT id, title, mode, current_status, total_scenes, started_at, ended_at
+      FROM story_sessions
+      WHERE user_id = $1
+      ORDER BY last_activity_at DESC
+      LIMIT $2
+    `, [userId, limit]);
+
+    res.json({ stories: stories.rows });
+
+  } catch (error) {
+    logger.error('Error fetching recent stories:', error);
+    res.status(500).json({ error: 'Failed to fetch stories' });
+  }
+});
+
+/**
  * GET /api/stories/:id
  * Get story session details
  */
@@ -516,23 +560,6 @@ router.post('/:id/conversation', requireAuth, validateSessionId, requireSessionO
 });
 
 /**
- * GET /api/stories/config/styles
- * Get available literary styles, narrator styles, and default voices
- */
-router.get('/config/styles', async (req, res) => {
-  try {
-    res.json({
-      literary_styles: LITERARY_STYLES,
-      narrator_styles: NARRATOR_STYLES,
-      default_voices: DEFAULT_VOICES
-    });
-  } catch (error) {
-    logger.error('Error fetching styles:', error);
-    res.status(500).json({ error: 'Failed to fetch styles' });
-  }
-});
-
-/**
  * POST /api/stories/:id/generate-outline
  * Generate story outline based on configuration
  *
@@ -740,8 +767,27 @@ router.post('/:id/continue', requireAuth, validateSessionId, requireSessionOwner
       [id]
     );
 
+    const generationProgress = {
+      loading: { step: 5, percent: 32, message: 'Loading story context...' },
+      planning: { step: 6, percent: 36, message: 'Planning the next scene...' },
+      analyzing_intent: { step: 6, percent: 36, message: 'Interpreting tone and intensity...' },
+      generating: { step: 7, percent: 46, message: 'Writing the next scene...' },
+      hybrid_generating: { step: 7, percent: 50, message: 'Refining scene output...' },
+      validating: { step: 8, percent: 58, message: 'Checking continuity and safety...' },
+      polishing: { step: 9, percent: 64, message: 'Polishing narration...' },
+      choices: { step: 10, percent: 66, message: 'Mapping interactive choices...' },
+      saving: { step: 11, percent: 68, message: 'Saving scene...' },
+      validating_speakers: { step: 12, percent: 70, message: 'Balancing character voices...' }
+    };
+    const emitContinueProgress = (phase) => {
+      const payload = generationProgress[phase];
+      if (payload) {
+        emitGenerationProgress(id, payload.step, payload.percent, payload.message);
+      }
+    };
+
     const orchestrator = new Orchestrator(id);
-    orchestrator.onProgress = (phase) => emitOutlineProgress(phase);
+    orchestrator.onProgress = (phase) => emitContinueProgress(phase);
     const scene = await orchestrator.generateNextScene(voice_id);
 
     res.json({
@@ -767,7 +813,7 @@ router.post('/:id/generate-audio/:sceneId', requireAuth, validateSessionId, requ
     const { voice_id } = req.body;
 
     const orchestrator = new Orchestrator(id);
-    orchestrator.onProgress = (phase) => emitOutlineProgress(phase);
+    orchestrator.onProgress = (phase) => emitGenerationProgress(id, 0, 0, phase);
     const result = await orchestrator.generateSceneAudio(sceneId, voice_id);
 
     res.json({
@@ -798,8 +844,8 @@ router.post('/:id/choice', requireAuth, validateSessionId, requireSessionOwner, 
       let choiceQuery;
       if (choice_id) {
         choiceQuery = await client.query(
-          'UPDATE story_choices SET was_selected = true, selected_at = NOW() WHERE id = $1 RETURNING *',
-          [choice_id]
+          'UPDATE story_choices SET was_selected = true, selected_at = NOW() WHERE id = $1 AND story_session_id = $2 RETURNING *',
+          [choice_id, id]
         );
       } else {
         choiceQuery = await client.query(`
@@ -1527,31 +1573,6 @@ router.post('/:id/update-config', requireAuth, validateSessionId, requireSession
   } catch (error) {
     logger.error('Error updating config:', error);
     res.status(500).json({ error: 'Failed to update configuration' });
-  }
-});
-
-/**
- * GET /api/stories/recent/:userId
- * Get recent stories for a user
- */
-router.get('/recent/:userId', requireAuth, async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const limit = parseInt(req.query.limit) || 10;
-
-    const stories = await pool.query(`
-      SELECT id, title, mode, current_status, total_scenes, started_at, ended_at
-      FROM story_sessions
-      WHERE user_id = $1
-      ORDER BY last_activity_at DESC
-      LIMIT $2
-    `, [userId, limit]);
-
-    res.json({ stories: stories.rows });
-
-  } catch (error) {
-    logger.error('Error fetching recent stories:', error);
-    res.status(500).json({ error: 'Failed to fetch stories' });
   }
 });
 

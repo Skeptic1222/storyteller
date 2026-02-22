@@ -7,6 +7,7 @@
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
+import { scopedGetItem, scopedSetItem } from '../utils/userScopedStorage';
 import {
   ArrowLeft,
   Bookmark,
@@ -230,7 +231,7 @@ export default function Reader() {
   // Load reader settings from localStorage on mount
   useEffect(() => {
     try {
-      const savedSettings = localStorage.getItem(READER_SETTINGS_STORAGE_KEY);
+      const savedSettings = scopedGetItem(READER_SETTINGS_STORAGE_KEY);
       if (savedSettings) {
         const settings = JSON.parse(savedSettings);
         if (settings.theme) setTheme(settings.theme);
@@ -246,7 +247,7 @@ export default function Reader() {
       const legacySettings = localStorage.getItem(LEGACY_READER_SETTINGS_STORAGE_KEY);
       if (legacySettings) {
         const settings = JSON.parse(legacySettings);
-        localStorage.setItem(READER_SETTINGS_STORAGE_KEY, legacySettings);
+        scopedSetItem(READER_SETTINGS_STORAGE_KEY, legacySettings);
         localStorage.removeItem(LEGACY_READER_SETTINGS_STORAGE_KEY);
 
         if (settings.theme) setTheme(settings.theme);
@@ -265,7 +266,7 @@ export default function Reader() {
   // Save reader settings to localStorage when they change
   useEffect(() => {
     try {
-      localStorage.setItem(READER_SETTINGS_STORAGE_KEY, JSON.stringify({
+      scopedSetItem(READER_SETTINGS_STORAGE_KEY, JSON.stringify({
         theme: themeId, fontSize, fontFamily, lineHeight, playbackSpeed, autoPlayNext, syncHighlight
       }));
       localStorage.removeItem(LEGACY_READER_SETTINGS_STORAGE_KEY);

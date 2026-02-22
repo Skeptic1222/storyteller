@@ -10,6 +10,7 @@
 
 import { useState, useEffect, useCallback, memo } from 'react';
 import { ChevronDown, ChevronUp, RefreshCw, BookOpen } from 'lucide-react';
+import { scopedGetItem, scopedSetItem } from '../../utils/userScopedStorage';
 
 const SYNOPSIS_STORAGE_KEY = 'narrimo_synopsis_expanded';
 
@@ -24,7 +25,7 @@ const CollapsibleSynopsis = memo(function CollapsibleSynopsis({
   const [isExpanded, setIsExpanded] = useState(() => {
     // Try to load from localStorage first
     try {
-      const saved = localStorage.getItem(SYNOPSIS_STORAGE_KEY);
+      const saved = scopedGetItem(SYNOPSIS_STORAGE_KEY);
       if (saved !== null) {
         return JSON.parse(saved);
       }
@@ -40,7 +41,7 @@ const CollapsibleSynopsis = memo(function CollapsibleSynopsis({
   // Persist to localStorage when changed
   useEffect(() => {
     try {
-      localStorage.setItem(SYNOPSIS_STORAGE_KEY, JSON.stringify(isExpanded));
+      scopedSetItem(SYNOPSIS_STORAGE_KEY, JSON.stringify(isExpanded));
     } catch (err) {
       console.warn('[CollapsibleSynopsis] Failed to save state:', err);
     }
@@ -50,7 +51,7 @@ const CollapsibleSynopsis = memo(function CollapsibleSynopsis({
   useEffect(() => {
     if (chapterIndex > 0) {
       // Only auto-collapse if user hasn't explicitly interacted
-      const saved = localStorage.getItem(SYNOPSIS_STORAGE_KEY);
+      const saved = scopedGetItem(SYNOPSIS_STORAGE_KEY);
       if (saved === null) {
         setIsExpanded(false);
       }

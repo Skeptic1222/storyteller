@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { queueLog, audioLog } from '../utils/clientLogger';
+import { scopedGetItem, scopedSetItem } from '../utils/userScopedStorage';
 
 const AudioContextReact = createContext(null);
 
@@ -20,13 +21,13 @@ export function AudioProvider({ children }) {
   const [isUnlocked, setIsUnlocked] = useState(false);
   const [pendingAudio, setPendingAudio] = useState([]);
   const [volume, setVolumeState] = useState(() => {
-    // Load saved volume from localStorage, default to max (1.0)
-    const saved = localStorage.getItem(VOLUME_STORAGE_KEY);
+    // Load saved volume from user-scoped localStorage, default to max (1.0)
+    const saved = scopedGetItem(VOLUME_STORAGE_KEY);
     if (saved) return parseFloat(saved);
 
     const legacySaved = localStorage.getItem(LEGACY_VOLUME_STORAGE_KEY);
     if (legacySaved) {
-      localStorage.setItem(VOLUME_STORAGE_KEY, legacySaved);
+      scopedSetItem(VOLUME_STORAGE_KEY, legacySaved);
       localStorage.removeItem(LEGACY_VOLUME_STORAGE_KEY);
       return parseFloat(legacySaved);
     }
@@ -428,7 +429,7 @@ export function AudioProvider({ children }) {
   const setVolume = useCallback((newVolume) => {
     const clampedVolume = Math.max(0, Math.min(1, newVolume));
     setVolumeState(clampedVolume);
-    localStorage.setItem(VOLUME_STORAGE_KEY, clampedVolume.toString());
+    scopedSetItem(VOLUME_STORAGE_KEY, clampedVolume.toString());
     localStorage.removeItem(LEGACY_VOLUME_STORAGE_KEY);
     if (audioRef.current) {
       audioRef.current.volume = clampedVolume;

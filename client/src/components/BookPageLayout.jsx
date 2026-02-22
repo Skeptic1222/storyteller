@@ -18,6 +18,7 @@ import {
   ChevronDown, ChevronUp, BookOpen, MapPin, Sparkles,
   ChevronLeft, ChevronRight
 } from 'lucide-react';
+import { scopedGetItem, scopedSetItem } from '../utils/userScopedStorage';
 import { stripAllTags } from '../utils/textUtils';
 import { useTheme } from '../context/ThemeContext';
 import { CollapsibleSynopsis } from './story';
@@ -89,7 +90,7 @@ function BookPageLayout({
   // Load detailsExpanded from localStorage on mount (avoids SSR/hydration mismatch)
   useEffect(() => {
     try {
-      const saved = localStorage.getItem(DETAILS_STORAGE_KEY);
+      const saved = scopedGetItem(DETAILS_STORAGE_KEY);
       if (saved !== null) {
         const parsed = JSON.parse(saved);
         // Validate type to prevent corrupted data from breaking UI
@@ -99,21 +100,21 @@ function BookPageLayout({
           // Reset corrupted data to default and log warning
           console.warn('[BookPageLayout] Invalid localStorage value type, expected boolean got:', typeof parsed, '- resetting to default');
           setDetailsExpanded(true);
-          localStorage.setItem(DETAILS_STORAGE_KEY, JSON.stringify(true));
+          scopedSetItem(DETAILS_STORAGE_KEY, JSON.stringify(true));
         }
       } else {
         const legacySaved = localStorage.getItem(LEGACY_DETAILS_STORAGE_KEY);
         if (legacySaved !== null) {
           const parsed = JSON.parse(legacySaved);
           if (typeof parsed === 'boolean') {
-            localStorage.setItem(DETAILS_STORAGE_KEY, JSON.stringify(parsed));
+            scopedSetItem(DETAILS_STORAGE_KEY, JSON.stringify(parsed));
             localStorage.removeItem(LEGACY_DETAILS_STORAGE_KEY);
             setDetailsExpanded(parsed);
           } else {
             // Reset legacy corrupted data to default
             console.warn('[BookPageLayout] Invalid legacy localStorage value type, expected boolean got:', typeof parsed, '- resetting to default');
             setDetailsExpanded(true);
-            localStorage.setItem(DETAILS_STORAGE_KEY, JSON.stringify(true));
+            scopedSetItem(DETAILS_STORAGE_KEY, JSON.stringify(true));
             localStorage.removeItem(LEGACY_DETAILS_STORAGE_KEY);
           }
         }
@@ -129,7 +130,7 @@ function BookPageLayout({
   useEffect(() => {
     if (!detailsLoaded) return; // Skip first render to avoid overwriting with default
     try {
-      localStorage.setItem(DETAILS_STORAGE_KEY, JSON.stringify(detailsExpanded));
+      scopedSetItem(DETAILS_STORAGE_KEY, JSON.stringify(detailsExpanded));
       localStorage.removeItem(LEGACY_DETAILS_STORAGE_KEY);
     } catch (err) {
       // FAIL LOUDLY - don't silently swallow storage errors

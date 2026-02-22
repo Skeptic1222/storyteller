@@ -25,6 +25,7 @@ import { stripAllTags, processTextForDisplay } from '../utils/textUtils';
 import { AUTHOR_NAMES } from '../constants/authorStyles';
 import { getMoodFromGenres, MOOD_ACCENTS } from '../constants/themes';
 import { useTheme } from '../context/ThemeContext';
+import { scopedGetItem, scopedSetItem } from '../utils/userScopedStorage';
 // Wake lock removed - was causing screen dimming issues
 
 const SHOW_TEXT_STORAGE_KEY = 'narrimo_showText';
@@ -50,12 +51,12 @@ function Story() {
   const [generationProgress, setGenerationProgress] = useState({ step: 0, percent: 0, message: '' });
   const [showText, setShowText] = useState(() => {
     try {
-      const saved = localStorage.getItem(SHOW_TEXT_STORAGE_KEY);
+      const saved = scopedGetItem(SHOW_TEXT_STORAGE_KEY);
       if (saved !== null) return JSON.parse(saved);
 
       const legacy = localStorage.getItem(LEGACY_SHOW_TEXT_STORAGE_KEY);
       if (legacy !== null) {
-        localStorage.setItem(SHOW_TEXT_STORAGE_KEY, legacy);
+        scopedSetItem(SHOW_TEXT_STORAGE_KEY, legacy);
         localStorage.removeItem(LEGACY_SHOW_TEXT_STORAGE_KEY);
         return JSON.parse(legacy);
       }
@@ -67,12 +68,12 @@ function Story() {
   });
   const [karaokeEnabled, setKaraokeEnabled] = useState(() => {
     try {
-      const saved = localStorage.getItem(KARAOKE_STORAGE_KEY);
+      const saved = scopedGetItem(KARAOKE_STORAGE_KEY);
       if (saved !== null) return JSON.parse(saved);
 
       const legacy = localStorage.getItem(LEGACY_KARAOKE_STORAGE_KEY);
       if (legacy !== null) {
-        localStorage.setItem(KARAOKE_STORAGE_KEY, legacy);
+        scopedSetItem(KARAOKE_STORAGE_KEY, legacy);
         localStorage.removeItem(LEGACY_KARAOKE_STORAGE_KEY);
         return JSON.parse(legacy);
       }
@@ -83,15 +84,15 @@ function Story() {
     }
   });
   const [storyEnded, setStoryEnded] = useState(false);
-  // Text size preference - persisted to localStorage
+  // Text size preference - persisted to user-scoped localStorage
   const [fontSize, setFontSize] = useState(() => {
     try {
-      const saved = localStorage.getItem(FONT_SIZE_STORAGE_KEY);
+      const saved = scopedGetItem(FONT_SIZE_STORAGE_KEY);
       if (saved !== null) return parseInt(saved, 10);
 
       const legacy = localStorage.getItem(LEGACY_FONT_SIZE_STORAGE_KEY);
       if (legacy !== null) {
-        localStorage.setItem(FONT_SIZE_STORAGE_KEY, legacy);
+        scopedSetItem(FONT_SIZE_STORAGE_KEY, legacy);
         localStorage.removeItem(LEGACY_FONT_SIZE_STORAGE_KEY);
         return parseInt(legacy, 10);
       }
@@ -580,7 +581,7 @@ function Story() {
       stop();
       stopAllSfx();
     };
-  }, [stopAllSfx]);
+  }, [leaveSession, stop, stopAllSfx]);
 
   // Stop SFX when story ends
   useEffect(() => {
@@ -592,7 +593,7 @@ function Story() {
   // Persist font size to localStorage
   useEffect(() => {
     try {
-      localStorage.setItem(FONT_SIZE_STORAGE_KEY, fontSize.toString());
+      scopedSetItem(FONT_SIZE_STORAGE_KEY, fontSize.toString());
       localStorage.removeItem(LEGACY_FONT_SIZE_STORAGE_KEY);
     } catch (err) {
       console.warn('[Story] Failed to save fontSize to localStorage:', err);
@@ -601,7 +602,7 @@ function Story() {
 
   useEffect(() => {
     try {
-      localStorage.setItem(SHOW_TEXT_STORAGE_KEY, JSON.stringify(showText));
+      scopedSetItem(SHOW_TEXT_STORAGE_KEY, JSON.stringify(showText));
       localStorage.removeItem(LEGACY_SHOW_TEXT_STORAGE_KEY);
     } catch (err) {
       console.warn('[Story] Failed to save showText to localStorage:', err);
@@ -610,7 +611,7 @@ function Story() {
 
   useEffect(() => {
     try {
-      localStorage.setItem(KARAOKE_STORAGE_KEY, JSON.stringify(karaokeEnabled));
+      scopedSetItem(KARAOKE_STORAGE_KEY, JSON.stringify(karaokeEnabled));
       localStorage.removeItem(LEGACY_KARAOKE_STORAGE_KEY);
     } catch (err) {
       console.warn('[Story] Failed to save karaoke setting to localStorage:', err);

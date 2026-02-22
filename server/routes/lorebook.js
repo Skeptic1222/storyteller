@@ -7,15 +7,39 @@ import { Router } from 'express';
 import { LorebookService } from '../services/lorebook.js';
 import { logger } from '../utils/logger.js';
 import { wrapRoutes, NotFoundError, ValidationError } from '../middleware/errorHandler.js';
+import { authenticateToken, requireAuth } from '../middleware/auth.js';
+import { pool } from '../database/pool.js';
 
 const router = Router();
 wrapRoutes(router); // Auto-wrap async handlers for error catching
+router.use(authenticateToken, requireAuth);
+
+// Verify the current user owns the session referenced by :sessionId
+async function requireSessionOwner(req, res, next) {
+  try {
+    const sessionId = req.params.sessionId;
+    const result = await pool.query(
+      'SELECT user_id FROM story_sessions WHERE id = $1',
+      [sessionId]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Story session not found' });
+    }
+    if (result.rows[0].user_id !== req.user.id && !req.user.is_admin) {
+      return res.status(403).json({ error: 'Not authorized to access this session' });
+    }
+    return next();
+  } catch (error) {
+    logger.error('Error verifying session owner:', error);
+    return res.status(500).json({ error: 'Failed to verify session access' });
+  }
+}
 
 /**
  * GET /api/lorebook/:sessionId
  * Get all lorebook entries for a session
  */
-router.get('/:sessionId', async (req, res) => {
+router.get('/:sessionId', requireSessionOwner, async (req, res) => {
   try {
     const { sessionId } = req.params;
     const lorebook = new LorebookService(sessionId);
@@ -36,7 +60,7 @@ router.get('/:sessionId', async (req, res) => {
  * POST /api/lorebook/:sessionId/entries
  * Add a new lorebook entry
  */
-router.post('/:sessionId/entries', async (req, res) => {
+router.post('/:sessionId/entries', requireSessionOwner, async (req, res) => {
   try {
     const { sessionId } = req.params;
     const { title, content, entry_type, importance, tags } = req.body;
@@ -70,7 +94,7 @@ router.post('/:sessionId/entries', async (req, res) => {
  * PUT /api/lorebook/:sessionId/entries/:entryId
  * Update a lorebook entry
  */
-router.put('/:sessionId/entries/:entryId', async (req, res) => {
+router.put('/:sessionId/entries/:entryId', requireSessionOwner, async (req, res) => {
   try {
     const { sessionId, entryId } = req.params;
     const updates = req.body;
@@ -98,7 +122,7 @@ router.put('/:sessionId/entries/:entryId', async (req, res) => {
  * DELETE /api/lorebook/:sessionId/entries/:entryId
  * Delete a lorebook entry
  */
-router.delete('/:sessionId/entries/:entryId', async (req, res) => {
+router.delete('/:sessionId/entries/:entryId', requireSessionOwner, async (req, res) => {
   try {
     const { sessionId, entryId } = req.params;
 
@@ -117,7 +141,7 @@ router.delete('/:sessionId/entries/:entryId', async (req, res) => {
  * POST /api/lorebook/:sessionId/search
  * Search lorebook entries
  */
-router.post('/:sessionId/search', async (req, res) => {
+router.post('/:sessionId/search', requireSessionOwner, async (req, res) => {
   try {
     const { sessionId } = req.params;
     const { query } = req.body;
@@ -145,7 +169,7 @@ router.post('/:sessionId/search', async (req, res) => {
  * POST /api/lorebook/:sessionId/test-triggers
  * Test which entries would be triggered by given text
  */
-router.post('/:sessionId/test-triggers', async (req, res) => {
+router.post('/:sessionId/test-triggers', requireSessionOwner, async (req, res) => {
   try {
     const { sessionId } = req.params;
     const { text } = req.body;
@@ -179,7 +203,7 @@ router.post('/:sessionId/test-triggers', async (req, res) => {
  * GET /api/lorebook/:sessionId/export
  * Export lorebook as JSON
  */
-router.get('/:sessionId/export', async (req, res) => {
+router.get('/:sessionId/export', requireSessionOwner, async (req, res) => {
   try {
     const { sessionId } = req.params;
 
@@ -198,7 +222,7 @@ router.get('/:sessionId/export', async (req, res) => {
  * POST /api/lorebook/:sessionId/import
  * Import lorebook from JSON
  */
-router.post('/:sessionId/import', async (req, res) => {
+router.post('/:sessionId/import', requireSessionOwner, async (req, res) => {
   try {
     const { sessionId } = req.params;
     const data = req.body;
@@ -221,7 +245,7 @@ router.post('/:sessionId/import', async (req, res) => {
  * GET /api/lorebook/:sessionId/by-type/:type
  * Get entries by type
  */
-router.get('/:sessionId/by-type/:type', async (req, res) => {
+router.get('/:sessionId/by-type/:type', requireSessionOwner, async (req, res) => {
   try {
     const { sessionId, type } = req.params;
 

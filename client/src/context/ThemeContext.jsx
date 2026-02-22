@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
 import {
   READING_THEMES,
   APP_THEMES,
@@ -6,6 +6,7 @@ import {
   TYPOGRAPHY,
   getMoodFromGenres
 } from '../constants/themes';
+import { scopedGetItem, scopedSetItem } from '../utils/userScopedStorage';
 
 const ThemeContext = createContext(null);
 
@@ -40,9 +41,9 @@ const DEFAULT_PREFS = {
  */
 export function ThemeProvider({ children }) {
   const [prefs, setPrefs] = useState(() => {
-    // Load from localStorage on initial render
+    // Load from user-scoped localStorage on initial render
     try {
-      const stored = localStorage.getItem(STORAGE_KEY);
+      const stored = scopedGetItem(STORAGE_KEY);
       if (stored) {
         return { ...DEFAULT_PREFS, ...JSON.parse(stored) };
       }
@@ -50,7 +51,7 @@ export function ThemeProvider({ children }) {
       const legacy = localStorage.getItem(LEGACY_STORAGE_KEY);
       if (legacy) {
         const nextPrefs = { ...DEFAULT_PREFS, ...JSON.parse(legacy) };
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(nextPrefs));
+        scopedSetItem(STORAGE_KEY, JSON.stringify(nextPrefs));
         localStorage.removeItem(LEGACY_STORAGE_KEY);
         return nextPrefs;
       }
@@ -60,10 +61,10 @@ export function ThemeProvider({ children }) {
     return DEFAULT_PREFS;
   });
 
-  // Persist to localStorage whenever prefs change
+  // Persist to user-scoped localStorage whenever prefs change
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs));
+      scopedSetItem(STORAGE_KEY, JSON.stringify(prefs));
       localStorage.removeItem(LEGACY_STORAGE_KEY);
     } catch (e) {
       console.warn('Failed to save theme preferences:', e);
@@ -193,7 +194,7 @@ export function ThemeProvider({ children }) {
     };
   }, [prefs.fontSize, prefs.fontFamily, prefs.lineHeight]);
 
-  const value = {
+  const value = useMemo(() => ({
     // Current values
     readingTheme,
     appTheme,
@@ -237,7 +238,7 @@ export function ThemeProvider({ children }) {
     fontSizeOptions: TYPOGRAPHY.fontSizes,
     fontFamilyOptions: TYPOGRAPHY.fontFamilies,
     lineHeightOptions: TYPOGRAPHY.lineHeights
-  };
+  }), [readingTheme, appTheme, moodAccent, prefs, setReadingTheme, setAppTheme, setMood, setMoodFromGenres, setFontSize, setFontFamily, setLineHeight, setTextLayout, setTextColor, setBackgroundColor, setShowDialogueQuotes, setDialogueQuoteStyle, resetPrefs, getTypographyStyles]);
 
   return (
     <ThemeContext.Provider value={value}>

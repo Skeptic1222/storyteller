@@ -93,9 +93,6 @@ const io = new SocketIO(server, {
   ...socketOptions
 });
 
-// Expose io globally for routes that need to emit events (e.g., story-bible.js)
-global.io = io;
-
 // Secondary socket path (IIS reverse proxy access)
 const ioPrefixed = new SocketIO(server, {
   path: '/storyteller/socket.io',

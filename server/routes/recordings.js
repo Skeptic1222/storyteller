@@ -214,6 +214,15 @@ router.post('/check-path', async (req, res) => {
       return res.status(400).json({ error: 'sessionId required' });
     }
 
+    // Verify session ownership
+    const ownerCheck = await pool.query('SELECT user_id FROM story_sessions WHERE id = $1', [sessionId]);
+    if (ownerCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+    if (ownerCheck.rows[0].user_id !== req.user.id && !req.user.is_admin) {
+      return res.status(403).json({ error: 'Not authorized for this session' });
+    }
+
     const result = await recordingService.findLongestMatchingPath(sessionId, choices || []);
 
     res.json({
@@ -242,6 +251,15 @@ router.post('/check-choice', async (req, res) => {
 
     if (!sessionId || !choiceKey) {
       return res.status(400).json({ error: 'sessionId and choiceKey required' });
+    }
+
+    // Verify session ownership
+    const ownerCheck = await pool.query('SELECT user_id FROM story_sessions WHERE id = $1', [sessionId]);
+    if (ownerCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+    if (ownerCheck.rows[0].user_id !== req.user.id && !req.user.is_admin) {
+      return res.status(403).json({ error: 'Not authorized for this session' });
     }
 
     const hasRecording = await recordingService.hasRecordingForChoice(

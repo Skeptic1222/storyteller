@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
 import { apiCall } from '../config';
 import { getStoredToken, setStoredToken, clearStoredToken, isTokenExpired } from '../utils/authToken';
+import { clearAllPreferences } from '../utils/userScopedStorage';
 
 const AuthContext = createContext(null);
 
@@ -15,7 +16,7 @@ export function AuthProvider({ children }) {
     checkAuthStatus();
   }, []);
 
-  const checkAuthStatus = async () => {
+  const checkAuthStatus = useCallback(async () => {
     try {
       const token = getStoredToken();
       if (!token || isTokenExpired(token)) {
@@ -47,7 +48,7 @@ export function AuthProvider({ children }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   // Google OAuth login
   const loginWithGoogle = useCallback(async (credential) => {
@@ -90,6 +91,7 @@ export function AuthProvider({ children }) {
     } catch (error) {
       console.error('Logout error:', error);
     } finally {
+      clearAllPreferences();
       clearStoredToken();
       setUser(null);
       setSubscription(null);

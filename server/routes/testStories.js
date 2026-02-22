@@ -15,6 +15,7 @@ import { Router } from 'express';
 import { logger } from '../utils/logger.js';
 import { TEST_FIXTURES, validateAllFixtures } from '../services/testFixtures.js';
 import { runTestFixture, cleanupTestSession, getTestResults } from '../services/testStoryRunner.js';
+import { authenticateToken } from '../middleware/auth.js';
 
 const router = Router();
 
@@ -34,7 +35,7 @@ function devGuard(req, res, next) {
   return res.status(403).json({ error: 'Test stories only available in development mode' });
 }
 
-router.use(devGuard);
+router.use(authenticateToken, devGuard);
 
 /**
  * GET /fixtures - List available test fixtures

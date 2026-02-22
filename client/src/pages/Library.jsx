@@ -17,6 +17,9 @@ import { apiCall } from '../config';
 import UserProfile from '../components/UserProfile';
 import { useReadingTheme } from '../context/ThemeContext';
 import { LibraryCard, ViewModeSelector } from '../components/library';
+import { scopedGetItem, scopedSetItem } from '../utils/userScopedStorage';
+
+const VIEW_MODE_KEY = 'narrimo_library_view_mode';
 
 // Content categories
 const CATEGORIES = {
@@ -37,14 +40,14 @@ export default function Library() {
   const [displayCount, setDisplayCount] = useState(12); // Pagination: show 12 initially
   const ITEMS_PER_PAGE = 12;
 
-  // View mode state with localStorage persistence
+  // View mode state with user-scoped localStorage persistence
   const [viewMode, setViewMode] = useState(() => {
-    return localStorage.getItem('storyteller_library_view_mode') || 'grid';
+    return scopedGetItem(VIEW_MODE_KEY) || 'grid';
   });
 
-  // Persist view mode to localStorage
+  // Persist view mode to user-scoped localStorage
   useEffect(() => {
-    localStorage.setItem('storyteller_library_view_mode', viewMode);
+    scopedSetItem(VIEW_MODE_KEY, viewMode);
   }, [viewMode]);
 
   useEffect(() => {

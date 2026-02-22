@@ -24,7 +24,6 @@ export { default as useStorySocket } from './useStorySocket';
 export { default as useUsageTracking } from './useUsageTracking';
 
 // Session and story management hooks
-export { default as useSessionManagement } from './useSessionManagement';
 export { default as useCYOAState } from './useCYOAState';
 export { default as useCoverArt } from './useCoverArt';
 export { default as usePlaybackControls } from './usePlaybackControls';
