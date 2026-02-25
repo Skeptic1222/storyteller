@@ -55,6 +55,21 @@ router.param('libraryId', async (req, res, next, libraryId) => {
   }
 });
 
+// Enforce synopsis ownership/access for any route using /synopsis/:id
+router.use('/synopsis/:id', async (req, res, next) => {
+  try {
+    const access = await getSynopsisAccess(req.params.id, req.user);
+    if (access.error) {
+      return res.status(access.error.status).json({ error: access.error.message });
+    }
+    req.synopsisAccess = access.synopsis;
+    return next();
+  } catch (error) {
+    logger.error('[StoryBible] Error verifying synopsis access:', error);
+    return res.status(500).json({ error: 'Failed to verify synopsis access' });
+  }
+});
+
 // Valid entity types for SQL table name construction
 const VALID_ENTITY_TYPES = ['character', 'world', 'location', 'item', 'faction', 'ability', 'lore', 'event', 'synopsis'];
 

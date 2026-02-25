@@ -81,5 +81,10 @@ describe('route guard regressions', () => {
       true,
       'chapter-event linking should use parameterized unnest inserts'
     );
+    assert.equal(
+      /router\.use\('\/synopsis\/:id'/.test(storyBibleRoute),
+      true,
+      'all /synopsis/:id routes should enforce synopsis ownership/access middleware'
+    );
   });
 });
