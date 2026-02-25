@@ -11,10 +11,10 @@ Quick reference for setting up Google OAuth and PayPal for the Storyteller app.
 2. Sign in with your Google account (sop1973@gmail.com)
 3. Select an existing project or create a new one
 
-### Step 2: Enable the Google+ API
+### Step 2: Enable Required Google APIs
 1. Go to **APIs & Services** > **Library**
-2. Search for "Google+ API" and enable it
-3. Also search for "People API" and enable it
+2. Ensure **Google Identity Services** is available for OAuth (consent screen + OAuth client)
+3. Enable **People API** only if your app reads profile/contact fields beyond standard OpenID claims
 
 ### Step 3: Configure OAuth Consent Screen
 1. Go to **APIs & Services** > **OAuth consent screen**

@@ -5,8 +5,6 @@
 -- Run with:
 --   psql -d storyteller_db -f database/migrations/030_style_score_and_voice_directions.sql
 
-BEGIN;
-
 -- ============================================================================
 -- Phase 3: Author Style Validation
 -- ============================================================================
@@ -73,6 +71,21 @@ ALTER TABLE story_sessions ADD COLUMN IF NOT EXISTS voice_direction_preferences 
 -- Agent Prompt: style_validator
 -- ============================================================================
 
+-- Ensure prompt table exists on legacy databases before upserting.
+CREATE TABLE IF NOT EXISTS agent_prompts (
+  id SERIAL PRIMARY KEY,
+  agent_name VARCHAR(100) NOT NULL UNIQUE,
+  system_prompt TEXT,
+  description TEXT,
+  model VARCHAR(50) DEFAULT 'gpt-4o-mini',
+  temperature FLOAT DEFAULT 0.7,
+  max_tokens INTEGER DEFAULT 2000,
+  is_active BOOLEAN DEFAULT true,
+  version INTEGER DEFAULT 1,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- The style_validator agent is used by authorStyleValidator.js for scoring.
 -- It is a UTILITY agent (structured JSON output, fast model).
 INSERT INTO agent_prompts (agent_name, system_prompt, description, model, temperature, max_tokens)
@@ -107,5 +120,3 @@ CREATE INDEX IF NOT EXISTS idx_voice_directions_scene
 -- Filter segments by audio generation status (batch processing)
 CREATE INDEX IF NOT EXISTS idx_voice_directions_status
     ON scene_voice_directions(audio_status);
-
-COMMIT;

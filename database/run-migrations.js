@@ -56,6 +56,7 @@ const MIGRATION_ORDER = [
   { version: '031', file: '031_missing_indexes_and_agent_prompts.sql', transactional: false },
   // 032 uses CREATE INDEX CONCURRENTLY and must run outside a transaction
   { version: '032', file: '032_missing_query_indexes.sql', transactional: false },
+  { version: '033', file: '033_story_choices_uniqueness.sql' },
 ];
 
 // Database connection
@@ -68,6 +69,136 @@ const pool = new pg.Pool({
  */
 function getChecksum(content) {
   return crypto.createHash('md5').update(content).digest('hex');
+}
+
+/**
+ * Check whether a SQL statement includes executable SQL (not only comments/whitespace)
+ */
+function hasExecutableSql(statement) {
+  const withoutLineComments = statement.replace(/--.*$/gm, '');
+  const withoutBlockComments = withoutLineComments.replace(/\/\*[\s\S]*?\*\//g, '');
+  return withoutBlockComments.trim().length > 0;
+}
+
+/**
+ * Split SQL script into statements while preserving quoted strings and dollar-quoted bodies.
+ * Required for non-transactional migrations that use CREATE INDEX CONCURRENTLY.
+ */
+function splitSqlStatements(sql) {
+  const statements = [];
+  let current = '';
+  let i = 0;
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let inLineComment = false;
+  let inBlockComment = false;
+  let dollarQuoteTag = null;
+
+  while (i < sql.length) {
+    const ch = sql[i];
+    const next = sql[i + 1];
+
+    if (inLineComment) {
+      current += ch;
+      if (ch === '\n') inLineComment = false;
+      i++;
+      continue;
+    }
+
+    if (inBlockComment) {
+      current += ch;
+      if (ch === '*' && next === '/') {
+        current += next;
+        i += 2;
+        inBlockComment = false;
+        continue;
+      }
+      i++;
+      continue;
+    }
+
+    if (dollarQuoteTag) {
+      if (sql.startsWith(dollarQuoteTag, i)) {
+        current += dollarQuoteTag;
+        i += dollarQuoteTag.length;
+        dollarQuoteTag = null;
+        continue;
+      }
+      current += ch;
+      i++;
+      continue;
+    }
+
+    if (!inSingleQuote && !inDoubleQuote) {
+      if (ch === '-' && next === '-') {
+        current += ch + next;
+        i += 2;
+        inLineComment = true;
+        continue;
+      }
+
+      if (ch === '/' && next === '*') {
+        current += ch + next;
+        i += 2;
+        inBlockComment = true;
+        continue;
+      }
+
+      if (ch === '$') {
+        const match = sql.slice(i).match(/^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/);
+        if (match) {
+          dollarQuoteTag = match[0];
+          current += dollarQuoteTag;
+          i += dollarQuoteTag.length;
+          continue;
+        }
+      }
+    }
+
+    if (ch === '\'' && !inDoubleQuote) {
+      if (inSingleQuote && next === '\'') {
+        current += ch + next;
+        i += 2;
+        continue;
+      }
+      inSingleQuote = !inSingleQuote;
+      current += ch;
+      i++;
+      continue;
+    }
+
+    if (ch === '"' && !inSingleQuote) {
+      if (inDoubleQuote && next === '"') {
+        current += ch + next;
+        i += 2;
+        continue;
+      }
+      inDoubleQuote = !inDoubleQuote;
+      current += ch;
+      i++;
+      continue;
+    }
+
+    if (ch === ';' && !inSingleQuote && !inDoubleQuote) {
+      const statement = current.trim();
+      if (statement && hasExecutableSql(statement)) {
+        statements.push(statement);
+      }
+      current = '';
+      i++;
+      continue;
+    }
+
+    current += ch;
+    i++;
+  }
+
+  const tail = current.trim();
+  if (tail && hasExecutableSql(tail)) {
+    statements.push(tail);
+  }
+
+  return statements;
 }
 
 /**
@@ -129,7 +260,10 @@ async function applyMigration(client, migration) {
       );
       await client.query('COMMIT');
     } else {
-      await client.query(content);
+      const statements = splitSqlStatements(content);
+      for (const statement of statements) {
+        await client.query(statement);
+      }
       await client.query(
         `INSERT INTO schema_migrations (version, name, checksum)
          VALUES ($1, $2, $3)

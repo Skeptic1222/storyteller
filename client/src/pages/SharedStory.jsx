@@ -19,8 +19,12 @@ function SharedStory() {
     setError(null);
     setRequiresPassword(false);
     try {
-      const query = passwordOverride ? `?password=${encodeURIComponent(passwordOverride)}` : '';
-      const response = await apiCall(`/sharing/story/${shareCode}${query}`);
+      const response = passwordOverride
+        ? await apiCall(`/sharing/story/${shareCode}/access`, {
+            method: 'POST',
+            body: JSON.stringify({ password: passwordOverride })
+          })
+        : await apiCall(`/sharing/story/${shareCode}`);
       const data = await response.json();
 
       if (!response.ok || !data?.success) {

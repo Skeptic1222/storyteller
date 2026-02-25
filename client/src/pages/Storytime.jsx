@@ -250,7 +250,8 @@ function Storytime() {
       return;
     }
 
-    setMessages(prev => [...prev, { role: 'user', content: userText }]);
+    const nextHistory = [...messages, { role: 'user', content: userText }];
+    setMessages(nextHistory);
     setState(STATES.PROCESSING);
 
     try {
@@ -259,7 +260,7 @@ function Storytime() {
         body: JSON.stringify({
           input: userText,
           current_config: config,
-          conversation_history: messages
+          conversation_history: nextHistory
         })
       });
 

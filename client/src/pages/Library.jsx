@@ -196,7 +196,7 @@ export default function Library() {
   const handleStoryClick = (story) => {
     const storyCategory = getStoryCategory(story);
     if (storyCategory === 'dnd') {
-      navigate(`/campaign/${story.id}`);
+      navigate(`/reader/${story.id}`);
     } else {
       navigate(`/reader/${story.id}`);
     }

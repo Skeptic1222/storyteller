@@ -109,7 +109,7 @@ const PLAN_IDS = {
 };
 
 // Check if PayPal is configured
-const isConfigured = () => PAYPAL_CLIENT_ID && PAYPAL_CLIENT_SECRET;
+const isConfigured = () => Boolean(PAYPAL_CLIENT_ID && PAYPAL_CLIENT_SECRET);
 
 /**
  * GET /api/paypal/status

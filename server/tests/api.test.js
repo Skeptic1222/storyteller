@@ -254,6 +254,46 @@ describe('Config API', () => {
 });
 
 // =============================================================================
+// PAYPAL API TESTS
+// =============================================================================
+
+describe('PayPal API', () => {
+  test('GET /api/paypal/status returns configuration status', async () => {
+    const { status, data } = await api('/api/paypal/status');
+
+    assert.strictEqual(status, 200, 'PayPal status should return 200');
+    assert.ok(typeof data.mode === 'string', 'Should return mode');
+    assert.ok(data.plans && typeof data.plans === 'object', 'Should return plan availability map');
+  });
+
+  test('GET /api/paypal/plans returns plan metadata', async () => {
+    const { status, data } = await api('/api/paypal/plans');
+
+    assert.strictEqual(status, 200, 'PayPal plans should return 200');
+    assert.ok(Array.isArray(data.plans), 'Should return plans array');
+    assert.ok(data.plans.length >= 1, 'Should include at least one plan');
+  });
+
+  test('POST /api/paypal/create-subscription enforces auth/config validation', async () => {
+    const { status } = await api('/api/paypal/create-subscription', {
+      method: 'POST',
+      body: JSON.stringify({ planId: 'invalid-plan' })
+    });
+
+    if (!TEST_AUTH_TOKEN) {
+      assert.strictEqual(status, 401, 'Create subscription should require authentication');
+      return;
+    }
+
+    // If PayPal is not configured: 503; if configured with invalid plan: 400
+    assert.ok(
+      status === 400 || status === 503,
+      `Expected 400 or 503 for invalid/pre-configured plan request, got ${status}`
+    );
+  });
+});
+
+// =============================================================================
 // VALIDATION TESTS
 // =============================================================================
 

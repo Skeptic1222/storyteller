@@ -123,10 +123,10 @@ export async function authenticateToken(req, res, next) {
       logger.debug(`[Auth] Path: ${req.path}, Header token: ${token ? 'present' : 'missing'}, NODE_ENV: ${NODE_ENV}`);
     }
 
-    // SECURITY: Fallback to query parameter ONLY in strict development mode
-    // This is for IIS proxy testing when headers are stripped - never used in production
-    const isStrictDev = NODE_ENV === 'development' && !process.env.PRODUCTION_LIKE;
-    if (isStrictDev && (!token || token === 'null' || token === 'undefined')) {
+    // SECURITY: Query-param token fallback is opt-in for local debugging only.
+    // Never enable this in shared environments, because URLs are broadly logged.
+    const allowQueryToken = NODE_ENV === 'development' && process.env.ALLOW_QUERY_TOKEN === 'true';
+    if (allowQueryToken && (!token || token === 'null' || token === 'undefined')) {
       token = req.query?.token || req.query?.auth_token;
       if (token) {
         // SECURITY: Don't log token length in case logs are exposed

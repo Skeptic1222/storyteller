@@ -108,7 +108,9 @@ CREATE TABLE IF NOT EXISTS story_choices (
     leads_to_scene_id UUID REFERENCES story_scenes(id) ON DELETE SET NULL,
     was_selected BOOLEAN DEFAULT FALSE,
     selected_at TIMESTAMP WITH TIME ZONE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    CONSTRAINT uq_story_choices_scene_choice_key UNIQUE (scene_id, choice_key),
+    CONSTRAINT uq_story_choices_scene_choice_index UNIQUE (scene_id, choice_index)
 );
 
 -- =============================================================================

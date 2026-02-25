@@ -186,15 +186,25 @@ Key variables:
 - `DATABASE_URL` - PostgreSQL connection string
 - `SESSION_SECRET` - Secure session secret
 - `JWT_SECRET` - JWT signing secret
+- `WHISPER_SERVICE_URL` - Whisper transcription service base URL
+- `ALLOWED_ORIGINS` - Comma-separated CORS allowlist
+- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` - OAuth credentials
+- `PAYPAL_CLIENT_ID` / `PAYPAL_CLIENT_SECRET` / `PAYPAL_WEBHOOK_ID` - PayPal integration
+- `DEV_LOGIN_ENABLED`, `ALLOW_QUERY_TOKEN`, `ALLOW_SOCKET_QUERY_TOKEN` - Local dev-only auth toggles
 
 ## API Endpoints
 
 ### REST API
-- `POST /api/stories` - Create new story session
+- `POST /api/stories/start` - Create new story session
 - `GET /api/stories/:id` - Get story details
-- `POST /api/stories/:id/generate` - Generate next scene
+- `POST /api/stories/:id/generate-outline` - Generate story outline
+- `POST /api/stories/:id/continue` - Generate next scene
+- `POST /api/stories/:id/choice` - Submit CYOA choice
+- `POST /api/stories/:id/generate-audio/:sceneId` - Generate deferred audio for a scene
 - `GET /api/library/:storyId` - Requires auth and story ownership/admin access
 - `GET /api/library/:storyId/export` - Requires auth and story ownership/admin access
+
+See [docs/API_REFERENCE.md](./docs/API_REFERENCE.md) for the full route list.
 
 ### Socket.IO Events
 - `join-session` - Join story session room

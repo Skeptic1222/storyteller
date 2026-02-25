@@ -12,6 +12,7 @@ import { normalizeStyleValue } from '../utils/styleUtils.js';
 import { wrapRoutes, NotFoundError } from '../middleware/errorHandler.js';
 import { rateLimiters } from '../middleware/rateLimiter.js';
 import { authenticateToken, requireAuth, requireAdmin } from '../middleware/auth.js';
+import { verifySessionOwnership } from '../utils/ownership.js';
 
 const router = Router();
 wrapRoutes(router); // Auto-wrap async handlers for error catching
@@ -1162,14 +1163,8 @@ router.get('/usage/:sessionId', async (req, res) => {
   try {
     const { sessionId } = req.params;
 
-    // Verify session ownership
-    const session = await pool.query('SELECT user_id FROM story_sessions WHERE id = $1', [sessionId]);
-    if (session.rows.length === 0) {
-      return res.status(404).json({ error: 'Session not found' });
-    }
-    if (session.rows[0].user_id !== req.user.id && !req.user.is_admin) {
-      return res.status(403).json({ error: 'Not authorized to access this session' });
-    }
+    const ownershipError = await verifySessionOwnership(sessionId, req.user, { db: pool });
+    if (ownershipError) return res.status(ownershipError.status).json({ error: ownershipError.error });
 
     const stats = await qualityTierConfig.getUsageStats(sessionId);
 
@@ -1191,6 +1186,9 @@ router.post('/usage/check', async (req, res) => {
     if (!sessionId) {
       return res.status(400).json({ error: 'sessionId is required' });
     }
+
+    const ownershipError = await verifySessionOwnership(sessionId, req.user, { db: pool });
+    if (ownershipError) return res.status(ownershipError.status).json({ error: ownershipError.error });
 
     const result = await qualityTierConfig.checkUsageLimits(sessionId, plannedChars || 0);
 
@@ -1311,6 +1309,9 @@ router.post('/preview-styled', rateLimiters.tts, async (req, res) => {
 router.get('/hud/:sessionId', async (req, res) => {
   try {
     const { sessionId } = req.params;
+
+    const ownershipError = await verifySessionOwnership(sessionId, req.user, { db: pool });
+    if (ownershipError) return res.status(ownershipError.status).json({ error: ownershipError.error });
 
     // Get session voice assignments
     const assignments = await voiceSelectionService.loadVoiceAssignments(sessionId);

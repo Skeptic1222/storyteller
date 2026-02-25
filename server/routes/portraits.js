@@ -23,19 +23,42 @@ import { logger } from '../utils/logger.js';
 import { wrapRoutes, NotFoundError, ValidationError } from '../middleware/errorHandler.js';
 import { rateLimiters } from '../middleware/rateLimiter.js';
 import { authenticateToken, requireAuth } from '../middleware/auth.js';
+import {
+  verifySessionOwnership as verifyOwnedSession,
+  verifySceneOwnership as verifyOwnedScene
+} from '../utils/ownership.js';
 
 const router = express.Router();
 wrapRoutes(router); // Auto-wrap async handlers for error catching
 router.use(authenticateToken, requireAuth);
 
-async function verifySessionOwnership(sessionId, userId, isAdmin) {
-  const result = await pool.query(
-    'SELECT user_id FROM story_sessions WHERE id = $1',
-    [sessionId]
-  );
-  if (result.rows.length === 0) return { error: 'Session not found', status: 404 };
-  if (result.rows[0].user_id !== userId && !isAdmin) return { error: 'Not authorized', status: 403 };
-  return null;
+function parseDbJson(value, fallback = {}) {
+  if (value == null) return fallback;
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return fallback;
+    }
+  }
+  if (typeof value === 'object') return value;
+  return fallback;
+}
+
+async function verifySessionOwnership(sessionId, user) {
+  return verifyOwnedSession(sessionId, user, {
+    db: pool,
+    notFoundError: 'Session not found',
+    forbiddenError: 'Not authorized'
+  });
+}
+
+async function verifySceneOwnership(sceneId, user) {
+  return verifyOwnedScene(sceneId, user, {
+    db: pool,
+    notFoundError: 'Scene not found',
+    forbiddenError: 'Not authorized'
+  });
 }
 
 /**
@@ -92,7 +115,7 @@ router.post('/character/:characterId', rateLimiters.imageGeneration, async (req,
       return res.status(400).json({ error: 'Session ID required' });
     }
 
-    const ownershipError = await verifySessionOwnership(sessionId, req.user.id, req.user.is_admin);
+    const ownershipError = await verifySessionOwnership(sessionId, req.user);
     if (ownershipError) return res.status(ownershipError.status).json({ error: ownershipError.error });
 
     const result = await generateAndSavePortrait(characterId, sessionId, { style });
@@ -116,7 +139,7 @@ router.post('/session/:sessionId/cover', rateLimiters.imageGeneration, async (re
     const { sessionId } = req.params;
     const { style = 'painterly', quality = 'hd' } = req.body;
 
-    const ownershipError = await verifySessionOwnership(sessionId, req.user.id, req.user.is_admin);
+    const ownershipError = await verifySessionOwnership(sessionId, req.user);
     if (ownershipError) return res.status(ownershipError.status).json({ error: ownershipError.error });
 
     // Get session details
@@ -133,8 +156,8 @@ router.post('/session/:sessionId/cover', rateLimiters.imageGeneration, async (re
     }
 
     const session = sessionResult.rows[0];
-    const outline = session.outline_json ? JSON.parse(session.outline_json) : {};
-    const config = session.config_json ? (typeof session.config_json === 'string' ? JSON.parse(session.config_json) : session.config_json) : {};
+    const outline = parseDbJson(session.outline_json, {});
+    const config = parseDbJson(session.config_json, {});
 
     // Build complete session data for cover art generation
     const sessionData = {
@@ -174,6 +197,11 @@ router.post('/scene', rateLimiters.imageGeneration, async (req, res) => {
       return res.status(400).json({ error: 'Scene text required' });
     }
 
+    if (sceneId) {
+      const ownershipError = await verifySceneOwnership(sceneId, req.user);
+      if (ownershipError) return res.status(ownershipError.status).json({ error: ownershipError.error });
+    }
+
     const result = await generateSceneIllustration(sceneText, { style });
 
     // If sceneId provided, update the scene
@@ -202,7 +230,7 @@ router.get('/session/:sessionId/characters', async (req, res) => {
   try {
     const { sessionId } = req.params;
 
-    const ownershipError = await verifySessionOwnership(sessionId, req.user.id, req.user.is_admin);
+    const ownershipError = await verifySessionOwnership(sessionId, req.user);
     if (ownershipError) return res.status(ownershipError.status).json({ error: ownershipError.error });
 
     const result = await pool.query(
@@ -246,7 +274,7 @@ router.post('/batch', rateLimiters.strict, async (req, res) => {
       return res.status(400).json({ error: 'Session ID and character IDs required' });
     }
 
-    const ownershipError = await verifySessionOwnership(sessionId, req.user.id, req.user.is_admin);
+    const ownershipError = await verifySessionOwnership(sessionId, req.user);
     if (ownershipError) return res.status(ownershipError.status).json({ error: ownershipError.error });
 
     // Limit batch size to prevent abuse (max 10 portraits per request)

@@ -37,6 +37,10 @@ This document specifies the correct application order.
 | 26 | 027_composited_images.sql | Picture-book compositing support | 001-026 |
 | 27 | 028_narrator_archetype.sql | Narrator archetype JSON indexes | 001-027 |
 | 28 | 029_character_age.sql | Character age-group metadata | 001-028 |
+| 29 | 030_style_score_and_voice_directions.sql | Style score + script-editor voice directions | 001-029 |
+| 30 | 031_missing_indexes_and_agent_prompts.sql | Missing indexes + agent prompt compatibility | 001-030 |
+| 31 | 032_missing_query_indexes.sql | Additional missing query indexes | 001-031 |
+| 32 | 033_story_choices_uniqueness.sql | De-dup + unique choice constraints | 001-032 |
 
 ## Duplicate Number Handling
 

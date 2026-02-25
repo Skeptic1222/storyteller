@@ -565,7 +565,7 @@ router.post('/:id/conversation', requireAuth, validateSessionId, requireSessionO
  *
  * ★ ADVANCED MODE: If session has Story Bible context, uses that outline instead of generating new one
  */
-router.post('/:id/generate-outline', requireAuth, validateSessionId, requireSessionOwner, async (req, res) => {
+router.post('/:id/generate-outline', requireAuth, validateSessionId, requireSessionOwner, rateLimiters.storyGeneration, async (req, res) => {
   try {
     const { id } = req.params;
     const generationProgress = {
@@ -756,7 +756,7 @@ router.post('/:id/generate-outline', requireAuth, validateSessionId, requireSess
  * POST /api/stories/:id/continue
  * Generate the next scene
  */
-router.post('/:id/continue', requireAuth, validateSessionId, requireSessionOwner, async (req, res) => {
+router.post('/:id/continue', requireAuth, validateSessionId, requireSessionOwner, rateLimiters.storyGeneration, async (req, res) => {
   try {
     const { id } = req.params;
     const { voice_id } = req.body;
@@ -807,7 +807,7 @@ router.post('/:id/continue', requireAuth, validateSessionId, requireSessionOwner
  * POST /api/stories/:id/generate-audio/:sceneId
  * Generate audio on-demand for a scene (for deferred audio mode)
  */
-router.post('/:id/generate-audio/:sceneId', requireAuth, validateSessionId, requireSessionOwner, async (req, res) => {
+router.post('/:id/generate-audio/:sceneId', requireAuth, validateSessionId, requireSessionOwner, rateLimiters.tts, async (req, res) => {
   try {
     const { id, sceneId } = req.params;
     const { voice_id } = req.body;
