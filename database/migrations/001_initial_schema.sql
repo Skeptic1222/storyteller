@@ -3,6 +3,9 @@
 -- Description: Base schema for Storyteller application
 -- Note: This file documents the initial schema. If database already exists, skip this migration.
 
+-- UUID generation support for gen_random_uuid()
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
 -- Schema Migrations Tracking Table
 CREATE TABLE IF NOT EXISTS schema_migrations (
     id SERIAL PRIMARY KEY,

@@ -7443,6 +7443,27 @@ router.post('/save-extracted', async (req, res) => {
 // CHAPTER-EVENT LINKING
 // =============================================================================
 
+async function getSynopsisAccess(synopsisId, user) {
+  const result = await pool.query(
+    `SELECT ls.id, ls.library_id, ul.user_id
+     FROM library_synopsis ls
+     JOIN user_libraries ul ON ul.id = ls.library_id
+     WHERE ls.id = $1`,
+    [synopsisId]
+  );
+
+  if (result.rows.length === 0) {
+    return { error: { status: 404, message: 'Synopsis not found' } };
+  }
+
+  const synopsis = result.rows[0];
+  if (!user?.is_admin && synopsis.user_id !== user?.id) {
+    return { error: { status: 403, message: 'Not authorized to access this synopsis' } };
+  }
+
+  return { synopsis };
+}
+
 /**
  * POST /api/story-bible/synopsis/:id/chapter/:chapterNumber/link-events
  * Link timeline events to a chapter
@@ -7456,13 +7477,40 @@ router.post('/synopsis/:id/chapter/:chapterNumber/link-events', async (req, res)
       return res.status(400).json({ error: 'event_ids must be an array' });
     }
 
-    // Verify synopsis exists
-    const synopsis = await pool.query('SELECT library_id FROM library_synopsis WHERE id = $1', [id]);
-    if (synopsis.rows.length === 0) {
-      return res.status(404).json({ error: 'Synopsis not found' });
+    const access = await getSynopsisAccess(id, req.user);
+    if (access.error) {
+      return res.status(access.error.status).json({ error: access.error.message });
     }
 
-    const chapterNum = parseInt(chapterNumber);
+    const chapterNum = parseInt(chapterNumber, 10);
+    if (!Number.isInteger(chapterNum) || chapterNum < 1) {
+      return res.status(400).json({ error: 'chapterNumber must be a positive integer' });
+    }
+
+    const sanitizedEventIds = event_ids.map(eventId => String(eventId).trim()).filter(Boolean);
+
+    if (sanitizedEventIds.length !== event_ids.length) {
+      return res.status(400).json({ error: 'event_ids contains invalid values' });
+    }
+
+    if (sanitizedEventIds.length > 0) {
+      const validEvents = await pool.query(
+        `SELECT id::text AS id
+         FROM library_events
+         WHERE library_id = $1
+           AND id::text = ANY($2::text[])`,
+        [access.synopsis.library_id, sanitizedEventIds]
+      );
+
+      const validSet = new Set(validEvents.rows.map(row => row.id));
+      const invalidEventIds = sanitizedEventIds.filter(eventId => !validSet.has(eventId));
+      if (invalidEventIds.length > 0) {
+        return res.status(400).json({
+          error: 'event_ids must reference events in the same library',
+          invalid_event_ids: invalidEventIds
+        });
+      }
+    }
 
     // Delete existing links for this chapter
     await pool.query(
@@ -7470,24 +7518,25 @@ router.post('/synopsis/:id/chapter/:chapterNumber/link-events', async (req, res)
       [id, chapterNum]
     );
 
-    // Insert new links
-    if (event_ids.length > 0) {
-      const insertValues = event_ids.map((eventId, idx) =>
-        `('${id}', ${chapterNum}, '${eventId}', ${idx})`
-      ).join(',');
-
+    // Insert new links (parameterized, SQL-injection safe)
+    if (sanitizedEventIds.length > 0) {
+      const positions = sanitizedEventIds.map((_, idx) => idx);
       await pool.query(`
         INSERT INTO outline_chapter_events (synopsis_id, chapter_number, event_id, position_in_chapter)
-        VALUES ${insertValues}
-      `);
+        SELECT $1, $2, e.id, u.pos
+        FROM unnest($3::text[], $4::int[]) AS u(event_id, pos)
+        JOIN library_events e
+          ON e.id::text = u.event_id
+         AND e.library_id = $5
+      `, [id, chapterNum, sanitizedEventIds, positions, access.synopsis.library_id]);
     }
 
-    logger.info(`[StoryBible] Linked ${event_ids.length} events to Chapter ${chapterNum} of synopsis ${id}`);
+    logger.info(`[StoryBible] Linked ${sanitizedEventIds.length} events to Chapter ${chapterNum} of synopsis ${id}`);
 
     res.json({
       success: true,
       chapter_number: chapterNum,
-      linked_event_ids: event_ids
+      linked_event_ids: sanitizedEventIds
     });
 
   } catch (error) {
@@ -7503,6 +7552,10 @@ router.post('/synopsis/:id/chapter/:chapterNumber/link-events', async (req, res)
 router.get('/synopsis/:id/chapter-events', async (req, res) => {
   try {
     const { id } = req.params;
+    const access = await getSynopsisAccess(id, req.user);
+    if (access.error) {
+      return res.status(access.error.status).json({ error: access.error.message });
+    }
 
     const result = await pool.query(`
       SELECT oce.chapter_number, e.*

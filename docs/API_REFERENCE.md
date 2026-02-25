@@ -109,15 +109,15 @@ GET    /lorebook/:sessionId/by-type/:type  # Get entries by type
 
 ## Multiplayer (`/api/multiplayer`)
 ```
-GET    /multiplayer/:sessionId             # Get multiplayer session
-POST   /multiplayer/:sessionId/join        # Join session
-POST   /multiplayer/:sessionId/leave       # Leave session
-POST   /multiplayer/:sessionId/turn/advance    # Advance turn
-GET    /multiplayer/:sessionId/turn        # Get current turn
-POST   /multiplayer/:sessionId/character/assign  # Assign character
-GET    /multiplayer/:sessionId/order       # Get turn order
-POST   /multiplayer/join-code              # Join by code
-POST   /multiplayer/:sessionId/action      # Submit action
+GET    /multiplayer/:sessionId                  # Get multiplayer session (requires auth + access)
+POST   /multiplayer/:sessionId/join             # Join session (requires auth + join_code)
+POST   /multiplayer/:sessionId/leave            # Leave session (requires auth + participant control)
+POST   /multiplayer/:sessionId/turn/advance     # Advance turn (requires auth + owner/current participant)
+GET    /multiplayer/:sessionId/turn             # Get current turn (requires auth + access)
+POST   /multiplayer/:sessionId/character/assign # Assign character (requires auth + participant control)
+GET    /multiplayer/:sessionId/order            # Get turn order (requires auth + access)
+POST   /multiplayer/join-code                   # Resolve session by join code (requires auth)
+POST   /multiplayer/:sessionId/action           # Submit action (requires auth + participant control)
 ```
 
 ## Configuration (`/api/config`)
@@ -159,6 +159,11 @@ POST   /admin/paypal/sync          # Sync PayPal subscriptions
 ```
 GET    /health                     # Basic health check
 GET    /health/detailed            # Detailed service status
+GET    /health/live                # Liveness probe
+GET    /health/ready               # Readiness probe (database connectivity)
+GET    /health/models              # Model/runtime config snapshot (requires auth)
+GET    /health/tts                 # TTS/runtime config snapshot (requires auth)
+GET    /health/test-multivoice     # Multi-voice smoke test (requires auth)
 ```
 
 ## Socket.IO Events

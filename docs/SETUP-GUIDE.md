@@ -43,13 +43,11 @@ Quick reference for setting up Google OAuth and PayPal for the Storyteller app.
    https://ay-i-t.com
    http://localhost
    ```
-6. **Authorized redirect URIs**:
-   ```
-   https://ay-i-t.com/storyteller/api/auth/google/callback
-   http://localhost/storyteller/api/auth/google/callback
-   ```
-7. Click **Create**
-8. **Copy the Client ID and Client Secret** - you'll need these
+6. Click **Create**
+7. **Copy the Client ID and Client Secret** - you'll need these
+
+> Note: The current backend flow uses `POST /api/auth/google` with an ID token from Google Identity Services.
+> No `/api/auth/google/callback` route is used in this implementation.
 
 ### Step 5: Add to Your .env File
 ```env
@@ -158,7 +156,7 @@ JWT_SECRET=your-random-jwt-secret-at-least-32-chars
 ### Implementation Request
 Then ask Claude Code to:
 
-1. **Create auth routes** (`/api/auth/google`, `/api/auth/google/callback`, `/api/auth/me`, `/api/auth/logout`)
+1. **Create auth routes** (`/api/auth/google`, `/api/auth/me`, `/api/auth/logout`)
 
 2. **Create PayPal routes** (`/api/subscriptions/create`, `/api/webhooks/paypal`, `/api/subscriptions/cancel`)
 

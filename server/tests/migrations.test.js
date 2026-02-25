@@ -37,4 +37,22 @@ describe('migration configuration regressions', () => {
       'runner should execute non-transactional SQL one statement at a time'
     );
   });
+
+  test('001 migration enables pgcrypto before gen_random_uuid usage', async () => {
+    const migration001 = await readFile('database/migrations/001_initial_schema.sql', 'utf8');
+    assert.equal(
+      /CREATE EXTENSION IF NOT EXISTS pgcrypto;/i.test(migration001),
+      true,
+      '001 should enable pgcrypto for gen_random_uuid() defaults'
+    );
+  });
+
+  test('005 migration records canonical zero-padded version', async () => {
+    const migration005 = await readFile('database/migrations/005_story_recordings.sql', 'utf8');
+    assert.equal(
+      /VALUES\s*\('005',\s*'005_story_recordings'/i.test(migration005),
+      true,
+      '005 should write zero-padded schema_migrations version'
+    );
+  });
 });

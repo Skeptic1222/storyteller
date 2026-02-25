@@ -464,7 +464,7 @@ DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'schema_migrations') THEN
         INSERT INTO schema_migrations (version, name, applied_at)
-        VALUES (5, '005_story_recordings', NOW())
+        VALUES ('005', '005_story_recordings', NOW())
         ON CONFLICT (version) DO NOTHING;
     END IF;
 END $$;

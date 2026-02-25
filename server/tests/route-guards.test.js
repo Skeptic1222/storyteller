@@ -44,4 +44,42 @@ describe('route guard regressions', () => {
       'generate-audio should use tts limiter'
     );
   });
+
+  test('multiplayer routes require auth and prevent user_id spoofing', async () => {
+    const multiplayerRoute = await readFile('server/routes/multiplayer.js', 'utf8');
+    assert.equal(
+      /router\.use\(authenticateToken,\s*requireAuth\)/.test(multiplayerRoute),
+      true,
+      'multiplayer routes should require authenticated users'
+    );
+    assert.equal(
+      /join_code is required and must be 6 characters/.test(multiplayerRoute),
+      true,
+      'join route should require a join code'
+    );
+    assert.equal(
+      /userId:\s*req\.user\.id/.test(multiplayerRoute),
+      true,
+      'join route should bind participant identity to req.user.id'
+    );
+  });
+
+  test('story-bible chapter event linking is parameterized and ownership-scoped', async () => {
+    const storyBibleRoute = await readFile('server/routes/story-bible.js', 'utf8');
+    assert.equal(
+      /VALUES\s+\$\{insertValues\}/.test(storyBibleRoute),
+      false,
+      'chapter-event linking should not build raw VALUES strings'
+    );
+    assert.equal(
+      /getSynopsisAccess\(id,\s*req\.user\)/.test(storyBibleRoute),
+      true,
+      'chapter-event endpoints should enforce synopsis ownership/access'
+    );
+    assert.equal(
+      /FROM unnest\(\$3::text\[\],\s*\$4::int\[\]\)/.test(storyBibleRoute),
+      true,
+      'chapter-event linking should use parameterized unnest inserts'
+    );
+  });
 });
