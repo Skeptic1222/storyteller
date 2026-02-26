@@ -71,7 +71,18 @@ router.use('/synopsis/:id', async (req, res, next) => {
 });
 
 // Valid entity types for SQL table name construction
-const VALID_ENTITY_TYPES = ['character', 'world', 'location', 'item', 'faction', 'ability', 'lore', 'event', 'synopsis'];
+const ENTITY_TABLE_MAP = {
+  character: 'library_characters',
+  world: 'library_worlds',
+  location: 'library_locations',
+  item: 'library_items',
+  faction: 'library_factions',
+  ability: 'library_abilities',
+  lore: 'library_lore',
+  event: 'library_events',
+  synopsis: 'library_synopsis'
+};
+const VALID_ENTITY_TYPES = Object.keys(ENTITY_TABLE_MAP);
 
 /**
  * Validates entity type to prevent SQL injection via dynamic table names
@@ -80,11 +91,222 @@ const VALID_ENTITY_TYPES = ['character', 'world', 'location', 'item', 'faction',
  * @throws {ValidationError} - If entity type is invalid
  */
 function getValidatedTableName(entityType) {
-  if (!VALID_ENTITY_TYPES.includes(entityType)) {
+  const table = ENTITY_TABLE_MAP[entityType];
+  if (!table) {
     throw new ValidationError(`Invalid entity type: ${entityType}`);
   }
-  return `library_${entityType}s`;
+  return table;
 }
+
+async function verifyLibraryOwnership(libraryId, user) {
+  if (!libraryId) {
+    return { status: 400, error: 'library_id is required' };
+  }
+
+  const result = await pool.query(
+    'SELECT user_id FROM user_libraries WHERE id = $1',
+    [libraryId]
+  );
+
+  if (result.rows.length === 0) {
+    return { status: 404, error: 'Library not found' };
+  }
+
+  const ownerId = result.rows[0].user_id;
+  if (!user?.is_admin && ownerId !== user?.id) {
+    return { status: 403, error: 'Not authorized to access this library' };
+  }
+
+  return null;
+}
+
+async function verifyEntityOwnershipByTable(tableName, entityId, user) {
+  const result = await pool.query(
+    `SELECT ul.user_id
+     FROM ${tableName} e
+     JOIN user_libraries ul ON ul.id = e.library_id
+     WHERE e.id = $1`,
+    [entityId]
+  );
+
+  if (result.rows.length === 0) {
+    return { status: 404, error: 'Entity not found' };
+  }
+
+  const ownerId = result.rows[0].user_id;
+  if (!user?.is_admin && ownerId !== user?.id) {
+    return { status: 403, error: 'Not authorized to access this entity' };
+  }
+
+  return null;
+}
+
+function createEntityOwnershipMiddleware(tableName, idParam = 'id') {
+  return async (req, res, next) => {
+    try {
+      const entityId = req.params[idParam];
+      const ownershipError = await verifyEntityOwnershipByTable(tableName, entityId, req.user);
+      if (ownershipError) {
+        return res.status(ownershipError.status).json({ error: ownershipError.error });
+      }
+      return next();
+    } catch (error) {
+      if (error?.code === '22P02') {
+        return res.status(400).json({ error: 'Invalid entity ID format' });
+      }
+      logger.error('[StoryBible] Error verifying entity access:', error);
+      return res.status(500).json({ error: 'Failed to verify entity access' });
+    }
+  };
+}
+
+// Enforce ownership when callers explicitly target a library_id
+router.use(async (req, res, next) => {
+  try {
+    const libraryId = req.body?.library_id || req.query?.library_id;
+    if (!libraryId) {
+      return next();
+    }
+    const ownershipError = await verifyLibraryOwnership(libraryId, req.user);
+    if (ownershipError) {
+      return res.status(ownershipError.status).json({ error: ownershipError.error });
+    }
+    return next();
+  } catch (error) {
+    if (error?.code === '22P02') {
+      return res.status(400).json({ error: 'Invalid library_id format' });
+    }
+    logger.error('[StoryBible] Error verifying requested library_id access:', error);
+    return res.status(500).json({ error: 'Failed to verify library access' });
+  }
+});
+
+// Enforce ownership for entity-by-id routes across CRUD endpoints
+router.use('/characters/:id', createEntityOwnershipMiddleware('library_characters'));
+router.use('/worlds/:id', createEntityOwnershipMiddleware('library_worlds'));
+router.use('/lore/:id', createEntityOwnershipMiddleware('library_lore'));
+router.use('/locations/:id', createEntityOwnershipMiddleware('library_locations'));
+router.use('/items/:id', createEntityOwnershipMiddleware('library_items'));
+router.use('/factions/:id', createEntityOwnershipMiddleware('library_factions'));
+router.use('/abilities/:id', createEntityOwnershipMiddleware('library_abilities'));
+router.use('/events/:id', createEntityOwnershipMiddleware('library_events'));
+router.use('/connections/:id', createEntityOwnershipMiddleware('character_connections'));
+router.use('/memberships/:id', createEntityOwnershipMiddleware('character_faction_memberships'));
+router.use('/character-items/:id', createEntityOwnershipMiddleware('character_items'));
+router.use('/character-abilities/:id', createEntityOwnershipMiddleware('character_abilities'));
+router.use('/event-participation/:id', createEntityOwnershipMiddleware('character_event_participation'));
+
+// Enforce ownership for dynamic entity routes
+router.use('/versions/:entityType/:entityId', async (req, res, next) => {
+  try {
+    const { entityType, entityId } = req.params;
+    const table = getValidatedTableName(entityType);
+    const ownershipError = await verifyEntityOwnershipByTable(table, entityId, req.user);
+    if (ownershipError) {
+      return res.status(ownershipError.status).json({ error: ownershipError.error });
+    }
+    return next();
+  } catch (error) {
+    if (error instanceof ValidationError) {
+      return res.status(400).json({ error: error.message });
+    }
+    if (error?.code === '22P02') {
+      return res.status(400).json({ error: 'Invalid entity ID format' });
+    }
+    logger.error('[StoryBible] Error verifying version route access:', error);
+    return res.status(500).json({ error: 'Failed to verify entity access' });
+  }
+});
+
+router.use('/refine/:entityType/:entityId', async (req, res, next) => {
+  try {
+    const { entityType, entityId } = req.params;
+    const table = getValidatedTableName(entityType);
+    const ownershipError = await verifyEntityOwnershipByTable(table, entityId, req.user);
+    if (ownershipError) {
+      return res.status(ownershipError.status).json({ error: ownershipError.error });
+    }
+    return next();
+  } catch (error) {
+    if (error instanceof ValidationError) {
+      return res.status(400).json({ error: error.message });
+    }
+    if (error?.code === '22P02') {
+      return res.status(400).json({ error: 'Invalid entity ID format' });
+    }
+    logger.error('[StoryBible] Error verifying refine route access:', error);
+    return res.status(500).json({ error: 'Failed to verify entity access' });
+  }
+});
+
+// Enforce synopsis ownership for non-/synopsis routes that still reference synopsis IDs
+router.use('/outline-events/:synopsis_id', async (req, res, next) => {
+  if (req.method !== 'GET') {
+    return next();
+  }
+  try {
+    const access = await getSynopsisAccess(req.params.synopsis_id, req.user);
+    if (access.error) {
+      return res.status(access.error.status).json({ error: access.error.message });
+    }
+    return next();
+  } catch (error) {
+    logger.error('[StoryBible] Error verifying outline-events synopsis access:', error);
+    return res.status(500).json({ error: 'Failed to verify synopsis access' });
+  }
+});
+
+router.use('/outline-events/:id', async (req, res, next) => {
+  if (req.method !== 'DELETE') {
+    return next();
+  }
+  try {
+    const result = await pool.query(
+      `SELECT ul.user_id
+       FROM outline_chapter_events oce
+       JOIN library_synopsis ls ON ls.id = oce.synopsis_id
+       JOIN user_libraries ul ON ul.id = ls.library_id
+       WHERE oce.id = $1`,
+      [req.params.id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Outline event link not found' });
+    }
+
+    if (!req.user?.is_admin && result.rows[0].user_id !== req.user?.id) {
+      return res.status(403).json({ error: 'Not authorized to modify this outline event link' });
+    }
+
+    return next();
+  } catch (error) {
+    if (error?.code === '22P02') {
+      return res.status(400).json({ error: 'Invalid outline event link ID format' });
+    }
+    logger.error('[StoryBible] Error verifying outline event link access:', error);
+    return res.status(500).json({ error: 'Failed to verify outline event link access' });
+  }
+});
+
+router.use('/outline-events', async (req, res, next) => {
+  if (req.method !== 'POST') {
+    return next();
+  }
+  try {
+    const synopsisId = req.body?.synopsis_id;
+    if (!synopsisId) {
+      return next();
+    }
+    const access = await getSynopsisAccess(synopsisId, req.user);
+    if (access.error) {
+      return res.status(access.error.status).json({ error: access.error.message });
+    }
+    return next();
+  } catch (error) {
+    logger.error('[StoryBible] Error verifying synopsis ownership for outline-events mutation:', error);
+    return res.status(500).json({ error: 'Failed to verify synopsis access' });
+  }
+});
 
 /**
  * SECURITY: Whitelist of allowed columns per entity type

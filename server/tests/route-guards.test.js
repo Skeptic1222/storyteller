@@ -86,5 +86,30 @@ describe('route guard regressions', () => {
       true,
       'all /synopsis/:id routes should enforce synopsis ownership/access middleware'
     );
+    assert.equal(
+      /router\.use\('\/characters\/:id',\s*createEntityOwnershipMiddleware\('library_characters'\)\)/.test(storyBibleRoute),
+      true,
+      'character entity routes should enforce ownership middleware'
+    );
+    assert.equal(
+      /router\.use\('\/events\/:id',\s*createEntityOwnershipMiddleware\('library_events'\)\)/.test(storyBibleRoute),
+      true,
+      'event entity routes should enforce ownership middleware'
+    );
+    assert.equal(
+      /router\.use\('\/versions\/:entityType\/:entityId'/.test(storyBibleRoute),
+      true,
+      'version routes should enforce dynamic entity ownership'
+    );
+    assert.equal(
+      /router\.use\('\/outline-events',\s*async \(req, res, next\) =>/.test(storyBibleRoute),
+      true,
+      'outline-events mutations should enforce synopsis ownership'
+    );
+    assert.equal(
+      /synopsis:\s*'library_synopsis'/.test(storyBibleRoute),
+      true,
+      'entity table map should resolve synopsis to library_synopsis'
+    );
   });
 });
